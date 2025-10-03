@@ -3,12 +3,10 @@ mod stored_config_files;
 mod stored_relative_path;
 mod stored_single_path_component;
 
-use std::path::Path;
-
 use indexmap::IndexMap;
 use serde::de;
 use smol_str::SmolStr;
-use xshell::Shell;
+use xshell::{Shell, cmd};
 
 use crate::{
     config::{
@@ -16,8 +14,9 @@ use crate::{
         stored_relative_path::StoredRelativePath,
         stored_single_path_component::StoredSinglePathComponent,
     },
-    config_files::ConfigFiles,
+    config_files::{ConfigFileDirs, ConfigFiles},
     error::Error,
+    git::{Git, GitFileStatus},
     package_spec::{PackageSpec, PackageSpecSeed},
 };
 
@@ -61,16 +60,23 @@ struct StoredConfig {
     configs: Vec<StoredConfigFilesBase>,
 }
 
-pub struct Config {
+pub struct Config<'dirs> {
+    dirs: &'dirs ConfigFileDirs,
     stored: StoredConfig,
 }
 
-impl Config {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
+impl<'dirs> Config<'dirs> {
+    pub fn load(dirs: &'dirs ConfigFileDirs, sh: &Shell, update_self: bool) -> Result<Self, Error> {
+        if update_self {
+            let zenops_dir = dirs.zenops();
+            cmd!(sh, "git -C {zenops_dir} pull --rebase").run()?;
+        }
+
+        let path = dirs.zenops().join("config.toml");
         Ok(Self {
+            dirs,
             stored: toml::from_slice(
-                &std::fs::read(path).map_err(|e| Error::OpenDb(path.to_path_buf(), e))?,
+                &std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?,
             )
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?,
         })
@@ -130,6 +136,17 @@ impl Config {
         self.stored.shell.update_config_files(self, config_files)?;
         for config in &self.stored.configs {
             config.update_config_files(self, config_files)?;
+        }
+        Ok(())
+    }
+
+    pub fn check_own_status(&self, sh: &Shell) -> Result<(), Error> {
+        for entry in Git::new(self.dirs.zenops(), sh).status()? {
+            match entry {
+                GitFileStatus::Modified(path) => {
+                    log::warn!("~/.config/zenops/{path} is locally modified")
+                }
+            }
         }
         Ok(())
     }

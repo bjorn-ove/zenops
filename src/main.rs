@@ -1,6 +1,7 @@
 mod config;
 mod config_files;
 mod error;
+mod git;
 mod package_spec;
 
 use clap::{Parser, Subcommand};
@@ -19,10 +20,28 @@ pub struct Cli {
     command: Cmd,
 }
 
+impl Cli {
+    fn should_update_self(&self) -> bool {
+        match self.command {
+            Cmd::UpdateConfig { pull_config, .. } => pull_config,
+            Cmd::Upgrade { pull_config, .. } => pull_config,
+            Cmd::Status => false,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    UpdateConfig,
-    Upgrade,
+    UpdateConfig {
+        /// Pull the latest version of the config using git pull --rebase in the zenops config directory
+        #[clap(long, short)]
+        pull_config: bool,
+    },
+    Upgrade {
+        /// Pull the latest version of the config using git pull --rebase in the zenops config directory
+        #[clap(long, short)]
+        pull_config: bool,
+    },
     Status,
 }
 
@@ -69,21 +88,22 @@ fn install_or_upgrade_packages(sh: &Shell, config: &Config) -> Result<(), Error>
 fn real_main() -> Result<(), Error> {
     let args = Cli::parse();
     let dirs = ConfigFileDirs::load();
-    let config = Config::load(dirs.home().join(".config/zenops/config.toml"))?;
-    let mut config_files = ConfigFiles::new(&dirs);
     let sh = Shell::new().unwrap();
+    let config = Config::load(&dirs, &sh, args.should_update_self())?;
+    let mut config_files = ConfigFiles::new(&dirs);
 
     match args.command {
-        Cmd::UpdateConfig => {
+        Cmd::UpdateConfig { pull_config: _ } => {
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes()?;
         }
-        Cmd::Upgrade => {
+        Cmd::Upgrade { pull_config: _ } => {
             install_or_upgrade_packages(&sh, &config)?;
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes()?;
         }
         Cmd::Status => {
+            config.check_own_status(&sh)?;
             config.update_config_files(&sh, &mut config_files)?;
             config_files.check_status();
         }
