@@ -1,0 +1,8 @@
+[package]
+name = "safe-relative-path-validator"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90.0"
+
+[dependencies]
+relative-path.workspace = true
