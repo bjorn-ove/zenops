@@ -9,7 +9,7 @@ pub(super) struct StoredSinglePathComponent(SmolStr);
 
 impl AsRef<SafeRelativePath> for StoredSinglePathComponent {
     fn as_ref(&self) -> &SafeRelativePath {
-        unsafe { SafeRelativePath::new_unchecked(self.0.as_str()) }
+        unsafe { SafeRelativePath::new_unchecked_from_str(self.0.as_str()) }
     }
 }
 

@@ -3,7 +3,10 @@ mod stored_config_files;
 mod stored_relative_path;
 mod stored_single_path_component;
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
+use safe_relative_path::srpath;
 use serde::de;
 use smol_str::SmolStr;
 use xshell::{Shell, cmd};
@@ -14,13 +17,14 @@ use crate::{
         stored_relative_path::StoredRelativePath,
         stored_single_path_component::StoredSinglePathComponent,
     },
-    config_files::{ConfigFileDirs, ConfigFiles},
+    config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
-    git::{Git, GitFileStatus},
+    git::Git,
+    output::{Output, ResolvedConfigFilePath, Status},
     package_spec::{PackageSpec, PackageSpecSeed},
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct StoredPackages(IndexMap<SmolStr, PackageSpec>);
 
 impl<'de> de::Deserialize<'de> for StoredPackages {
@@ -52,8 +56,8 @@ impl<'de> de::Deserialize<'de> for StoredPackages {
     }
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields, default)]
 struct StoredConfig {
     packages: StoredPackages,
     shell: StoredShellEnvironment,
@@ -62,6 +66,7 @@ struct StoredConfig {
 
 pub struct Config<'dirs> {
     dirs: &'dirs ConfigFileDirs,
+    zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
 }
 
@@ -72,9 +77,13 @@ impl<'dirs> Config<'dirs> {
             cmd!(sh, "git -C {zenops_dir} pull --rebase").run()?;
         }
 
+        let zenops_repo =
+            ResolvedConfigFilePath::resolve(ConfigFilePath::Zenops(Arc::from(srpath!(""))), dirs);
+
         let path = dirs.zenops().join("config.toml");
         Ok(Self {
             dirs,
+            zenops_repo,
             stored: toml::from_slice(
                 &std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?,
             )
@@ -140,12 +149,14 @@ impl<'dirs> Config<'dirs> {
         Ok(())
     }
 
-    pub fn check_own_status(&self, sh: &Shell) -> Result<(), Error> {
-        for entry in Git::new(self.dirs.zenops(), sh).status()? {
-            match entry {
-                GitFileStatus::Modified(path) => {
-                    log::warn!("~/.config/zenops/{path} is locally modified")
-                }
+    pub fn check_own_status(&self, sh: &Shell, output: &mut dyn Output) -> Result<(), Error> {
+        let git = Git::new(self.dirs.zenops(), sh);
+        if git.is_git_repo()? {
+            for status in git.status()? {
+                output.push_status(Status::Git {
+                    repo: self.zenops_repo.clone(),
+                    status,
+                });
             }
         }
         Ok(())

@@ -1,4 +1,6 @@
-use safe_relative_path::SafeRelativePathBuf;
+use std::sync::Arc;
+
+use safe_relative_path::SafeRelativePath;
 
 use crate::config_files::{ConfigFilePath, ConfigFileSource};
 
@@ -18,14 +20,14 @@ impl StoredConfigFiles {
         &self,
         _config: &Config,
         config_files: &mut ConfigFiles,
-        make_config_path: impl Fn(SafeRelativePathBuf) -> ConfigFilePath,
+        make_config_path: impl Fn(Arc<SafeRelativePath>) -> ConfigFilePath,
     ) -> Result<(), Error> {
         for symlink in &self.symlinks {
             config_files.add(
-                make_config_path(symlink.with_prefix(&self.name)),
-                ConfigFileSource::SymlinkFrom(ConfigFilePath::Zenops(
+                make_config_path(Arc::from(symlink.with_prefix(&self.name))),
+                ConfigFileSource::SymlinkFrom(ConfigFilePath::Zenops(Arc::from(
                     symlink.with_prefix(&self.source),
-                )),
+                ))),
             );
         }
         Ok(())

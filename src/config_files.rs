@@ -1,28 +1,34 @@
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 
-use crate::error::Error;
-use safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
+use crate::{
+    error::Error,
+    output::{FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
+};
+use safe_relative_path::SafeRelativePath;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfigFilePath {
-    Home(SafeRelativePathBuf),
-    DotConfig(SafeRelativePathBuf),
-    Zenops(SafeRelativePathBuf),
+    Home(Arc<SafeRelativePath>),
+    DotConfig(Arc<SafeRelativePath>),
+    Zenops(Arc<SafeRelativePath>),
 }
 
 impl ConfigFilePath {
     pub fn in_home(path: impl AsRef<SafeRelativePath>) -> Self {
-        Self::Home(path.as_ref().to_safe_relative_path_buf())
+        Self::Home(Arc::from(path.as_ref()))
     }
 
     pub fn _in_dot_config(path: impl AsRef<SafeRelativePath>) -> Self {
-        Self::DotConfig(path.as_ref().to_safe_relative_path_buf())
+        Self::DotConfig(Arc::from(path.as_ref()))
     }
 
-    pub fn resolved(&self, config_files: &ConfigFiles) -> PathBuf {
-        let dirs = config_files.dirs;
+    pub fn resolved(&self, dirs: &ConfigFileDirs) -> PathBuf {
         match self {
             Self::Home(path) => path.to_path(&dirs.home),
             Self::DotConfig(path) => path.to_path(&dirs.config),
@@ -30,11 +36,16 @@ impl ConfigFilePath {
         }
     }
 
-    pub fn human_path(&self) -> String {
-        match self {
-            Self::Home(path) => format!("~/{path}"),
-            Self::DotConfig(path) => format!("~/.config/{path}"),
-            Self::Zenops(path) => format!("~/.config/zenops/{path}"),
+    pub fn human_path(&self) -> Cow<'_, str> {
+        let (base, path) = match self {
+            Self::Home(path) => ("~", path),
+            Self::DotConfig(path) => ("~/.config", path),
+            Self::Zenops(path) => ("~/.config/zenops", path),
+        };
+        if path.as_str().is_empty() {
+            Cow::Borrowed(base)
+        } else {
+            Cow::Owned(format!("{base}/{path}"))
         }
     }
 }
@@ -45,16 +56,16 @@ struct FileEntry {
 }
 
 pub enum ConfigFileSource {
-    Raw(String),
+    Generated(String),
     SymlinkFrom(ConfigFilePath),
 }
 
 impl ConfigFileSource {
     fn into_resolved(self, config_files: &ConfigFiles<'_>) -> ResolvedFileSource {
         match self {
-            ConfigFileSource::Raw(data) => ResolvedFileSource::Raw(data),
+            ConfigFileSource::Generated(data) => ResolvedFileSource::Generated(Arc::from(data)),
             ConfigFileSource::SymlinkFrom(rel) => ResolvedFileSource::SymlinkFrom {
-                full: rel.resolved(config_files),
+                full: Arc::from(rel.resolved(config_files.dirs)),
                 rel,
             },
         }
@@ -62,8 +73,11 @@ impl ConfigFileSource {
 }
 
 enum ResolvedFileSource {
-    Raw(String),
-    SymlinkFrom { full: PathBuf, rel: ConfigFilePath },
+    Generated(Arc<str>),
+    SymlinkFrom {
+        full: Arc<Path>,
+        rel: ConfigFilePath,
+    },
 }
 
 pub struct ConfigFileDirs {
@@ -73,8 +87,8 @@ pub struct ConfigFileDirs {
 }
 
 impl ConfigFileDirs {
-    pub fn load() -> Self {
-        let home = home::home_dir().unwrap();
+    pub fn load(home: PathBuf) -> Self {
+        assert!(home.is_absolute(), "{home:?}");
         let config = home.join(".config");
         let zenops = home.join(".config/zenops");
         Self {
@@ -91,7 +105,7 @@ impl ConfigFileDirs {
 
 pub struct ConfigFiles<'dirs> {
     dirs: &'dirs ConfigFileDirs,
-    files: IndexMap<PathBuf, FileEntry>,
+    files: IndexMap<Arc<Path>, FileEntry>,
 }
 
 impl<'dirs> ConfigFiles<'dirs> {
@@ -104,7 +118,7 @@ impl<'dirs> ConfigFiles<'dirs> {
 
     pub fn add(&mut self, path: ConfigFilePath, src: ConfigFileSource) {
         self.files.insert(
-            path.resolved(self),
+            Arc::from(path.resolved(self.dirs)),
             FileEntry {
                 path,
                 src: src.into_resolved(self),
@@ -112,124 +126,132 @@ impl<'dirs> ConfigFiles<'dirs> {
         );
     }
 
-    pub fn check_status(&self) {
-        for (path, entry) in &self.files {
-            let status = match &entry.src {
-                ResolvedFileSource::Raw(content) => {
-                    if path.exists() {
-                        if let Ok(cur_content) = std::fs::read(path) {
-                            if cur_content == content.as_bytes() {
-                                "ok"
-                            } else {
-                                "modified"
-                            }
+    fn entry_status(&self, full: Arc<Path>, entry: &FileEntry) -> Status {
+        let path = ResolvedConfigFilePath {
+            path: entry.path.clone(),
+            full,
+        };
+
+        match &entry.src {
+            ResolvedFileSource::Generated(content) => {
+                if path.full.exists() {
+                    if let Ok(cur_content) = std::fs::read_to_string(&path.full) {
+                        let status = if cur_content == content.as_ref() {
+                            FileStatus::Ok
                         } else {
-                            todo!()
+                            FileStatus::Modified
+                        };
+                        Status::Generated {
+                            want_content: content.clone(),
+                            cur_content: Some(cur_content),
+                            path,
+                            status,
                         }
                     } else {
-                        "new file"
+                        todo!()
+                    }
+                } else {
+                    Status::Generated {
+                        want_content: content.clone(),
+                        cur_content: None,
+                        path,
+                        status: FileStatus::New,
                     }
                 }
-                ResolvedFileSource::SymlinkFrom { full, rel: _ } => {
-                    match SymlinkStatus::from_path(path) {
-                        SymlinkStatus::LinksTo(link_path) => {
-                            if &link_path == full {
-                                "ok"
-                            } else {
-                                "modified link"
-                            }
-                        }
-                        SymlinkStatus::NotFound => "new link",
-                        SymlinkStatus::NotSymlinkIsFile => todo!(),
-                        SymlinkStatus::NotSymlinkIsDir => todo!(),
-                    }
-                }
-            };
-            if status == "ok" {
-                log::debug!("    {status}: {}", entry.path.human_path());
-            } else {
-                log::info!("    {status}: {}", entry.path.human_path());
             }
+            ResolvedFileSource::SymlinkFrom { full, rel } => {
+                let status = match SymlinkInfo::from_path(&path.full) {
+                    SymlinkInfo::LinksTo(link_path) => {
+                        if link_path == full.as_ref() {
+                            SymlinkStatus::Ok
+                        } else {
+                            SymlinkStatus::WrongLink(link_path)
+                        }
+                    }
+                    SymlinkInfo::NotFound => SymlinkStatus::New,
+                    SymlinkInfo::NotSymlinkIsFile => todo!(),
+                    SymlinkInfo::NotSymlinkIsDir => todo!(),
+                };
+                Status::Symlink {
+                    real: ResolvedConfigFilePath {
+                        path: rel.clone(),
+                        full: full.clone(),
+                    },
+                    symlink: path,
+                    status,
+                }
+            }
+        }
+    }
+
+    pub fn check_status(&self, output: &mut dyn Output) {
+        for (path, entry) in &self.files {
+            output.push_status(self.entry_status(path.clone(), entry));
         }
     }
 
     pub fn apply_changes(&self) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            match &entry.src {
-                ResolvedFileSource::Raw(content) => {
-                    if path.exists() {
-                        if let Ok(cur_content) = std::fs::read(path) {
-                            if cur_content == content.as_bytes() {
-                                log::debug!(
-                                    "Config is already up to date {}",
-                                    entry.path.human_path()
-                                );
-                                continue;
-                            } else {
-                                log::info!("Updating modified config {}", entry.path.human_path());
-                            }
-                        } else {
-                            todo!()
+            let status = self.entry_status(path.clone(), entry);
+            match &status {
+                Status::Generated {
+                    want_content,
+                    cur_content: _,
+                    path,
+                    status,
+                } => {
+                    match status {
+                        FileStatus::Ok => {
+                            log::debug!("Config is already up to date {path}");
+                            continue;
                         }
-                    } else {
-                        if let Some(parent_dir) = path.parent() {
-                            if !parent_dir.is_dir() {
-                                log::info!("Creating new directory {parent_dir:?}");
-                            }
-                        } else {
-                            todo!()
+                        FileStatus::Modified => {
+                            log::info!("Updating modified config {path}");
                         }
-                        log::info!("Creating new config {}", entry.path.human_path());
+                        FileStatus::New => {
+                            log::info!("Creating new config {path}");
+                        }
                     }
-                    std::fs::write(path, content)
-                        .map_err(|e| Error::FailedToWriteConfig(entry.path.clone(), e))?;
+                    std::fs::write(&path.full, want_content.as_bytes())
+                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
                 }
-                ResolvedFileSource::SymlinkFrom { full, rel } => {
-                    match SymlinkStatus::from_path(path) {
-                        SymlinkStatus::LinksTo(link_path) => {
-                            if &link_path == full {
-                                log::debug!(
-                                    "Symlink from {} to {} is already in place",
-                                    rel.human_path(),
-                                    entry.path.human_path()
-                                );
-                                continue;
-                            } else {
-                                todo!()
-                            }
-                        }
-                        SymlinkStatus::NotFound => {
-                            log::info!(
-                                "Creating symlink from {} to {}",
-                                rel.human_path(),
-                                entry.path.human_path()
-                            );
-                            create_symlink(full, path)?;
-                        }
-                        SymlinkStatus::NotSymlinkIsFile => {
-                            return Err(Error::RefusingToOverwriteFileWithSymlink(
-                                rel.clone(),
-                                entry.path.clone(),
-                            ));
-                        }
-                        SymlinkStatus::NotSymlinkIsDir => todo!(),
+                Status::Symlink {
+                    real,
+                    symlink,
+                    status,
+                } => match status {
+                    SymlinkStatus::Ok => {
+                        log::debug!("Symlink from {symlink} to {real} is already in place",);
+                        continue;
                     }
-                }
-            };
+                    SymlinkStatus::WrongLink(_) => todo!(),
+                    SymlinkStatus::New => {
+                        log::info!("Creating symlink from {symlink} to {real}",);
+                        create_symlink(&real.full, &symlink.full)?;
+                    }
+                    SymlinkStatus::IsFile => {
+                        return Err(Error::RefusingToOverwriteFileWithSymlink {
+                            symlink: symlink.clone(),
+                            real: real.clone(),
+                        });
+                    }
+                },
+                Status::Git { repo, status } => todo!("{repo}: {status:?}"),
+            }
         }
 
         Ok(())
     }
 }
 
-enum SymlinkStatus {
+enum SymlinkInfo {
     LinksTo(PathBuf),
     NotFound,
     NotSymlinkIsFile,
     NotSymlinkIsDir,
 }
 
-impl SymlinkStatus {
+impl SymlinkInfo {
     pub fn from_path(p: impl AsRef<Path>) -> Self {
         let p = p.as_ref();
         match p.symlink_metadata() {

@@ -13,7 +13,7 @@ pub fn srpath(input: TokenStream) -> TokenStream {
             if safe_relative_path_validator::is_safe_relative_path(path) {
                 quote! {
                     unsafe {
-                        ::safe_relative_path::SafeRelativePath::new_unchecked(#arg)
+                        ::safe_relative_path::SafeRelativePath::new_unchecked_from_str(#arg)
                     }
                 }
                 .into()

@@ -6,9 +6,11 @@ use crate::{
 
 mod bash;
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum StoredShellEnvironment {
+    #[default]
+    None,
     Bash(StoredBashConfig),
 }
 
@@ -19,8 +21,8 @@ impl StoredShellEnvironment {
         config_files: &mut ConfigFiles,
     ) -> Result<(), Error> {
         match self {
-            Self::Bash(bash_config) => bash_config.make_config_files(config, config_files)?,
+            Self::None => Ok(()),
+            Self::Bash(bash_config) => bash_config.make_config_files(config, config_files),
         }
-        Ok(())
     }
 }

@@ -66,7 +66,7 @@ impl StoredBashConfig {
 
         config_files.add(
             ConfigFilePath::in_home(srpath!(".zenops_bash_profile")),
-            ConfigFileSource::Raw(bash_config),
+            ConfigFileSource::Generated(bash_config),
         );
 
         Ok(())
