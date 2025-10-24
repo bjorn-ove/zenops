@@ -117,8 +117,10 @@ impl Output for Log {
                 }
                 SymlinkStatus::New => log::info!("SYM: {symlink} is missing"),
                 SymlinkStatus::IsFile => log::warn!("SYM: {symlink} is a file"),
-                SymlinkStatus::RealPathIsMissing => todo!(),
-                SymlinkStatus::DstDirIsMissing => todo!(),
+                SymlinkStatus::RealPathIsMissing => {
+                    log::info!("SYM: symlink source {real} is missing")
+                }
+                SymlinkStatus::DstDirIsMissing => log::info!("SYM: {symlink} directory is missing"),
             },
             Status::Git { repo, status } => match status {
                 GitFileStatus::Modified(path) => log::info!("GIT: {repo}/{path} is modified"),
