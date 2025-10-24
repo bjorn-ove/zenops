@@ -1,4 +1,8 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use relative_path::RelativePath;
 
@@ -6,14 +10,16 @@ use crate::error::Error;
 
 mod buf;
 pub mod error;
+mod single_path_component;
 
 pub use buf::SafeRelativePathBuf;
 pub use safe_relative_path_macros::srpath;
+pub use single_path_component::SinglePathComponent;
 
 /// Represents a relative path that is guaranteed to not perform traversal using ..
 ///
 /// NOTE: This does not protect against symlinks and similar
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct SafeRelativePath(RelativePath);
 
@@ -50,13 +56,19 @@ impl SafeRelativePath {
     pub fn try_join(&self, path: impl AsRef<RelativePath>) -> Result<SafeRelativePathBuf, Error> {
         Ok(self.safe_join(Self::from_relative_path(&path)?))
     }
-}
 
-impl std::ops::Deref for SafeRelativePath {
-    type Target = RelativePath;
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    pub fn to_full_path(&self, base: impl AsRef<Path>) -> PathBuf {
+        self.0.to_logical_path(base)
+    }
+
+    pub fn safe_parent(&self) -> Option<&SafeRelativePath> {
+        self.0
+            .parent()
+            .map(|p| unsafe { SafeRelativePath::new_unchecked(p) })
     }
 }
 
@@ -88,6 +100,12 @@ impl<'a> From<&'a SafeRelativePath> for Arc<SafeRelativePath> {
     fn from(value: &'a SafeRelativePath) -> Self {
         let arc_rel: Arc<RelativePath> = Arc::from(&value.0);
         unsafe { Arc::from_raw(Arc::into_raw(arc_rel) as *const SafeRelativePath) }
+    }
+}
+
+impl fmt::Debug for SafeRelativePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 

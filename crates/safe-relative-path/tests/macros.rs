@@ -35,7 +35,7 @@ fn test_path_operations() {
 
     assert_eq!(path_buf.to_string(), "foo/bar");
 
-    let prefixed = path.with_prefix(srpath!("base"));
+    let prefixed = srpath!("base").safe_join(path);
     assert_eq!(prefixed.to_string(), "base/foo/bar");
 }
 

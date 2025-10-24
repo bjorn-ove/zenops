@@ -4,7 +4,7 @@ use relative_path::{RelativePath, RelativePathBuf};
 
 use crate::{SafeRelativePath, error::Error};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SafeRelativePathBuf(RelativePathBuf);
 
 impl SafeRelativePathBuf {
@@ -35,22 +35,28 @@ impl AsRef<SafeRelativePath> for SafeRelativePathBuf {
 }
 
 impl std::ops::Deref for SafeRelativePathBuf {
-    type Target = RelativePath;
+    type Target = SafeRelativePath;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        unsafe { SafeRelativePath::new_unchecked(&self.0) }
     }
 }
 
 impl AsRef<RelativePath> for SafeRelativePathBuf {
     fn as_ref(&self) -> &RelativePath {
-        self
+        &self.0
     }
 }
 
 impl AsRef<std::ffi::OsStr> for SafeRelativePathBuf {
     fn as_ref(&self) -> &std::ffi::OsStr {
         self.as_safe_rel_path().as_ref()
+    }
+}
+
+impl fmt::Debug for SafeRelativePathBuf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
     }
 }
 
@@ -69,18 +75,14 @@ impl From<SafeRelativePathBuf> for Arc<SafeRelativePath> {
 
 impl SafeRelativePath {
     pub fn to_safe_relative_path_buf(&self) -> SafeRelativePathBuf {
-        SafeRelativePathBuf(self.to_relative_path_buf())
+        SafeRelativePathBuf(self.0.to_relative_path_buf())
     }
 
     pub fn normalize_safe(&self) -> SafeRelativePathBuf {
-        SafeRelativePathBuf(self.normalize())
-    }
-
-    pub fn with_prefix(&self, v: impl AsRef<SafeRelativePath>) -> SafeRelativePathBuf {
-        SafeRelativePathBuf(v.as_ref().join(self))
+        SafeRelativePathBuf(self.0.normalize())
     }
 
     pub fn safe_join(&self, path: impl AsRef<SafeRelativePath>) -> SafeRelativePathBuf {
-        SafeRelativePathBuf(self.join(&path.as_ref().0))
+        SafeRelativePathBuf(self.0.join(&path.as_ref().0))
     }
 }
