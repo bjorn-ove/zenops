@@ -25,6 +25,8 @@ pub enum Error {
     InvalidPackageSpec(String, &'static str),
     #[error("Unknown package kind {0:?} for {1:?}")]
     UnknownPackageKind(String, SmolStr),
+    #[error("Failed to create directory {0:?}: {1}")]
+    CreateDirectoryError(ResolvedConfigFilePath, std::io::Error),
 }
 
 impl PartialEq for Error {
@@ -52,6 +54,9 @@ impl PartialEq for Error {
             }
             (Self::UnknownPackageKind(l0, l1), Self::UnknownPackageKind(r0, r1)) => {
                 l0 == r0 && l1 == r1
+            }
+            (Self::CreateDirectoryError(l0, l1), Self::CreateDirectoryError(r0, r1)) => {
+                l0 == r0 && l1.kind() == r1.kind()
             }
             _ => false,
         }

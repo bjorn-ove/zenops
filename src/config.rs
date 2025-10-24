@@ -1,7 +1,6 @@
 mod shell;
 mod stored_config_files;
 mod stored_relative_path;
-mod stored_single_path_component;
 
 use std::sync::Arc;
 
@@ -15,7 +14,6 @@ use crate::{
     config::{
         shell::StoredShellEnvironment, stored_config_files::StoredConfigFilesBase,
         stored_relative_path::StoredRelativePath,
-        stored_single_path_component::StoredSinglePathComponent,
     },
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,

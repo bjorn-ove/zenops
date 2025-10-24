@@ -1,160 +1,50 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use safe_relative_path::{SafeRelativePath, srpath};
-use xshell::{Shell, cmd};
+use safe_relative_path::srpath;
+use similar_asserts::assert_eq;
 use zenops::{
-    Args, Cmd,
-    config_files::{ConfigFileDirs, ConfigFilePath},
+    Cmd,
+    config_files::ConfigFilePath,
     error::Error,
     git::GitFileStatus,
-    output::{ResolvedConfigFilePath, Status},
+    output::{AppliedAction, Status, SymlinkStatus},
 };
 
-#[derive(Debug, PartialEq)]
-enum Entry {
-    Status(Status),
-}
+use test_env::{Entry, Output, paths};
 
-#[derive(Default, Debug, PartialEq)]
-pub struct Output {
-    entries: Vec<Entry>,
-}
-
-impl zenops::output::Output for Output {
-    fn push_status(&mut self, status: Status) {
-        self.entries.push(Entry::Status(status))
-    }
-}
-
-const CONFIG_DIR: &SafeRelativePath = srpath!("home/bob/.config/zenops");
-const CONFIG_FILE: &SafeRelativePath = srpath!("home/bob/.config/zenops/config.toml");
-
-pub struct TestEnv {
-    #[allow(dead_code)] // Needed for automatic cleanup
-    root: tempfile::TempDir,
-    dirs: ConfigFileDirs,
-    default_args: Args,
-    sh: Shell,
-}
-
-impl TestEnv {
-    pub fn load() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let dirs = ConfigFileDirs::load(root.path().join("home/bob"));
-        let sh = Shell::new().unwrap();
-        sh.change_dir(root.path());
-        Self {
-            root,
-            dirs,
-            default_args: Args {},
-            sh,
-        }
-    }
-
-    pub fn resolve_path(&self, path: impl AsRef<Path>) -> PathBuf {
-        let path = path.as_ref().to_str().unwrap();
-        let path = SafeRelativePath::from_relative_path(path).unwrap();
-        path.to_path(self.root.path())
-    }
-
-    pub fn cfpath(
-        &self,
-        path: impl AsRef<str>,
-        map: impl FnOnce(Arc<SafeRelativePath>) -> ConfigFilePath,
-    ) -> ResolvedConfigFilePath {
-        let path = map(Arc::from(
-            SafeRelativePath::from_relative_path(path.as_ref()).unwrap(),
-        ));
-        let full = path.resolved(&self.dirs);
-
-        ResolvedConfigFilePath {
-            path,
-            full: Arc::from(full),
-        }
-    }
-
-    pub fn write_file(&self, path: impl AsRef<SafeRelativePath>, data: impl AsRef<[u8]>) {
-        let path = path.as_ref().to_path(self.root.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, data).unwrap();
-    }
-
-    pub fn append_file(&self, path: &SafeRelativePath, data: impl AsRef<[u8]>) {
-        let path = path.to_path(self.root.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-            .unwrap()
-            .write_all(data.as_ref())
-            .unwrap();
-    }
-
-    pub fn init_config(&self) {
-        self.write_file(CONFIG_FILE, "");
-        let _dir = self.sh.push_dir("home/bob/.config/zenops");
-        cmd!(self.sh, "git init").ignore_stdout().run().unwrap();
-        cmd!(self.sh, "git config commit.gpgsign false")
-            .run()
-            .unwrap();
-        cmd!(self.sh, "git add config.toml")
-            .ignore_stdout()
-            .run()
-            .unwrap();
-        cmd!(self.sh, "git commit -m initial")
-            .ignore_stdout()
-            .run()
-            .unwrap();
-    }
-
-    pub fn run(&self, cmd: &Cmd) -> Result<Output, Error> {
-        let mut output = Output::default();
-        zenops::real_main(&self.default_args, cmd, &self.dirs, &mut output)?;
-        Ok(output)
-    }
-}
+mod test_env;
 
 #[test]
 fn missing_config() {
-    let env = TestEnv::load();
+    let env = test_env::TestEnv::load();
 
     assert_eq!(
         env.run(&Cmd::Status),
         Err(Error::OpenDb(
-            env.root.path().join("home/bob/.config/zenops/config.toml"),
+            env.resolve_path(paths::ZENOPS_CONFIG),
             std::io::ErrorKind::NotFound.into()
         ))
     );
 
     // Check it works with a config file, but no .git repository
-    env.write_file(CONFIG_FILE, "");
+    env.write_zenops_file(srpath!("config.toml"), "", None);
 
     assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }),);
 
     // Check it works with a .git repository
-    env.init_config();
+    env.init_config("");
 
     assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }),);
 }
 
 #[test]
 fn config_dir_git_status() {
-    let env = TestEnv::load();
+    let env = test_env::TestEnv::load();
 
-    env.init_config();
+    env.init_config("");
 
     assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }));
 
-    env.append_file(CONFIG_FILE, "# Modification");
-    env.write_file(
-        CONFIG_DIR.safe_join(srpath!("untracked-file")),
-        "# Untracked file",
-    );
+    env.append_zenops_file(srpath!("config.toml"), "# Modification", None);
+    env.write_zenops_file(srpath!("untracked-file"), "# Untracked file", None);
 
     assert_eq!(
         env.run(&Cmd::Status),
@@ -167,6 +57,108 @@ fn config_dir_git_status() {
                 Entry::Status(Status::Git {
                     repo: env.cfpath("", ConfigFilePath::Zenops),
                     status: GitFileStatus::Untracked(srpath!("untracked-file").into()),
+                })
+            ]
+        })
+    );
+}
+
+#[test]
+fn symlinked_configs() {
+    let env = test_env::TestEnv::load();
+    let dummy_config_symlink = paths::CONFIG_DIR.safe_join(srpath!("dummy-util/dummy-util.toml"));
+    let dummy_real = env.cfpath("configs/dummy-util/dummy-util.toml", ConfigFilePath::Zenops);
+    let dummy_symlink = env.cfpath("dummy-util/dummy-util.toml", ConfigFilePath::DotConfig);
+
+    env.init_config(
+        r#"
+        [[configs]]
+        type = ".config"
+        name = "dummy-util"
+        source = "configs/dummy-util"
+        symlinks = [
+          "dummy-util.toml"
+        ]
+    "#,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: dummy_real.clone(),
+                symlink: dummy_symlink.clone(),
+                status: SymlinkStatus::DstDirIsMissing
+            })]
+        })
+    );
+
+    env.create_symlink(
+        paths::ZENOPS_DIR.safe_join(srpath!("configs/dummy-util/dummy-util.toml")),
+        &dummy_config_symlink,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: dummy_real.clone(),
+                symlink: dummy_symlink.clone(),
+                status: SymlinkStatus::RealPathIsMissing
+            })]
+        })
+    );
+
+    env.write_zenops_file(
+        srpath!("configs/dummy-util/dummy-util.toml"),
+        "# hello",
+        Some("Added dummy-util.toml"),
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: dummy_real.clone(),
+                symlink: dummy_symlink.clone(),
+                status: SymlinkStatus::Ok
+            })]
+        })
+    );
+
+    env.delete_file(&dummy_config_symlink);
+
+    assert_eq!(
+        env.run(&Cmd::Status),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: dummy_real.clone(),
+                symlink: dummy_symlink.clone(),
+                status: SymlinkStatus::New
+            })]
+        })
+    );
+
+    assert_eq!(
+        env.run(&Cmd::UpdateConfig { pull_config: false }),
+        Ok(Output {
+            entries: vec![Entry::AppliedAction(AppliedAction::CreatedSymlink {
+                real: dummy_real.clone(),
+                symlink: dummy_symlink.clone(),
+            })]
+        })
+    );
+
+    env.delete_dir_all(dummy_config_symlink.safe_parent().unwrap());
+
+    assert_eq!(
+        env.run(&Cmd::UpdateConfig { pull_config: false }),
+        Ok(Output {
+            entries: vec![
+                Entry::AppliedAction(AppliedAction::CreatedDir(dummy_symlink.parent().unwrap())),
+                Entry::AppliedAction(AppliedAction::CreatedSymlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
                 })
             ]
         })

@@ -101,12 +101,12 @@ pub fn real_main(
     match command {
         Cmd::UpdateConfig { pull_config: _ } => {
             config.update_config_files(&sh, &mut config_files)?;
-            config_files.apply_changes()?;
+            config_files.apply_changes(output)?;
         }
         Cmd::Upgrade { pull_config: _ } => {
             install_or_upgrade_packages(&sh, &config)?;
             config.update_config_files(&sh, &mut config_files)?;
-            config_files.apply_changes()?;
+            config_files.apply_changes(output)?;
         }
         Cmd::Status => {
             config.check_own_status(&sh, output)?;

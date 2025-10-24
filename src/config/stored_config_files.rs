@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use safe_relative_path::SafeRelativePath;
+use safe_relative_path::{SafeRelativePath, SinglePathComponent};
 
 use crate::config_files::{ConfigFilePath, ConfigFileSource};
 
-use super::{Config, ConfigFiles, Error, StoredRelativePath, StoredSinglePathComponent};
+use super::{Config, ConfigFiles, Error, StoredRelativePath};
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredConfigFiles {
-    name: StoredSinglePathComponent,
+    name: SinglePathComponent,
     source: StoredRelativePath,
     #[serde(default)]
     symlinks: Vec<StoredRelativePath>,
@@ -24,9 +24,9 @@ impl StoredConfigFiles {
     ) -> Result<(), Error> {
         for symlink in &self.symlinks {
             config_files.add(
-                make_config_path(Arc::from(symlink.with_prefix(&self.name))),
+                make_config_path(Arc::from(self.name.safe_join(symlink))),
                 ConfigFileSource::SymlinkFrom(ConfigFilePath::Zenops(Arc::from(
-                    symlink.with_prefix(&self.source),
+                    self.source.safe_join(symlink),
                 ))),
             );
         }

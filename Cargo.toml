@@ -11,8 +11,8 @@ indexmap = { version = "2.11.4", features = ["serde"] }
 log = "0.4.28"
 safe-relative-path = { version = "0.1.0", path = "crates/safe-relative-path" }
 semver = "1.0.27"
-serde = { version = "1.0.228", features = ["derive"] }
-smol_str = { version = "0.3.2", features = ["serde"] }
+serde.workspace = true
+smol_str.workspace = true
 thiserror.workspace = true
 toml = { version = "0.9.7", features = ["preserve_order"] }
 xshell = "0.2.7"
@@ -23,7 +23,10 @@ members = ["crates/safe-relative-path", "crates/safe-relative-path-macros", "cra
 
 [workspace.dependencies]
 relative-path = "2.0.1"
+serde = { version = "1.0.228", features = ["derive"] }
+smol_str = { version = "0.3.2", features = ["serde"] }
 thiserror = "2.0.17"
 
 [dev-dependencies]
+similar-asserts = "1.7.0"
 tempfile = "3.23.0"

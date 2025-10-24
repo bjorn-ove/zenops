@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -8,11 +9,11 @@ use indexmap::IndexMap;
 
 use crate::{
     error::Error,
-    output::{FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
+    output::{AppliedAction, FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
 };
 use safe_relative_path::SafeRelativePath;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ConfigFilePath {
     Home(Arc<SafeRelativePath>),
     DotConfig(Arc<SafeRelativePath>),
@@ -30,9 +31,9 @@ impl ConfigFilePath {
 
     pub fn resolved(&self, dirs: &ConfigFileDirs) -> PathBuf {
         match self {
-            Self::Home(path) => path.to_path(&dirs.home),
-            Self::DotConfig(path) => path.to_path(&dirs.config),
-            Self::Zenops(path) => path.to_path(&dirs.zenops),
+            Self::Home(path) => path.to_full_path(&dirs.home),
+            Self::DotConfig(path) => path.to_full_path(&dirs.config),
+            Self::Zenops(path) => path.to_full_path(&dirs.zenops),
         }
     }
 
@@ -47,6 +48,20 @@ impl ConfigFilePath {
         } else {
             Cow::Owned(format!("{base}/{path}"))
         }
+    }
+
+    pub fn parent(&self) -> Option<Self> {
+        match self {
+            Self::Home(path) => Some(Self::Home(Arc::from(path.safe_parent()?))),
+            Self::DotConfig(path) => Some(Self::DotConfig(Arc::from(path.safe_parent()?))),
+            Self::Zenops(path) => Some(Self::Zenops(Arc::from(path.safe_parent()?))),
+        }
+    }
+}
+
+impl std::fmt::Debug for ConfigFilePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt::Debug::fmt(&self.human_path(), f)
     }
 }
 
@@ -163,12 +178,28 @@ impl<'dirs> ConfigFiles<'dirs> {
                 let status = match SymlinkInfo::from_path(&path.full) {
                     SymlinkInfo::LinksTo(link_path) => {
                         if link_path == full.as_ref() {
-                            SymlinkStatus::Ok
+                            match full.symlink_metadata() {
+                                Ok(_) => SymlinkStatus::Ok,
+                                Err(e) => match e.kind() {
+                                    std::io::ErrorKind::NotFound => {
+                                        SymlinkStatus::RealPathIsMissing
+                                    }
+                                    unk => todo!("{unk:?}"),
+                                },
+                            }
                         } else {
                             SymlinkStatus::WrongLink(link_path)
                         }
                     }
-                    SymlinkInfo::NotFound => SymlinkStatus::New,
+                    SymlinkInfo::NotFound => {
+                        match path.full.parent().map(|v| v.symlink_metadata()) {
+                            None | Some(Ok(_)) => SymlinkStatus::New,
+                            Some(Err(e)) => match e.kind() {
+                                std::io::ErrorKind::NotFound => SymlinkStatus::DstDirIsMissing,
+                                unk => todo!("{unk:?}"),
+                            },
+                        }
+                    }
                     SymlinkInfo::NotSymlinkIsFile => todo!(),
                     SymlinkInfo::NotSymlinkIsDir => todo!(),
                 };
@@ -190,30 +221,35 @@ impl<'dirs> ConfigFiles<'dirs> {
         }
     }
 
-    pub fn apply_changes(&self) -> Result<(), Error> {
+    pub fn apply_changes(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
             let status = self.entry_status(path.clone(), entry);
-            match &status {
+            match status {
                 Status::Generated {
                     want_content,
                     cur_content: _,
                     path,
                     status,
                 } => {
-                    match status {
+                    let expect_action = match status {
                         FileStatus::Ok => {
                             log::debug!("Config is already up to date {path}");
                             continue;
                         }
                         FileStatus::Modified => {
-                            log::info!("Updating modified config {path}");
+                            log::debug!("Updating modified config {path}");
+                            AppliedAction::UpdatedFile
                         }
                         FileStatus::New => {
-                            log::info!("Creating new config {path}");
+                            log::debug!("Creating new config {path}");
+                            AppliedAction::CreatedFile
                         }
-                    }
+                    };
+
                     std::fs::write(&path.full, want_content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
+
+                    output.push_applied_action(expect_action(path));
                 }
                 Status::Symlink {
                     real,
@@ -226,14 +262,29 @@ impl<'dirs> ConfigFiles<'dirs> {
                     }
                     SymlinkStatus::WrongLink(_) => todo!(),
                     SymlinkStatus::New => {
-                        log::info!("Creating symlink from {symlink} to {real}",);
+                        log::debug!("Creating symlink from {symlink} to {real}",);
                         create_symlink(&real.full, &symlink.full)?;
+                        output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
                     }
                     SymlinkStatus::IsFile => {
                         return Err(Error::RefusingToOverwriteFileWithSymlink {
                             symlink: symlink.clone(),
                             real: real.clone(),
                         });
+                    }
+                    SymlinkStatus::RealPathIsMissing => todo!(),
+                    SymlinkStatus::DstDirIsMissing => {
+                        log::debug!("Creating symlink from {symlink} to {real}",);
+                        let dir = symlink.parent().unwrap_or_else(|| {
+                            todo!("This should not be possible due to earlier check")
+                        });
+                        match std::fs::create_dir_all(&dir.full) {
+                            Ok(()) => {}
+                            Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
+                        }
+                        output.push_applied_action(AppliedAction::CreatedDir(dir));
+                        create_symlink(&real.full, &symlink.full)?;
+                        output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
                     }
                 },
                 Status::Git { repo, status } => todo!("{repo}: {status:?}"),
@@ -277,14 +328,14 @@ impl SymlinkInfo {
 
 #[cfg(unix)]
 fn create_symlink(real_path: &Path, symlink_path: &Path) -> Result<(), Error> {
+    use std::io::ErrorKind;
+
     match std::os::unix::fs::symlink(real_path, symlink_path) {
         Ok(()) => Ok(()),
-        Err(e) => {
-            if matches!(e.kind(), std::io::ErrorKind::AlreadyExists) {
-                todo!()
-            } else {
-                todo!()
-            }
-        }
+        Err(e) => match e.kind() {
+            ErrorKind::AlreadyExists => todo!(),
+            ErrorKind::NotFound => todo!(),
+            unk => todo!("{unk:?}"),
+        },
     }
 }
