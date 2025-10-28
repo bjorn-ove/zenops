@@ -11,6 +11,7 @@ use zenops::{
 pub mod paths {
     use safe_relative_path::{SafeRelativePath, srpath};
 
+    pub const HOME_DIR: &SafeRelativePath = srpath!("home/bob");
     pub const CONFIG_DIR: &SafeRelativePath = srpath!("home/bob/.config");
     pub const ZENOPS_DIR: &SafeRelativePath = srpath!("home/bob/.config/zenops");
     pub const ZENOPS_CONFIG: &SafeRelativePath = srpath!("home/bob/.config/zenops/config.toml");

@@ -69,6 +69,9 @@ fn symlinked_configs() {
     let dummy_config_symlink = paths::CONFIG_DIR.safe_join(srpath!("dummy-util/dummy-util.toml"));
     let dummy_real = env.cfpath("configs/dummy-util/dummy-util.toml", ConfigFilePath::Zenops);
     let dummy_symlink = env.cfpath("dummy-util/dummy-util.toml", ConfigFilePath::DotConfig);
+    let dummy2_config_symlink = paths::HOME_DIR.safe_join(srpath!(".dummy2/dummy2.toml"));
+    let dummy2_real = env.cfpath("configs/dummy2/dummy2.toml", ConfigFilePath::Zenops);
+    let dummy2_symlink = env.cfpath(".dummy2/dummy2.toml", ConfigFilePath::Home);
 
     env.init_config(
         r#"
@@ -79,17 +82,32 @@ fn symlinked_configs() {
         symlinks = [
           "dummy-util.toml"
         ]
+
+        [[configs]]
+        type = "home"
+        dir = ".dummy2"
+        source = "configs/dummy2"
+        symlinks = [
+          "dummy2.toml"
+        ]
     "#,
     );
 
     assert_eq!(
         env.run(&Cmd::Status),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: dummy_real.clone(),
-                symlink: dummy_symlink.clone(),
-                status: SymlinkStatus::DstDirIsMissing
-            })]
+            entries: vec![
+                Entry::Status(Status::Symlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
+                    status: SymlinkStatus::DstDirIsMissing
+                }),
+                Entry::Status(Status::Symlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
+                    status: SymlinkStatus::DstDirIsMissing
+                })
+            ]
         })
     );
 
@@ -98,14 +116,26 @@ fn symlinked_configs() {
         &dummy_config_symlink,
     );
 
+    env.create_symlink(
+        paths::ZENOPS_DIR.safe_join(srpath!("configs/dummy2/dummy2.toml")),
+        &dummy2_config_symlink,
+    );
+
     assert_eq!(
         env.run(&Cmd::Status),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: dummy_real.clone(),
-                symlink: dummy_symlink.clone(),
-                status: SymlinkStatus::RealPathIsMissing
-            })]
+            entries: vec![
+                Entry::Status(Status::Symlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
+                    status: SymlinkStatus::RealPathIsMissing
+                }),
+                Entry::Status(Status::Symlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
+                    status: SymlinkStatus::RealPathIsMissing
+                })
+            ]
         })
     );
 
@@ -115,41 +145,69 @@ fn symlinked_configs() {
         Some("Added dummy-util.toml"),
     );
 
+    env.write_zenops_file(
+        srpath!("configs/dummy2/dummy2.toml"),
+        "# hello2",
+        Some("Added dummy2.toml"),
+    );
+
     assert_eq!(
         env.run(&Cmd::Status),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: dummy_real.clone(),
-                symlink: dummy_symlink.clone(),
-                status: SymlinkStatus::Ok
-            })]
+            entries: vec![
+                Entry::Status(Status::Symlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
+                    status: SymlinkStatus::Ok
+                }),
+                Entry::Status(Status::Symlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
+                    status: SymlinkStatus::Ok
+                })
+            ]
         })
     );
 
     env.delete_file(&dummy_config_symlink);
+    env.delete_file(&dummy2_config_symlink);
 
     assert_eq!(
         env.run(&Cmd::Status),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: dummy_real.clone(),
-                symlink: dummy_symlink.clone(),
-                status: SymlinkStatus::New
-            })]
+            entries: vec![
+                Entry::Status(Status::Symlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
+                    status: SymlinkStatus::New
+                }),
+                Entry::Status(Status::Symlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
+                    status: SymlinkStatus::New
+                })
+            ]
         })
     );
 
     assert_eq!(
         env.run(&Cmd::UpdateConfig { pull_config: false }),
         Ok(Output {
-            entries: vec![Entry::AppliedAction(AppliedAction::CreatedSymlink {
-                real: dummy_real.clone(),
-                symlink: dummy_symlink.clone(),
-            })]
+            entries: vec![
+                Entry::AppliedAction(AppliedAction::CreatedSymlink {
+                    real: dummy_real.clone(),
+                    symlink: dummy_symlink.clone(),
+                }),
+                Entry::AppliedAction(AppliedAction::CreatedSymlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
+                })
+            ]
         })
     );
 
     env.delete_dir_all(dummy_config_symlink.safe_parent().unwrap());
+    env.delete_dir_all(dummy2_config_symlink.safe_parent().unwrap());
 
     assert_eq!(
         env.run(&Cmd::UpdateConfig { pull_config: false }),
@@ -159,6 +217,11 @@ fn symlinked_configs() {
                 Entry::AppliedAction(AppliedAction::CreatedSymlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
+                }),
+                Entry::AppliedAction(AppliedAction::CreatedDir(dummy2_symlink.parent().unwrap())),
+                Entry::AppliedAction(AppliedAction::CreatedSymlink {
+                    real: dummy2_real.clone(),
+                    symlink: dummy2_symlink.clone(),
                 })
             ]
         })

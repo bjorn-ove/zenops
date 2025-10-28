@@ -5,6 +5,7 @@ use std::{
 };
 
 use relative_path::RelativePath;
+use serde::ser;
 
 use crate::error::Error;
 
@@ -69,6 +70,12 @@ impl SafeRelativePath {
         self.0
             .parent()
             .map(|p| unsafe { SafeRelativePath::new_unchecked(p) })
+    }
+}
+
+impl ser::Serialize for &SafeRelativePath {
+    fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
     }
 }
 

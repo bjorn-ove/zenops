@@ -1,6 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use relative_path::{RelativePath, RelativePathBuf};
+use serde::{de, ser};
 
 use crate::{SafeRelativePath, error::Error};
 
@@ -17,6 +18,30 @@ impl SafeRelativePathBuf {
 
     fn as_safe_rel_path(&self) -> &SafeRelativePath {
         unsafe { SafeRelativePath::new_unchecked(&self.0) }
+    }
+}
+
+impl ser::Serialize for SafeRelativePathBuf {
+    fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> de::Deserialize<'de> for SafeRelativePathBuf {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = SafeRelativePathBuf;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "path")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                SafeRelativePathBuf::from_relative_path(v).map_err(de::Error::custom)
+            }
+        }
+        d.deserialize_str(Visitor)
     }
 }
 
