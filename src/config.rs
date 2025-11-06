@@ -126,6 +126,13 @@ impl<'dirs> Config<'dirs> {
             }
         }
 
+        if let Some(spec) = self.stored.packages.0.get("llvm") {
+            #[cfg(target_os = "macos")]
+            if spec.is_brew() {
+                paths.insert_str(0, "$(brew --prefix)/opt/llvm/bin:");
+            }
+        }
+
         paths.push_str(":~/.local/bin");
 
         if self.stored.packages.0.values().any(|spec| spec.is_cargo()) {

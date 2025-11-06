@@ -62,6 +62,19 @@ impl StoredBashConfig {
 
         if let Some(path) = config.path_variable() {
             _ = writeln!(bash_config, "export PATH={path}");
+            bash_config.push('\n');
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(spec) = config.stored.packages.0.get("llvm")
+            && spec.is_brew()
+        {
+            _ = writeln!(bash_config, "export LDFLAGS=-L/opt/homebrew/opt/llvm/lib");
+            _ = writeln!(
+                bash_config,
+                "export CPPFLAGS=-L/opt/homebrew/opt/llvm/include"
+            );
+            bash_config.push('\n');
         }
 
         config_files.add(
