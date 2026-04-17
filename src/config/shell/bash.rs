@@ -50,7 +50,7 @@ impl StoredBashConfig {
             bash_config.push('\n');
         }
 
-        if !alias.is_empty() {
+        if !environment.is_empty() {
             for (name, value) in environment {
                 _ = writeln!(bash_config, "export {name}={value}");
             }
