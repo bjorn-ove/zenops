@@ -17,7 +17,7 @@ fn missing_config() {
     let env = test_env::TestEnv::load();
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Err(Error::OpenDb(
             env.resolve_path(paths::ZENOPS_CONFIG),
             std::io::ErrorKind::NotFound.into()
@@ -27,12 +27,12 @@ fn missing_config() {
     // Check it works with a config file, but no .git repository
     env.write_zenops_file(srpath!("config.toml"), "", None);
 
-    assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }),);
+    assert_eq!(env.run(&Cmd::Status { diff: false }), Ok(Output { entries: vec![] }),);
 
     // Check it works with a .git repository
     env.init_config("");
 
-    assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }),);
+    assert_eq!(env.run(&Cmd::Status { diff: false }), Ok(Output { entries: vec![] }),);
 }
 
 #[test]
@@ -41,13 +41,13 @@ fn config_dir_git_status() {
 
     env.init_config("");
 
-    assert_eq!(env.run(&Cmd::Status), Ok(Output { entries: vec![] }));
+    assert_eq!(env.run(&Cmd::Status { diff: false }), Ok(Output { entries: vec![] }));
 
     env.append_zenops_file(srpath!("config.toml"), "# Modification", None);
     env.write_zenops_file(srpath!("untracked-file"), "# Untracked file", None);
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Git {
@@ -94,7 +94,7 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Symlink {
@@ -122,7 +122,7 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Symlink {
@@ -152,7 +152,7 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Symlink {
@@ -173,7 +173,7 @@ fn symlinked_configs() {
     env.delete_file(&dummy2_config_symlink);
 
     assert_eq!(
-        env.run(&Cmd::Status),
+        env.run(&Cmd::Status { diff: false }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Symlink {

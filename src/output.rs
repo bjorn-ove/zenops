@@ -1,3 +1,4 @@
+use similar::{ChangeTag, TextDiff};
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -138,5 +139,51 @@ impl Output for Log {
             }
             AppliedAction::CreatedDir(path) => log::info!("DIR: {path} was created"),
         }
+    }
+}
+
+pub struct DiffLog;
+
+impl Output for DiffLog {
+    fn push_status(&mut self, status: Status) {
+        match status {
+            Status::Generated {
+                want_content,
+                cur_content,
+                path,
+                status,
+            } => {
+                match status {
+                    FileStatus::Ok => {
+                        log::debug!("GEN: {path} is unchanged");
+                        return;
+                    }
+                    FileStatus::Modified => log::info!("GEN: {path} is modified"),
+                    FileStatus::New => log::info!("GEN: {path} is missing"),
+                }
+                let old = cur_content.as_deref().unwrap_or("");
+                let old_label = if cur_content.is_some() {
+                    format!("--- {path} (current)")
+                } else {
+                    "--- /dev/null".to_string()
+                };
+                eprintln!("{old_label}");
+                eprintln!("+++ {path} (generated)");
+                let diff = TextDiff::from_lines(old, want_content.as_ref());
+                for change in diff.iter_all_changes() {
+                    let (prefix, color, reset) = match change.tag() {
+                        ChangeTag::Delete => ("-", "\x1b[31m", "\x1b[0m"),
+                        ChangeTag::Insert => ("+", "\x1b[32m", "\x1b[0m"),
+                        ChangeTag::Equal => (" ", "\x1b[2m", "\x1b[0m"),
+                    };
+                    eprint!("{color}{prefix}{change}{reset}");
+                }
+            }
+            other => Log.push_status(other),
+        }
+    }
+
+    fn push_applied_action(&mut self, action: AppliedAction) {
+        Log.push_applied_action(action);
     }
 }

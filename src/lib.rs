@@ -13,7 +13,7 @@ use crate::{
     config_files::{ConfigFileDirs, ConfigFiles},
     error::Error,
     git::GitCmd,
-    output::Output,
+    output::{DiffLog, Output},
 };
 
 #[derive(clap::Args, Debug)]
@@ -31,7 +31,11 @@ pub enum Cmd {
         #[clap(long, short)]
         pull_config: bool,
     },
-    Status,
+    Status {
+        /// Show a diff of what would change
+        #[clap(long, short = 'd')]
+        diff: bool,
+    },
     Repo {
         #[command(subcommand)]
         command: GitCmd,
@@ -43,7 +47,7 @@ impl Cmd {
         match *self {
             Cmd::UpdateConfig { pull_config, .. } => pull_config,
             Cmd::Upgrade { pull_config, .. } => pull_config,
-            Cmd::Status | Cmd::Repo { .. } => false,
+            Cmd::Status { .. } | Cmd::Repo { .. } => false,
         }
     }
 }
@@ -108,10 +112,14 @@ pub fn real_main(
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output)?;
         }
-        Cmd::Status => {
+        Cmd::Status { diff } => {
             config.check_own_status(&sh, output)?;
             config.update_config_files(&sh, &mut config_files)?;
-            config_files.check_status(output);
+            if *diff {
+                config_files.check_status(&mut DiffLog);
+            } else {
+                config_files.check_status(output);
+            }
         }
         Cmd::Repo { command } => {
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;

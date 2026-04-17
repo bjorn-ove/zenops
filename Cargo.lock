@@ -831,6 +831,7 @@ dependencies = [
  "safe-relative-path",
  "semver",
  "serde",
+ "similar",
  "similar-asserts",
  "smol_str",
  "tempfile",
