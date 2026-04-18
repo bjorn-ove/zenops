@@ -113,6 +113,10 @@ impl ConfigFileDirs {
         }
     }
 
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
     pub fn zenops(&self) -> &Path {
         &self.zenops
     }

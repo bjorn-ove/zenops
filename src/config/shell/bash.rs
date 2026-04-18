@@ -31,9 +31,11 @@ impl StoredBashConfig {
 
         #[cfg(target_os = "macos")]
         {
-            _ = writeln!(bash_config, "eval \"$(/opt/homebrew/bin/brew shellenv)\"");
+            _ = writeln!(bash_config, "# Homebrew environment (PATH, MANPATH, INFOPATH)");
+            _ = writeln!(bash_config, "eval \"$(/opt/homebrew/bin/brew shellenv bash)\"");
             bash_config.push('\n');
 
+            _ = writeln!(bash_config, "# Bash completions (brew-managed)");
             _ = writeln!(
                 bash_config,
                 "if [ -f $(brew --prefix)/etc/bash_completion ]; then"
@@ -43,7 +45,8 @@ impl StoredBashConfig {
             bash_config.push('\n');
         }
 
-        if config.has_cargo_packages() {
+        if config.has_cargo() {
+            _ = writeln!(bash_config, "# Rust/Cargo environment");
             _ = writeln!(bash_config, ". \"$HOME/.cargo/env\"");
             bash_config.push('\n');
         }
@@ -65,15 +68,31 @@ impl StoredBashConfig {
         _ = writeln!(bash_config, "[ -f ~/.bashrc ] && source ~/.bashrc");
         bash_config.push('\n');
 
+        if config.has_sk() {
+            _ = writeln!(bash_config, "# Setup sk (fuzzy find)");
+            _ = writeln!(
+                bash_config,
+                "export SKIM_DEFAULT_COMMAND=\"fd --type f --hidden --exclude .git\""
+            );
+            _ = writeln!(bash_config, "source <(sk --shell bash)");
+            _ = writeln!(bash_config, "source <(sk --shell bash --shell-bindings)");
+            bash_config.push('\n');
+        }
+
+        if config.has_starship() {
+            _ = writeln!(bash_config, "# Setup starship (fancy prompt)");
+            _ = writeln!(bash_config, "eval \"$(starship init bash)\"");
+            bash_config.push('\n');
+        }
+
         if let Some(path) = config.path_variable() {
             _ = writeln!(bash_config, "export PATH={path}");
             bash_config.push('\n');
         }
 
         #[cfg(target_os = "macos")]
-        if let Some(spec) = config.stored.packages.0.get("llvm")
-            && spec.is_brew()
-        {
+        if config.has_brew_llvm() {
+            _ = writeln!(bash_config, "# LLVM compiler flags (brew-managed)");
             _ = writeln!(bash_config, "export LDFLAGS=-L/opt/homebrew/opt/llvm/lib");
             _ = writeln!(
                 bash_config,

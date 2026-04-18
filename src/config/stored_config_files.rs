@@ -4,7 +4,7 @@ use safe_relative_path::{SafeRelativePathBuf, SinglePathComponent};
 
 use crate::config_files::{ConfigFilePath, ConfigFileSource};
 
-use super::{Config, ConfigFiles, Error, StoredRelativePath};
+use super::{Config, ConfigFiles, Error, stored_relative_path::StoredRelativePath};
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]

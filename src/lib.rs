@@ -3,10 +3,9 @@ pub mod config_files;
 pub mod error;
 pub mod git;
 pub mod output;
-mod package_spec;
 
 use clap::Subcommand;
-use xshell::{Shell, cmd};
+use xshell::Shell;
 
 use crate::{
     config::Config,
@@ -52,46 +51,6 @@ impl Cmd {
     }
 }
 
-fn install_or_upgrade_packages(sh: &Shell, config: &Config) -> Result<(), Error> {
-    #[cfg(target_os = "macos")]
-    {
-        {
-            let packages = config.brew_brew_package_strings();
-            if !packages.is_empty() {
-                log::info!("Installing {} packages using brew", packages.len());
-                cmd!(sh, "brew install {packages...}").run()?;
-            } else {
-                log::info!("No brew packages to install");
-            }
-        }
-
-        {
-            let packages = config.brew_cask_package_strings();
-            if !packages.is_empty() {
-                log::info!("Installing {} cask packages using brew", packages.len());
-                cmd!(sh, "brew install --cask {packages...}").run()?;
-            } else {
-                log::info!("No brew cask packages to install");
-            }
-        }
-    }
-
-    {
-        let packages = config.cargo_crates_io_packages();
-        if !packages.is_empty() {
-            log::info!(
-                "Installing {} packages from crates.io using cargo",
-                packages.len()
-            );
-            cmd!(sh, "cargo install-update {packages...}").run()?;
-        } else {
-            log::info!("No cargo crates.io packages to install");
-        }
-    }
-
-    Ok(())
-}
-
 pub fn real_main(
     args: &Args,
     command: &Cmd,
@@ -108,7 +67,6 @@ pub fn real_main(
             config_files.apply_changes(output)?;
         }
         Cmd::Upgrade { pull_config: _ } => {
-            install_or_upgrade_packages(&sh, &config)?;
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output)?;
         }
