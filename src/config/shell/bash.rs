@@ -43,6 +43,11 @@ impl StoredBashConfig {
             bash_config.push('\n');
         }
 
+        if config.has_cargo_packages() {
+            _ = writeln!(bash_config, ". \"$HOME/.cargo/env\"");
+            bash_config.push('\n');
+        }
+
         if !alias.is_empty() {
             for (name, value) in alias {
                 _ = writeln!(bash_config, "alias {name}={value}");

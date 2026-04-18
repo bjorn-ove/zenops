@@ -116,6 +116,10 @@ impl<'dirs> Config<'dirs> {
         ret
     }
 
+    pub fn has_cargo_packages(&self) -> bool {
+        self.stored.packages.0.values().any(|spec| spec.is_cargo())
+    }
+
     pub fn path_variable(&self) -> Option<String> {
         let mut paths = "$PATH".to_string();
 
@@ -134,10 +138,6 @@ impl<'dirs> Config<'dirs> {
         }
 
         paths.push_str(":~/.local/bin");
-
-        if self.stored.packages.0.values().any(|spec| spec.is_cargo()) {
-            paths.push_str(":~/.cargo/bin");
-        }
 
         Some(paths)
     }
