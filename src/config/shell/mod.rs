@@ -4,6 +4,7 @@ use crate::{
     error::Error,
 };
 
+mod common;
 mod bash;
 mod zsh;
 
@@ -24,8 +25,8 @@ impl StoredShellEnvironment {
     ) -> Result<(), Error> {
         match self {
             Self::None => Ok(()),
-            Self::Bash(bash_config) => bash_config.make_config_files(config, config_files),
-            Self::Zsh(zsh_config) => zsh_config.make_config_files(config, config_files),
+            Self::Bash(shell_config) => bash::make_config_files(shell_config, config, config_files),
+            Self::Zsh(shell_config) => zsh::make_config_files(shell_config, config, config_files),
         }
     }
 }
