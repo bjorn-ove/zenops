@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use zenops::config_files::ConfigFileDirs;
 
 #[derive(Parser, Debug)]
@@ -25,6 +25,12 @@ fn main() {
         output,
         command,
     } = Cli::parse();
+
+    if let zenops::Cmd::Completions { shell } = &command {
+        let mut cmd = Cli::command();
+        clap_complete::generate(*shell, &mut cmd, "zenops", &mut std::io::stdout());
+        return;
+    }
 
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)

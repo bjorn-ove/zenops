@@ -373,3 +373,69 @@ fn symlinked_configs() {
         })
     );
 }
+
+#[test]
+fn completions_subcommand_generates_bash_script() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_zenops"))
+        .args(["completions", "bash"])
+        .output()
+        .expect("running zenops completions bash should succeed");
+    assert!(
+        output.status.success(),
+        "zenops completions bash exited {}; stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let script = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        script.contains("_zenops"),
+        "expected _zenops function in bash completions, got:\n{script}"
+    );
+    assert!(
+        script.contains("complete "),
+        "expected `complete` directive in bash completions, got:\n{script}"
+    );
+}
+
+#[test]
+fn completions_subcommand_generates_zsh_script() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_zenops"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("running zenops completions zsh should succeed");
+    assert!(output.status.success());
+    let script = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        script.contains("#compdef zenops"),
+        "expected `#compdef zenops` directive in zsh completions, got:\n{script}"
+    );
+}
+
+#[test]
+fn apply_injects_zenops_completions_into_generated_bash_profile() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+
+    env.run(&Cmd::Apply { pull_config: false })
+        .expect("apply should succeed");
+
+    let rc_path = env.resolve_path(srpath!("home/bob/.zenops_bash_profile"));
+    let rc = std::fs::read_to_string(&rc_path)
+        .unwrap_or_else(|e| panic!("failed to read {rc_path:?}: {e}"));
+
+    assert!(
+        rc.contains("# zenops shell completions"),
+        "expected zenops completions comment in generated bash profile, got:\n{rc}"
+    );
+    assert!(
+        rc.contains("source <(zenops completions bash)"),
+        "expected source line for zenops completions in generated bash profile, got:\n{rc}"
+    );
+}

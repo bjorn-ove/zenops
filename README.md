@@ -40,6 +40,7 @@ symlinks = ["config.toml"]     # listed files are symlinked; others are generate
 - `zenops status` — show what would change. `--diff` shows file diffs.
 - `zenops pkg` — list configured packages and whether their dependencies are met. `--all` includes disabled packages; `--all-hints` shows every install hint.
 - `zenops repo <git-subcommand>` — run a passthrough git command inside the zenops config repo.
+- `zenops completions <bash|zsh|fish|elvish|powershell>` — print a shell completion script to stdout. Normally sourced automatically via the built-in `zenops` pkg; only needed for manual setup.
 
 ## License
 

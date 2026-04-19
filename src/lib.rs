@@ -73,13 +73,23 @@ pub enum Cmd {
         #[command(subcommand)]
         command: GitCmd,
     },
+    /// Print a shell completion script for zenops to stdout.
+    ///
+    /// Normally sourced automatically by the built-in `zenops` pkg; you
+    /// don't need to invoke this by hand.
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
 }
 
 impl Cmd {
     fn should_update_self(&self, _args: &Args) -> bool {
         match *self {
             Cmd::Apply { pull_config, .. } => pull_config,
-            Cmd::Status { .. } | Cmd::Pkg { .. } | Cmd::Repo { .. } => false,
+            Cmd::Status { .. } | Cmd::Pkg { .. } | Cmd::Repo { .. } | Cmd::Completions { .. } => {
+                false
+            }
         }
     }
 }
@@ -90,6 +100,12 @@ pub fn real_main(
     dirs: &ConfigFileDirs,
     output: &mut dyn Output,
 ) -> Result<(), Error> {
+    if let Cmd::Completions { .. } = command {
+        // Handled by main.rs where the top-level `Cli` is in scope;
+        // real_main must not touch config because completions run at every
+        // interactive shell startup.
+        return Ok(());
+    }
     let sh = Shell::new().unwrap();
     let config = Config::load(dirs, &sh, command.should_update_self(args))?;
     let mut config_files = ConfigFiles::new(dirs);
@@ -124,6 +140,7 @@ pub fn real_main(
         Cmd::Repo { command } => {
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
         }
+        Cmd::Completions { .. } => unreachable!("handled before Config::load"),
     }
 
     Ok(())
