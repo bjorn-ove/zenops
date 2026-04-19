@@ -1,15 +1,20 @@
+mod pkg;
 mod shell;
 mod stored_config_files;
 mod stored_relative_path;
 
 use std::{path::Path, sync::Arc};
 
+use indexmap::IndexMap;
+use smol_str::SmolStr;
 use safe_relative_path::srpath;
-use xshell::{Shell, cmd};
+use xshell::cmd;
 
 use crate::{
     config::{
-        shell::StoredShellEnvironment, stored_config_files::StoredConfigFilesBase,
+        pkg::{PkgConfig, Shell, ShellInitAction, StoredPkgConfig},
+        shell::StoredShellEnvironment,
+        stored_config_files::StoredConfigFilesBase,
     },
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
@@ -22,16 +27,37 @@ use crate::{
 struct StoredConfig {
     shell: StoredShellEnvironment,
     configs: Vec<StoredConfigFilesBase>,
+    pkg: IndexMap<SmolStr, StoredPkgConfig>,
 }
 
 pub struct Config<'dirs> {
     dirs: &'dirs ConfigFileDirs,
     zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
+    pkgs: IndexMap<SmolStr, PkgConfig>,
+}
+
+fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(b), toml::Value::Table(o)) => {
+            for (k, v) in o {
+                deep_merge(
+                    b.entry(k)
+                        .or_insert(toml::Value::Table(Default::default())),
+                    v,
+                );
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 impl<'dirs> Config<'dirs> {
-    pub fn load(dirs: &'dirs ConfigFileDirs, sh: &Shell, update_self: bool) -> Result<Self, Error> {
+    pub fn load(
+        dirs: &'dirs ConfigFileDirs,
+        sh: &xshell::Shell,
+        update_self: bool,
+    ) -> Result<Self, Error> {
         if update_self {
             let zenops_dir = dirs.zenops();
             cmd!(sh, "git -C {zenops_dir} pull --rebase").run()?;
@@ -41,24 +67,33 @@ impl<'dirs> Config<'dirs> {
             ResolvedConfigFilePath::resolve(ConfigFilePath::Zenops(Arc::from(srpath!(""))), dirs);
 
         let path = dirs.zenops().join("config.toml");
+
+        let defaults_str = include_str!("config/defaults.toml");
+        let mut merged: toml::Value = toml::from_str(defaults_str)
+            .map_err(|e| Error::ParseDb(std::path::PathBuf::from("<defaults>"), e))?;
+
+        let user_bytes = std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?;
+        let user_val: toml::Value = toml::from_slice(&user_bytes)
+            .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
+
+        deep_merge(&mut merged, user_val);
+
+        let stored: StoredConfig = merged
+            .try_into()
+            .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
+
+        let pkgs = stored
+            .pkg
+            .iter()
+            .filter_map(|(k, v)| v.clone().resolve().map(|r| (k.clone(), r)))
+            .collect();
+
         Ok(Self {
             dirs,
             zenops_repo,
-            stored: toml::from_slice(
-                &std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?,
-            )
-            .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?,
+            stored,
+            pkgs,
         })
-    }
-
-    pub fn has_cargo(&self) -> bool {
-        self.dirs.home().join(".cargo/env").exists()
-    }
-
-    pub fn has_starship(&self) -> bool {
-        self.dirs.home().join(".cargo/bin/starship").exists()
-            || Path::new("/opt/homebrew/bin/starship").exists()
-            || Path::new("/usr/local/bin/starship").exists()
     }
 
     pub fn has_sk(&self) -> bool {
@@ -75,6 +110,22 @@ impl<'dirs> Config<'dirs> {
     #[cfg(target_os = "macos")]
     pub fn has_brew_python(&self) -> bool {
         Path::new("/opt/homebrew/opt/python").exists()
+    }
+
+    pub fn env_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
+        self.pkgs
+            .values()
+            .filter(|p| p.is_installed(self.dirs.home()))
+            .flat_map(|p| p.env_init.for_shell(shell))
+            .collect()
+    }
+
+    pub fn interactive_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
+        self.pkgs
+            .values()
+            .filter(|p| p.is_installed(self.dirs.home()))
+            .flat_map(|p| p.interactive_init.for_shell(shell))
+            .collect()
     }
 
     pub fn path_variable(&self) -> Option<String> {
@@ -97,7 +148,7 @@ impl<'dirs> Config<'dirs> {
 
     pub fn update_config_files(
         &self,
-        _sh: &Shell,
+        _sh: &xshell::Shell,
         config_files: &mut ConfigFiles<'_>,
     ) -> Result<(), Error> {
         self.stored.shell.update_config_files(self, config_files)?;
@@ -107,7 +158,7 @@ impl<'dirs> Config<'dirs> {
         Ok(())
     }
 
-    pub fn check_own_status(&self, sh: &Shell, output: &mut dyn Output) -> Result<(), Error> {
+    pub fn check_own_status(&self, sh: &xshell::Shell, output: &mut dyn Output) -> Result<(), Error> {
         let git = Git::new(self.dirs.zenops(), sh);
         if git.is_git_repo()? {
             for status in git.status()? {

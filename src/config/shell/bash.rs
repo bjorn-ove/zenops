@@ -2,11 +2,11 @@ use safe_relative_path::srpath;
 use std::fmt::Write as _;
 
 use super::common::{
-    StoredShellConfig, write_aliases, write_brew_llvm_flags, write_cargo_env, write_environment,
-    write_path_variable, write_sk_setup, write_starship_setup,
+    StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment, write_path_variable,
+    write_pkg_inits, write_sk_setup,
 };
 use crate::{
-    config::Config,
+    config::{Config, pkg::Shell},
     config_files::{ConfigFilePath, ConfigFileSource, ConfigFiles},
     error::Error,
 };
@@ -42,9 +42,7 @@ pub(super) fn make_config_files(
         bash_config.push('\n');
     }
 
-    if config.has_cargo() {
-        write_cargo_env(&mut bash_config);
-    }
+    write_pkg_inits(&mut bash_config, &config.env_pkg_inits(Shell::Bash));
 
     write_aliases(&mut bash_config, alias);
     write_environment(&mut bash_config, environment);
@@ -56,9 +54,7 @@ pub(super) fn make_config_files(
         write_sk_setup(&mut bash_config, "bash");
     }
 
-    if config.has_starship() {
-        write_starship_setup(&mut bash_config, "bash");
-    }
+    write_pkg_inits(&mut bash_config, &config.interactive_pkg_inits(Shell::Bash));
 
     if let Some(path) = config.path_variable() {
         write_path_variable(&mut bash_config, &path);

@@ -2,16 +2,39 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::fmt::Write as _;
 
+use crate::config::pkg::ShellInitAction;
+
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 pub(in super::super) struct StoredShellConfig {
     pub(super) environment: IndexMap<SmolStr, SmolStr>,
     pub(super) alias: IndexMap<SmolStr, SmolStr>,
 }
 
-pub(super) fn write_cargo_env(buf: &mut String) {
-    _ = writeln!(buf, "# Rust/Cargo environment");
-    _ = writeln!(buf, ". \"$HOME/.cargo/env\"");
-    buf.push('\n');
+pub(super) fn render_posix(action: &ShellInitAction) -> String {
+    let (comment, line) = match action {
+        ShellInitAction::Source { path, comment } => {
+            let posix = if let Some(rest) = path.strip_prefix("~/") {
+                format!("$HOME/{rest}")
+            } else {
+                path.clone()
+            };
+            (comment.as_deref(), format!(r#". "{posix}""#))
+        }
+        ShellInitAction::EvalOutput { command, comment } => {
+            (comment.as_deref(), format!(r#"eval "$({})""#, command.join(" ")))
+        }
+    };
+    match comment {
+        Some(c) => format!("# {c}\n{line}"),
+        None => line,
+    }
+}
+
+pub(super) fn write_pkg_inits(buf: &mut String, actions: &[&ShellInitAction]) {
+    for action in actions {
+        _ = writeln!(buf, "{}", render_posix(action));
+        buf.push('\n');
+    }
 }
 
 pub(super) fn write_environment(buf: &mut String, environment: &IndexMap<SmolStr, SmolStr>) {
@@ -53,11 +76,5 @@ pub(super) fn write_sk_setup(buf: &mut String, shell_name: &str) {
     );
     _ = writeln!(buf, "source <(sk --shell {shell_name})");
     _ = writeln!(buf, "source <(sk --shell {shell_name} --shell-bindings)");
-    buf.push('\n');
-}
-
-pub(super) fn write_starship_setup(buf: &mut String, shell_name: &str) {
-    _ = writeln!(buf, "# Setup starship (fancy prompt)");
-    _ = writeln!(buf, "eval \"$(starship init {shell_name})\"");
     buf.push('\n');
 }

@@ -1,0 +1,37 @@
+[pkg.cargo]
+enable = "detect"
+
+[[pkg.cargo.detect]]
+type = "file"
+path = "~/.cargo/env"
+
+[[pkg.cargo.shell.env_init.bash]]
+type = "source"
+path = "~/.cargo/env"
+comment = "Rust/Cargo environment"
+
+[[pkg.cargo.shell.env_init.zsh]]
+type = "source"
+path = "~/.cargo/env"
+comment = "Rust/Cargo environment"
+
+[pkg.starship]
+enable = "detect"
+
+[[pkg.starship.detect]]
+type = "file"
+path = "~/.cargo/bin/starship"
+
+[[pkg.starship.detect]]
+type = "which"
+binary = "starship"
+
+[[pkg.starship.shell.interactive_init.bash]]
+type = "eval_output"
+command = ["starship", "init", "bash"]
+comment = "Setup starship (fancy prompt)"
+
+[[pkg.starship.shell.interactive_init.zsh]]
+type = "eval_output"
+command = ["starship", "init", "zsh"]
+comment = "Setup starship (fancy prompt)"
