@@ -10,10 +10,10 @@ pub fn srpath(input: TokenStream) -> TokenStream {
 
     match RelativePath::from_path(&arg) {
         Ok(path) => {
-            if safe_relative_path_validator::is_safe_relative_path(path) {
+            if zenops_safe_relative_path_validator::is_safe_relative_path(path) {
                 quote! {
                     unsafe {
-                        ::safe_relative_path::SafeRelativePath::new_unchecked_from_str(#arg)
+                        ::zenops_safe_relative_path::SafeRelativePath::new_unchecked_from_str(#arg)
                     }
                 }
                 .into()

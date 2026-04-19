@@ -1,0 +1,19 @@
+[package]
+name = "zenops-safe-relative-path"
+description = "Relative path type that statically prevents `..` traversal."
+readme = "README.md"
+categories = ["filesystem", "data-structures"]
+keywords = ["path", "relative", "safe", "traversal"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+relative-path = "2.0.1"
+thiserror.workspace = true
+zenops-safe-relative-path-macros = { path = "../zenops-safe-relative-path-macros", version = "0.1.0" }
+zenops-safe-relative-path-validator = { path = "../zenops-safe-relative-path-validator", version = "0.1.0" }
+serde.workspace = true
+smol_str.workspace = true

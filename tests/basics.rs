@@ -1,4 +1,3 @@
-use safe_relative_path::srpath;
 use similar_asserts::assert_eq;
 use zenops::{
     Cmd, ColorChoice,
@@ -7,6 +6,7 @@ use zenops::{
     git::GitFileStatus,
     output::{AppliedAction, Status, SymlinkStatus},
 };
+use zenops_safe_relative_path::srpath;
 
 use test_env::{Entry, Output, paths};
 

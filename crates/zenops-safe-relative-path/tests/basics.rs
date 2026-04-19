@@ -1,4 +1,4 @@
-use safe_relative_path::SafeRelativePath;
+use zenops_safe_relative_path::SafeRelativePath;
 
 #[test]
 fn test_basic_paths() {

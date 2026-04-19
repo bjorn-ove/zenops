@@ -1,7 +1,14 @@
 [package]
 name = "zenops"
-version = "0.1.0"
-edition = "2024"
+description = "Declarative system configuration management for shell config and dotfiles."
+readme = "README.md"
+categories = ["command-line-utilities", "config"]
+keywords = ["dotfiles", "config", "shell", "system"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [dependencies]
 clap = { version = "4.5.48", features = ["derive"] }
@@ -9,7 +16,7 @@ env_logger = "0.11.8"
 home = "0.5.11"
 indexmap = { version = "2.11.4", features = ["serde"] }
 log = "0.4.28"
-safe-relative-path = { version = "0.1.0", path = "crates/safe-relative-path" }
+zenops-safe-relative-path = { version = "0.1.0", path = "crates/zenops-safe-relative-path" }
 semver = "1.0.27"
 serde.workspace = true
 smol_str.workspace = true
@@ -20,7 +27,14 @@ xshell = "0.2.7"
 
 [workspace]
 resolver = "3"
-members = ["crates/safe-relative-path", "crates/safe-relative-path-macros", "crates/safe-relative-path-validator"]
+members = ["crates/zenops-safe-relative-path", "crates/zenops-safe-relative-path-macros", "crates/zenops-safe-relative-path-validator"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90.0"
+license = "MIT OR Apache-2.0"
+authors = ["Bjorn Ove Hay Andersen <bjrnove@gmail.com>"]
 
 [workspace.dependencies]
 relative-path = "2.0.1"

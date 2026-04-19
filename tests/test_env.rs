@@ -1,4 +1,3 @@
-use safe_relative_path::{SafeRelativePath, srpath};
 use std::{io::Write, path::PathBuf, sync::Arc};
 use xshell::{Shell, cmd};
 use zenops::{
@@ -7,9 +6,10 @@ use zenops::{
     error::Error,
     output::{AppliedAction, ResolvedConfigFilePath, Status},
 };
+use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
 pub mod paths {
-    use safe_relative_path::{SafeRelativePath, srpath};
+    use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
     pub const HOME_DIR: &SafeRelativePath = srpath!("home/bob");
     pub const CONFIG_DIR: &SafeRelativePath = srpath!("home/bob/.config");

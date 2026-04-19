@@ -15,7 +15,7 @@ pub enum Error {
     #[error("Failed to write config file {0}: {1}")]
     FailedToWriteConfig(ResolvedConfigFilePath, std::io::Error),
     #[error(transparent)]
-    SafeRelativePath(safe_relative_path::error::Error),
+    SafeRelativePath(zenops_safe_relative_path::error::Error),
     #[error("Not creating symlink {symlink} -> {real}: a file already exists")]
     RefusingToOverwriteFileWithSymlink {
         real: ResolvedConfigFilePath,
@@ -73,8 +73,8 @@ impl From<xshell::Error> for Error {
     }
 }
 
-impl From<safe_relative_path::error::Error> for Error {
-    fn from(e: safe_relative_path::error::Error) -> Self {
+impl From<zenops_safe_relative_path::error::Error> for Error {
+    fn from(e: zenops_safe_relative_path::error::Error) -> Self {
         Self::SafeRelativePath(e)
     }
 }

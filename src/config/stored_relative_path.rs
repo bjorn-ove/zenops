@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::de;
 
-use safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
+use zenops_safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
 
 /// Represents a relative path that cannot leave its parent directory,
 /// unless there is filesystem shenanigans (e.g. symlinks).

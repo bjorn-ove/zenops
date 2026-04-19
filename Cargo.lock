@@ -410,36 +410,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "safe-relative-path"
-version = "0.1.0"
-dependencies = [
- "relative-path",
- "safe-relative-path-macros",
- "safe-relative-path-validator",
- "serde",
- "smol_str",
- "thiserror",
-]
-
-[[package]]
-name = "safe-relative-path-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "relative-path",
- "safe-relative-path-validator",
- "syn",
-]
-
-[[package]]
-name = "safe-relative-path-validator"
-version = "0.1.0"
-dependencies = [
- "relative-path",
-]
-
-[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -828,7 +798,6 @@ dependencies = [
  "home",
  "indexmap",
  "log",
- "safe-relative-path",
  "semver",
  "serde",
  "similar",
@@ -838,4 +807,35 @@ dependencies = [
  "thiserror",
  "toml",
  "xshell",
+ "zenops-safe-relative-path",
+]
+
+[[package]]
+name = "zenops-safe-relative-path"
+version = "0.1.0"
+dependencies = [
+ "relative-path",
+ "serde",
+ "smol_str",
+ "thiserror",
+ "zenops-safe-relative-path-macros",
+ "zenops-safe-relative-path-validator",
+]
+
+[[package]]
+name = "zenops-safe-relative-path-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "relative-path",
+ "syn",
+ "zenops-safe-relative-path-validator",
+]
+
+[[package]]
+name = "zenops-safe-relative-path-validator"
+version = "0.1.0"
+dependencies = [
+ "relative-path",
 ]

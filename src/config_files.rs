@@ -11,7 +11,7 @@ use crate::{
     error::Error,
     output::{AppliedAction, FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
 };
-use safe_relative_path::SafeRelativePath;
+use zenops_safe_relative_path::SafeRelativePath;
 
 #[derive(Clone, PartialEq)]
 pub enum ConfigFilePath {

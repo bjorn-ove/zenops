@@ -1,5 +1,5 @@
-use safe_relative_path::srpath;
 use std::fmt::Write as _;
+use zenops_safe_relative_path::srpath;
 
 use super::common::{
     StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment,

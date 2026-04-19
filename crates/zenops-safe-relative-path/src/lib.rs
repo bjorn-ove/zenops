@@ -14,8 +14,8 @@ pub mod error;
 mod single_path_component;
 
 pub use buf::SafeRelativePathBuf;
-pub use safe_relative_path_macros::srpath;
 pub use single_path_component::SinglePathComponent;
+pub use zenops_safe_relative_path_macros::srpath;
 
 /// Represents a relative path that is guaranteed to not perform traversal using ..
 ///
@@ -47,7 +47,7 @@ impl SafeRelativePath {
     {
         let v = v.as_ref();
 
-        if !safe_relative_path_validator::is_safe_relative_path(v) {
+        if !zenops_safe_relative_path_validator::is_safe_relative_path(v) {
             return Err(Error::PathGoesOutsideParent(v.to_relative_path_buf()));
         }
 

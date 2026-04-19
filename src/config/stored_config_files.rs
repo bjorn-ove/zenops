@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use safe_relative_path::{SafeRelativePathBuf, SinglePathComponent};
+use zenops_safe_relative_path::{SafeRelativePathBuf, SinglePathComponent};
 
 use crate::config_files::{ConfigFilePath, ConfigFileSource};
 

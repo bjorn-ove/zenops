@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
 use xshell::{Shell, cmd};
+use zenops_safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
 
 use crate::error::Error;
 

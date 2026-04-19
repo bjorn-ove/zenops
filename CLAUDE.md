@@ -20,9 +20,9 @@ ZenOps is a Rust (edition 2024) system configuration management tool. It reads a
 
 **Workspace layout:**
 - `src/` — main binary crate
-- `crates/safe-relative-path` — custom path type that prevents `..` traversal; used throughout for all managed file paths
-- `crates/safe-relative-path-macros` — `srpath!()` compile-time macro
-- `crates/safe-relative-path-validator` — shared validation logic
+- `crates/zenops-safe-relative-path` — custom path type that prevents `..` traversal; used throughout for all managed file paths
+- `crates/zenops-safe-relative-path-macros` — `srpath!()` compile-time macro
+- `crates/zenops-safe-relative-path-validator` — shared validation logic
 
 **Command flow (`src/`):**
 1. `main.rs` — clap CLI, calls into `lib.rs`

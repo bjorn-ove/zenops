@@ -6,9 +6,9 @@ mod stored_relative_path;
 use std::{path::Path, sync::Arc};
 
 use indexmap::IndexMap;
-use safe_relative_path::srpath;
 use smol_str::SmolStr;
 use xshell::cmd;
+use zenops_safe_relative_path::srpath;
 
 pub use crate::config::pkg::PkgConfig;
 
