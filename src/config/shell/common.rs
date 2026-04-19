@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::fmt::Write as _;
+use std::path::Path;
 
 use crate::config::pkg::{ActionKind, ShellInitAction};
 
@@ -65,10 +66,10 @@ pub(super) fn write_path_variable(buf: &mut String, path: &str) {
     buf.push('\n');
 }
 
-#[cfg(target_os = "macos")]
-pub(super) fn write_brew_llvm_flags(buf: &mut String) {
+pub(super) fn write_brew_llvm_flags(buf: &mut String, brew_prefix: &Path) {
+    let prefix = brew_prefix.display();
     _ = writeln!(buf, "# LLVM compiler flags (brew-managed)");
-    _ = writeln!(buf, "export LDFLAGS=-L/opt/homebrew/opt/llvm/lib");
-    _ = writeln!(buf, "export CPPFLAGS=-L/opt/homebrew/opt/llvm/include");
+    _ = writeln!(buf, "export LDFLAGS=-L{prefix}/opt/llvm/lib");
+    _ = writeln!(buf, "export CPPFLAGS=-L{prefix}/opt/llvm/include");
     buf.push('\n');
 }

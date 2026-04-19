@@ -3,7 +3,10 @@ mod shell;
 mod stored_config_files;
 mod stored_relative_path;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 use smol_str::SmolStr;
@@ -37,6 +40,16 @@ pub struct Config<'dirs> {
     zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
     pkgs: IndexMap<SmolStr, PkgConfig>,
+    brew_prefix: Option<PathBuf>,
+}
+
+fn detect_brew_prefix() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
+    CANDIDATES
+        .iter()
+        .map(Path::new)
+        .find(|prefix| prefix.join("bin/brew").exists())
+        .map(PathBuf::from)
 }
 
 fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
@@ -93,17 +106,24 @@ impl<'dirs> Config<'dirs> {
             zenops_repo,
             stored,
             pkgs,
+            brew_prefix: detect_brew_prefix(),
         })
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn has_brew_llvm(&self) -> bool {
-        Path::new("/opt/homebrew/opt/llvm").exists()
+    pub fn brew_prefix(&self) -> Option<&Path> {
+        self.brew_prefix.as_deref()
     }
 
-    #[cfg(target_os = "macos")]
+    pub fn has_brew_llvm(&self) -> bool {
+        self.brew_prefix
+            .as_ref()
+            .is_some_and(|p| p.join("opt/llvm").exists())
+    }
+
     pub fn has_brew_python(&self) -> bool {
-        Path::new("/opt/homebrew/opt/python").exists()
+        self.brew_prefix
+            .as_ref()
+            .is_some_and(|p| p.join("opt/python").exists())
     }
 
     pub fn pkgs(&self) -> &IndexMap<SmolStr, PkgConfig> {
@@ -133,12 +153,10 @@ impl<'dirs> Config<'dirs> {
     pub fn path_variable(&self) -> Option<String> {
         let mut paths = "$PATH".to_string();
 
-        #[cfg(target_os = "macos")]
         if self.has_brew_python() {
             paths.push_str(":$(brew --prefix python)/libexec/bin");
         }
 
-        #[cfg(target_os = "macos")]
         if self.has_brew_llvm() {
             paths.insert_str(0, "$(brew --prefix)/opt/llvm/bin:");
         }
