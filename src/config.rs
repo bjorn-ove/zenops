@@ -1,4 +1,4 @@
-mod pkg;
+pub(crate) mod pkg;
 mod shell;
 mod stored_config_files;
 mod stored_relative_path;
@@ -6,13 +6,15 @@ mod stored_relative_path;
 use std::{path::Path, sync::Arc};
 
 use indexmap::IndexMap;
-use smol_str::SmolStr;
 use safe_relative_path::srpath;
+use smol_str::SmolStr;
 use xshell::cmd;
+
+pub use crate::config::pkg::PkgConfig;
 
 use crate::{
     config::{
-        pkg::{PkgConfig, Shell, ShellInitAction, StoredPkgConfig},
+        pkg::{Shell, ShellInitAction, StoredPkgConfig},
         shell::StoredShellEnvironment,
         stored_config_files::StoredConfigFilesBase,
     },
@@ -42,8 +44,7 @@ fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
         (toml::Value::Table(b), toml::Value::Table(o)) => {
             for (k, v) in o {
                 deep_merge(
-                    b.entry(k)
-                        .or_insert(toml::Value::Table(Default::default())),
+                    b.entry(k).or_insert(toml::Value::Table(Default::default())),
                     v,
                 );
             }
@@ -73,8 +74,8 @@ impl<'dirs> Config<'dirs> {
             .map_err(|e| Error::ParseDb(std::path::PathBuf::from("<defaults>"), e))?;
 
         let user_bytes = std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?;
-        let user_val: toml::Value = toml::from_slice(&user_bytes)
-            .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
+        let user_val: toml::Value =
+            toml::from_slice(&user_bytes).map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
         deep_merge(&mut merged, user_val);
 
@@ -84,9 +85,7 @@ impl<'dirs> Config<'dirs> {
 
         let mut pkgs = IndexMap::new();
         for (k, v) in stored.pkg.iter() {
-            if let Some(resolved) = v.clone().resolve(k)? {
-                pkgs.insert(k.clone(), resolved);
-            }
+            pkgs.insert(k.clone(), v.clone().resolve(k)?);
         }
 
         Ok(Self {
@@ -107,7 +106,15 @@ impl<'dirs> Config<'dirs> {
         Path::new("/opt/homebrew/opt/python").exists()
     }
 
-    pub fn env_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
+    pub fn pkgs(&self) -> &IndexMap<SmolStr, PkgConfig> {
+        &self.pkgs
+    }
+
+    pub fn home(&self) -> &Path {
+        self.dirs.home()
+    }
+
+    pub(crate) fn env_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
         self.pkgs
             .values()
             .filter(|p| p.is_installed(self.dirs.home()))
@@ -115,7 +122,7 @@ impl<'dirs> Config<'dirs> {
             .collect()
     }
 
-    pub fn interactive_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
+    pub(crate) fn interactive_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
         self.pkgs
             .values()
             .filter(|p| p.is_installed(self.dirs.home()))
@@ -153,7 +160,11 @@ impl<'dirs> Config<'dirs> {
         Ok(())
     }
 
-    pub fn check_own_status(&self, sh: &xshell::Shell, output: &mut dyn Output) -> Result<(), Error> {
+    pub fn check_own_status(
+        &self,
+        sh: &xshell::Shell,
+        output: &mut dyn Output,
+    ) -> Result<(), Error> {
         let git = Git::new(self.dirs.zenops(), sh);
         if git.is_git_repo()? {
             for status in git.status()? {

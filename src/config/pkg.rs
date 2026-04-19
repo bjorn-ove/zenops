@@ -13,7 +13,7 @@ pub(crate) enum Shell {
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum PkgEnable {
+pub(crate) enum PkgEnable {
     #[default]
     Detect,
     On,
@@ -34,12 +34,41 @@ impl DetectStrategy {
                 let expanded = path.replacen('~', &home.to_string_lossy(), 1);
                 Path::new(&expanded).exists()
             }
-            Self::Which { binary } => std::env::var("PATH")
-                .unwrap_or_default()
-                .split(':')
-                .any(|dir| Path::new(dir).join(binary).is_file()),
+            Self::Which { binary } => which_on_path(binary),
         }
     }
+}
+
+impl std::fmt::Display for DetectStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File { path } => write!(f, "{path}"),
+            Self::Which { binary } => write!(f, "which {binary}"),
+        }
+    }
+}
+
+pub(crate) fn which_on_path(binary: &str) -> bool {
+    std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .any(|dir| Path::new(dir).join(binary).is_file())
+}
+
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct InstallHint {
+    pub brew: BrewHint,
+    // Future package managers should be added as additional REQUIRED fields here
+    // (e.g. apt, pacman, yum, dnf, zypper, apk, pkg) and wired into
+    // `pkg_manager::DetectedPackageManager::{packages_for, install_command}`.
+    // Keeping them required guarantees cross-manager completeness at parse time.
+}
+
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BrewHint {
+    pub packages: Vec<String>,
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
@@ -62,7 +91,7 @@ pub enum ActionKind {
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
-pub(super) struct PerShellActions {
+pub(crate) struct PerShellActions {
     pub bash: Vec<ShellInitAction>,
     pub zsh: Vec<ShellInitAction>,
 }
@@ -78,45 +107,64 @@ impl PerShellActions {
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
-pub(super) struct StoredPkgShellConfig {
+pub(crate) struct StoredPkgShellConfig {
     pub env_init: PerShellActions,
     pub interactive_init: PerShellActions,
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
-#[serde(default)]
-pub(super) struct StoredPkgConfig {
+pub(crate) struct StoredPkgConfig {
+    #[serde(default)]
     pub enable: PkgEnable,
+    #[serde(default)]
     pub detect: Vec<DetectStrategy>,
+    #[serde(default)]
     pub inputs: IndexMap<SmolStr, SmolStr>,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub install_hint: InstallHint,
+    #[serde(default)]
     pub shell: StoredPkgShellConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct PkgConfig {
-    pub enable: PkgEnable,
-    pub detect: Vec<DetectStrategy>,
-    pub env_init: PerShellActions,
-    pub interactive_init: PerShellActions,
+pub struct PkgConfig {
+    pub(super) enable: PkgEnable,
+    pub(super) detect: Vec<DetectStrategy>,
+    pub description: Option<String>,
+    pub install_hint: InstallHint,
+    pub(super) env_init: PerShellActions,
+    pub(super) interactive_init: PerShellActions,
 }
 
 impl StoredPkgConfig {
-    pub fn resolve(self, pkg_name: &SmolStr) -> Result<Option<PkgConfig>, Error> {
-        match self.enable {
-            PkgEnable::Disabled => return Ok(None),
-            PkgEnable::Detect if self.detect.is_empty() => return Ok(None),
-            _ => {}
-        }
+    pub fn resolve(self, pkg_name: &SmolStr) -> Result<PkgConfig, Error> {
+        // A pkg that can never be "installed" (detection will always return false)
+        // won't have its shell actions emitted — so we skip action resolution to
+        // avoid erroring on unresolved inputs that the user will never hit.
+        let can_ever_install = match self.enable {
+            PkgEnable::On => true,
+            PkgEnable::Detect => !self.detect.is_empty(),
+            PkgEnable::Disabled => false,
+        };
 
-        let env_init = resolve_per_shell(self.shell.env_init, &self.inputs, pkg_name)?;
-        let interactive_init = resolve_per_shell(self.shell.interactive_init, &self.inputs, pkg_name)?;
+        let (env_init, interactive_init) = if can_ever_install {
+            (
+                resolve_per_shell(self.shell.env_init, &self.inputs, pkg_name)?,
+                resolve_per_shell(self.shell.interactive_init, &self.inputs, pkg_name)?,
+            )
+        } else {
+            (PerShellActions::default(), PerShellActions::default())
+        };
 
-        Ok(Some(PkgConfig {
+        Ok(PkgConfig {
             enable: self.enable,
             detect: self.detect,
+            description: self.description,
+            install_hint: self.install_hint,
             env_init,
             interactive_init,
-        }))
+        })
     }
 }
 
@@ -126,6 +174,18 @@ impl PkgConfig {
             PkgEnable::On => true,
             PkgEnable::Detect => self.detect.iter().any(|s| s.check(home)),
             PkgEnable::Disabled => false,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self.enable, PkgEnable::Disabled)
+    }
+
+    /// First detect strategy that matches, if any — used for debuggable output.
+    pub fn matched_detect(&self, home: &Path) -> Option<&DetectStrategy> {
+        match self.enable {
+            PkgEnable::Detect => self.detect.iter().find(|s| s.check(home)),
+            PkgEnable::On | PkgEnable::Disabled => None,
         }
     }
 }
@@ -204,7 +264,10 @@ fn substitute_vec(
     command: Vec<String>,
     inputs: &IndexMap<SmolStr, SmolStr>,
 ) -> Result<Vec<String>, SmolStr> {
-    command.into_iter().map(|s| substitute(&s, inputs)).collect()
+    command
+        .into_iter()
+        .map(|s| substitute(&s, inputs))
+        .collect()
 }
 
 fn substitute(s: &str, inputs: &IndexMap<SmolStr, SmolStr>) -> Result<String, SmolStr> {
@@ -239,13 +302,19 @@ mod tests {
     #[test]
     fn substitute_resolves_placeholders() {
         let inputs = inputs(&[("name", "world"), ("greet", "hello")]);
-        assert_eq!(substitute("${greet}, ${name}!", &inputs).unwrap(), "hello, world!");
+        assert_eq!(
+            substitute("${greet}, ${name}!", &inputs).unwrap(),
+            "hello, world!"
+        );
     }
 
     #[test]
     fn substitute_missing_returns_name() {
         let inputs = inputs(&[]);
-        assert_eq!(substitute("a ${missing} b", &inputs), Err(SmolStr::new("missing")));
+        assert_eq!(
+            substitute("a ${missing} b", &inputs),
+            Err(SmolStr::new("missing"))
+        );
     }
 
     #[test]
@@ -286,6 +355,54 @@ mod tests {
                 input: SmolStr::new("missing"),
             }
         );
+    }
+
+    #[test]
+    fn install_hint_round_trips_from_toml() {
+        let stored: StoredPkgConfig = toml::from_str(
+            r#"
+            description = "fuzzy finder"
+            [install_hint.brew]
+            packages = ["sk"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(stored.description.as_deref(), Some("fuzzy finder"));
+        assert_eq!(stored.install_hint.brew.packages, vec!["sk".to_string()]);
+        let resolved = stored.resolve(&SmolStr::new("sk")).unwrap();
+        assert_eq!(resolved.description.as_deref(), Some("fuzzy finder"));
+        assert_eq!(resolved.install_hint.brew.packages, vec!["sk".to_string()]);
+    }
+
+    #[test]
+    fn install_hint_is_required_in_toml() {
+        let err = toml::from_str::<StoredPkgConfig>(r#"description = "missing install_hint""#)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("install_hint"),
+            "expected error to mention install_hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn disabled_pkg_resolves_without_evaluating_actions() {
+        let stored: StoredPkgConfig = toml::from_str(
+            r#"
+            enable = "disabled"
+            [install_hint.brew]
+            packages = []
+            [[shell.env_init.bash]]
+            type = "export"
+            name = "X"
+            value = "${missing_input}"
+            "#,
+        )
+        .unwrap();
+        // Under the previous behavior this would have short-circuited to None;
+        // the new behavior resolves the pkg but skips action resolution so the
+        // unresolved input does not error.
+        let resolved = stored.resolve(&SmolStr::new("ghost")).unwrap();
+        assert!(resolved.is_disabled());
     }
 
     #[test]

@@ -2,8 +2,8 @@ use safe_relative_path::srpath;
 use std::fmt::Write as _;
 
 use super::common::{
-    StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment, write_path_variable,
-    write_pkg_inits,
+    StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment,
+    write_path_variable, write_pkg_inits,
 };
 use crate::{
     config::{Config, pkg::Shell},
@@ -28,8 +28,14 @@ pub(super) fn make_config_files(
 
     #[cfg(target_os = "macos")]
     {
-        _ = writeln!(bash_config, "# Homebrew environment (PATH, MANPATH, INFOPATH)");
-        _ = writeln!(bash_config, "eval \"$(/opt/homebrew/bin/brew shellenv bash)\"");
+        _ = writeln!(
+            bash_config,
+            "# Homebrew environment (PATH, MANPATH, INFOPATH)"
+        );
+        _ = writeln!(
+            bash_config,
+            "eval \"$(/opt/homebrew/bin/brew shellenv bash)\""
+        );
         bash_config.push('\n');
 
         _ = writeln!(bash_config, "# Bash completions (brew-managed)");

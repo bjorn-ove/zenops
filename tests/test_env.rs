@@ -2,7 +2,7 @@ use safe_relative_path::{SafeRelativePath, srpath};
 use std::{io::Write, path::PathBuf, sync::Arc};
 use xshell::{Shell, cmd};
 use zenops::{
-    Args, Cmd,
+    Args, Cmd, ColorChoice,
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
     output::{AppliedAction, ResolvedConfigFilePath, Status},
@@ -35,7 +35,9 @@ impl TestEnv {
         Self {
             root,
             dirs,
-            default_args: Args {},
+            default_args: Args {
+                color: ColorChoice::Never,
+            },
             sh,
         }
     }
@@ -159,6 +161,16 @@ impl TestEnv {
         let mut output = Output::default();
         zenops::real_main(&self.default_args, cmd, &self.dirs, &mut output)?;
         Ok(output)
+    }
+
+    pub fn run_pkg_list(
+        &self,
+        all: bool,
+        all_hints: bool,
+        verbose: bool,
+        color: zenops::ColorChoice,
+    ) -> Result<String, Error> {
+        zenops::pkg_list::list_from_dirs(&self.dirs, all, all_hints, verbose, color)
     }
 
     pub fn create_symlink(

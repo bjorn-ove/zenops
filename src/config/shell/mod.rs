@@ -4,8 +4,8 @@ use crate::{
     error::Error,
 };
 
-mod common;
 mod bash;
+mod common;
 mod zsh;
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
