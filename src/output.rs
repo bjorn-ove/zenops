@@ -18,6 +18,8 @@ pub enum SymlinkStatus {
     New,
     /// The path is a file and not a symlink
     IsFile,
+    /// The path is a directory and not a symlink
+    IsDir,
     /// The symlink exists and points to the correct location, but the source does not exist.
     RealPathIsMissing,
     /// The directory that should contain the symlink is missing
@@ -118,6 +120,7 @@ impl Output for Log {
                 }
                 SymlinkStatus::New => log::info!("SYM: {symlink} is missing"),
                 SymlinkStatus::IsFile => log::warn!("SYM: {symlink} is a file"),
+                SymlinkStatus::IsDir => log::warn!("SYM: {symlink} is a directory"),
                 SymlinkStatus::RealPathIsMissing => {
                     log::info!("SYM: symlink source {real} is missing")
                 }

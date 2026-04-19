@@ -21,6 +21,11 @@ pub enum Error {
         real: ResolvedConfigFilePath,
         symlink: ResolvedConfigFilePath,
     },
+    #[error("Not creating symlink {symlink} -> {real}: a directory already exists")]
+    RefusingToOverwriteDirectoryWithSymlink {
+        real: ResolvedConfigFilePath,
+        symlink: ResolvedConfigFilePath,
+    },
     #[error("Failed to create directory {0:?}: {1}")]
     CreateDirectoryError(ResolvedConfigFilePath, std::io::Error),
     #[error(
@@ -45,6 +50,16 @@ impl PartialEq for Error {
                     symlink: l_symlink,
                 },
                 Self::RefusingToOverwriteFileWithSymlink {
+                    real: r_real,
+                    symlink: r_symlink,
+                },
+            ) => l_real == r_real && l_symlink == r_symlink,
+            (
+                Self::RefusingToOverwriteDirectoryWithSymlink {
+                    real: l_real,
+                    symlink: l_symlink,
+                },
+                Self::RefusingToOverwriteDirectoryWithSymlink {
                     real: r_real,
                     symlink: r_symlink,
                 },

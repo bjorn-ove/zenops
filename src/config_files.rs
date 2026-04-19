@@ -204,8 +204,8 @@ impl<'dirs> ConfigFiles<'dirs> {
                             },
                         }
                     }
-                    SymlinkInfo::NotSymlinkIsFile => todo!(),
-                    SymlinkInfo::NotSymlinkIsDir => todo!(),
+                    SymlinkInfo::NotSymlinkIsFile => SymlinkStatus::IsFile,
+                    SymlinkInfo::NotSymlinkIsDir => SymlinkStatus::IsDir,
                 };
                 Status::Symlink {
                     real: ResolvedConfigFilePath {
@@ -272,6 +272,12 @@ impl<'dirs> ConfigFiles<'dirs> {
                     }
                     SymlinkStatus::IsFile => {
                         return Err(Error::RefusingToOverwriteFileWithSymlink {
+                            symlink: symlink.clone(),
+                            real: real.clone(),
+                        });
+                    }
+                    SymlinkStatus::IsDir => {
+                        return Err(Error::RefusingToOverwriteDirectoryWithSymlink {
                             symlink: symlink.clone(),
                             real: real.clone(),
                         });

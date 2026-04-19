@@ -439,3 +439,88 @@ fn apply_injects_zenops_completions_into_generated_bash_profile() {
         "expected source line for zenops completions in generated bash profile, got:\n{rc}"
     );
 }
+
+fn init_single_symlink_env() -> (
+    test_env::TestEnv,
+    zenops_safe_relative_path::SafeRelativePathBuf,
+    zenops::output::ResolvedConfigFilePath,
+    zenops::output::ResolvedConfigFilePath,
+) {
+    let env = test_env::TestEnv::load();
+    let symlink_full = paths::CONFIG_DIR.safe_join(srpath!("dummy-util/dummy-util.toml"));
+    let real = env.cfpath("configs/dummy-util/dummy-util.toml", ConfigFilePath::Zenops);
+    let symlink = env.cfpath("dummy-util/dummy-util.toml", ConfigFilePath::DotConfig);
+
+    env.init_config(
+        r#"
+        [[configs]]
+        type = ".config"
+        name = "dummy-util"
+        source = "configs/dummy-util"
+        symlinks = [
+          "dummy-util.toml"
+        ]
+    "#,
+    );
+    env.write_zenops_file(
+        srpath!("configs/dummy-util/dummy-util.toml"),
+        "# hello",
+        Some("Added dummy-util.toml"),
+    );
+
+    (env, symlink_full, real, symlink)
+}
+
+#[test]
+fn symlink_dst_is_regular_file() {
+    let (env, symlink_full, real, symlink) = init_single_symlink_env();
+
+    // A regular (non-symlink) file sits where the symlink should go.
+    env.write_file(&symlink_full, "# pre-existing user file\n");
+
+    assert_eq!(
+        env.run(&Cmd::Status { diff: false }),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: real.clone(),
+                symlink: symlink.clone(),
+                status: SymlinkStatus::IsFile,
+            })]
+        })
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Apply { pull_config: false }),
+        Err(Error::RefusingToOverwriteFileWithSymlink {
+            real: real.clone(),
+            symlink: symlink.clone(),
+        })
+    );
+}
+
+#[test]
+fn symlink_dst_is_directory() {
+    let (env, symlink_full, real, symlink) = init_single_symlink_env();
+
+    // A directory sits where the symlink should go.
+    env.create_dir(&symlink_full);
+
+    assert_eq!(
+        env.run(&Cmd::Status { diff: false }),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real: real.clone(),
+                symlink: symlink.clone(),
+                status: SymlinkStatus::IsDir,
+            })]
+        })
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Apply { pull_config: false }),
+        Err(Error::RefusingToOverwriteDirectoryWithSymlink {
+            real: real.clone(),
+            symlink: symlink.clone(),
+        })
+    );
+}

@@ -94,6 +94,14 @@ impl TestEnv {
             .unwrap_or_else(|e| panic!("Failed to delete {path}: {e}\nFull path: {full_path:?}"));
     }
 
+    pub fn create_dir(&self, path: impl AsRef<SafeRelativePath>) {
+        let path = path.as_ref();
+        let full_path = path.to_full_path(self.root.path());
+        std::fs::create_dir_all(&full_path).unwrap_or_else(|e| {
+            panic!("Failed to create directory {path}: {e}\nFull path: {full_path:?}")
+        });
+    }
+
     pub fn append_file(&self, path: impl AsRef<SafeRelativePath>, data: impl AsRef<[u8]>) {
         let path = path.as_ref().to_full_path(self.root.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
