@@ -20,12 +20,7 @@ pub struct Args {}
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    UpdateConfig {
-        /// Pull the latest version of the config using git pull --rebase in the zenops config directory
-        #[clap(long, short)]
-        pull_config: bool,
-    },
-    Upgrade {
+    Apply {
         /// Pull the latest version of the config using git pull --rebase in the zenops config directory
         #[clap(long, short)]
         pull_config: bool,
@@ -44,8 +39,7 @@ pub enum Cmd {
 impl Cmd {
     fn should_update_self(&self, _args: &Args) -> bool {
         match *self {
-            Cmd::UpdateConfig { pull_config, .. } => pull_config,
-            Cmd::Upgrade { pull_config, .. } => pull_config,
+            Cmd::Apply { pull_config, .. } => pull_config,
             Cmd::Status { .. } | Cmd::Repo { .. } => false,
         }
     }
@@ -62,11 +56,7 @@ pub fn real_main(
     let mut config_files = ConfigFiles::new(dirs);
 
     match command {
-        Cmd::UpdateConfig { pull_config: _ } => {
-            config.update_config_files(&sh, &mut config_files)?;
-            config_files.apply_changes(output)?;
-        }
-        Cmd::Upgrade { pull_config: _ } => {
+        Cmd::Apply { pull_config: _ } => {
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output)?;
         }

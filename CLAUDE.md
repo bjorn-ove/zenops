@@ -16,7 +16,7 @@ cargo clippy                         # lint
 
 ## Architecture
 
-ZenOps is a Rust (edition 2024) system configuration management tool. It reads a declarative TOML config from `~/.config/zenops/config.toml` and manages packages, shell config, and dotfiles on the local system.
+ZenOps is a Rust (edition 2024) system configuration management tool. It reads a declarative TOML config from `~/.config/zenops/config.toml` and manages shell config and dotfiles on the local system.
 
 **Workspace layout:**
 - `src/` — main binary crate
@@ -26,18 +26,14 @@ ZenOps is a Rust (edition 2024) system configuration management tool. It reads a
 
 **Command flow (`src/`):**
 1. `main.rs` — clap CLI, calls into `lib.rs`
-2. `lib.rs` — dispatches to one of four commands: `UpdateConfig`, `Upgrade`, `Status`, `Repo`
-3. `config.rs` — loads and deserializes `config.toml`; resolves package specs
+2. `lib.rs` — dispatches to one of three commands: `Apply`, `Status`, `Repo`
+3. `config.rs` — loads and deserializes `config.toml`
 4. `config_files.rs` — applies config files: symlinks or generates content under `~/.config/` or `~/`
 5. `git.rs` — checks git status of zenops config repo; also passes through raw git subcommands
-6. `package_spec/brew.rs`, `package_spec/cargo.rs` — parse and install/upgrade packages via `xshell`
-7. `output.rs` — `Output` trait abstraction for reporting actions (current impl: `Log`)
+6. `output.rs` — `Output` trait abstraction for reporting actions (current impl: `Log`)
 
 **Config format (TOML):**
 ```toml
-[packages]
-name = "brew:formula"          # or "cargo:crate@version", "brew-cask:app"
-
 [shell]
 type = "bash"
 [shell.environment]

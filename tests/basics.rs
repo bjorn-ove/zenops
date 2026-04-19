@@ -191,7 +191,7 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::UpdateConfig { pull_config: false }),
+        env.run(&Cmd::Apply { pull_config: false }),
         Ok(Output {
             entries: vec![
                 Entry::AppliedAction(AppliedAction::CreatedSymlink {
@@ -210,7 +210,7 @@ fn symlinked_configs() {
     env.delete_dir_all(dummy2_config_symlink.safe_parent().unwrap());
 
     assert_eq!(
-        env.run(&Cmd::UpdateConfig { pull_config: false }),
+        env.run(&Cmd::Apply { pull_config: false }),
         Ok(Output {
             entries: vec![
                 Entry::AppliedAction(AppliedAction::CreatedDir(dummy_symlink.parent().unwrap())),
