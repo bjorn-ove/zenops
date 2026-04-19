@@ -13,7 +13,7 @@ authors.workspace = true
 [dependencies]
 relative-path = "2.0.1"
 thiserror.workspace = true
-zenops-safe-relative-path-macros = { path = "../zenops-safe-relative-path-macros", version = "0.1.0" }
-zenops-safe-relative-path-validator = { path = "../zenops-safe-relative-path-validator", version = "0.1.0" }
+zenops-safe-relative-path-macros.workspace = true
+zenops-safe-relative-path-validator.workspace = true
 serde.workspace = true
 smol_str.workspace = true

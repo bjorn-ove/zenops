@@ -800,7 +800,7 @@ checksum = "32ac00cd3f8ec9c1d33fb3e7958a82df6989c42d747bd326c822b1d625283547"
 
 [[package]]
 name = "zenops"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "zenops-safe-relative-path"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "relative-path",
  "serde",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "zenops-safe-relative-path-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "zenops-safe-relative-path-validator"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "relative-path",
 ]
