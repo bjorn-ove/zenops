@@ -82,11 +82,12 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
-        let pkgs = stored
-            .pkg
-            .iter()
-            .filter_map(|(k, v)| v.clone().resolve().map(|r| (k.clone(), r)))
-            .collect();
+        let mut pkgs = IndexMap::new();
+        for (k, v) in stored.pkg.iter() {
+            if let Some(resolved) = v.clone().resolve(k)? {
+                pkgs.insert(k.clone(), resolved);
+            }
+        }
 
         Ok(Self {
             dirs,
@@ -94,12 +95,6 @@ impl<'dirs> Config<'dirs> {
             stored,
             pkgs,
         })
-    }
-
-    pub fn has_sk(&self) -> bool {
-        self.dirs.home().join(".cargo/bin/sk").exists()
-            || Path::new("/opt/homebrew/bin/sk").exists()
-            || Path::new("/usr/local/bin/sk").exists()
     }
 
     #[cfg(target_os = "macos")]

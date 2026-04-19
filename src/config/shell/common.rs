@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::fmt::Write as _;
 
-use crate::config::pkg::ShellInitAction;
+use crate::config::pkg::{ActionKind, ShellInitAction};
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 pub(in super::super) struct StoredShellConfig {
@@ -11,29 +11,34 @@ pub(in super::super) struct StoredShellConfig {
 }
 
 pub(super) fn render_posix(action: &ShellInitAction) -> String {
-    let (comment, line) = match action {
-        ShellInitAction::Source { path, comment } => {
+    match &action.kind {
+        ActionKind::Comment { text } => format!("# {text}"),
+        ActionKind::Source { path } => {
             let posix = if let Some(rest) = path.strip_prefix("~/") {
                 format!("$HOME/{rest}")
             } else {
                 path.clone()
             };
-            (comment.as_deref(), format!(r#". "{posix}""#))
+            format!(r#". "{posix}""#)
         }
-        ShellInitAction::EvalOutput { command, comment } => {
-            (comment.as_deref(), format!(r#"eval "$({})""#, command.join(" ")))
-        }
-    };
-    match comment {
-        Some(c) => format!("# {c}\n{line}"),
-        None => line,
+        ActionKind::EvalOutput { command } => format!(r#"eval "$({})""#, command.join(" ")),
+        ActionKind::SourceOutput { command } => format!("source <({})", command.join(" ")),
+        ActionKind::Export { name, value } => format!(r#"export {name}="{value}""#),
     }
 }
 
 pub(super) fn write_pkg_inits(buf: &mut String, actions: &[&ShellInitAction]) {
-    for action in actions {
+    for (i, action) in actions.iter().enumerate() {
         _ = writeln!(buf, "{}", render_posix(action));
-        buf.push('\n');
+        let is_comment = matches!(action.kind, ActionKind::Comment { .. });
+        let next_is_comment = matches!(
+            actions.get(i + 1),
+            Some(next) if matches!(next.kind, ActionKind::Comment { .. })
+        );
+        let is_last = actions.get(i + 1).is_none();
+        if !is_comment && (is_last || next_is_comment) {
+            buf.push('\n');
+        }
     }
 }
 
@@ -65,16 +70,5 @@ pub(super) fn write_brew_llvm_flags(buf: &mut String) {
     _ = writeln!(buf, "# LLVM compiler flags (brew-managed)");
     _ = writeln!(buf, "export LDFLAGS=-L/opt/homebrew/opt/llvm/lib");
     _ = writeln!(buf, "export CPPFLAGS=-L/opt/homebrew/opt/llvm/include");
-    buf.push('\n');
-}
-
-pub(super) fn write_sk_setup(buf: &mut String, shell_name: &str) {
-    _ = writeln!(buf, "# Setup sk (fuzzy find)");
-    _ = writeln!(
-        buf,
-        "export SKIM_DEFAULT_COMMAND=\"fd --type f --hidden --exclude .git\""
-    );
-    _ = writeln!(buf, "source <(sk --shell {shell_name})");
-    _ = writeln!(buf, "source <(sk --shell {shell_name} --shell-bindings)");
     buf.push('\n');
 }

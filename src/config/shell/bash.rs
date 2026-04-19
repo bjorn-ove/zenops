@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use super::common::{
     StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment, write_path_variable,
-    write_pkg_inits, write_sk_setup,
+    write_pkg_inits,
 };
 use crate::{
     config::{Config, pkg::Shell},
@@ -49,10 +49,6 @@ pub(super) fn make_config_files(
 
     _ = writeln!(bash_config, "[ -f ~/.bashrc ] && source ~/.bashrc");
     bash_config.push('\n');
-
-    if config.has_sk() {
-        write_sk_setup(&mut bash_config, "bash");
-    }
 
     write_pkg_inits(&mut bash_config, &config.interactive_pkg_inits(Shell::Bash));
 

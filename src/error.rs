@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use smol_str::SmolStr;
+
 use crate::output::ResolvedConfigFilePath;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +23,10 @@ pub enum Error {
     },
     #[error("Failed to create directory {0:?}: {1}")]
     CreateDirectoryError(ResolvedConfigFilePath, std::io::Error),
+    #[error(
+        "Package {pkg} references undefined input {input}; mark the action optional or set [pkg.{pkg}.inputs].{input}"
+    )]
+    UnresolvedInput { pkg: SmolStr, input: SmolStr },
 }
 
 impl PartialEq for Error {
@@ -46,6 +52,16 @@ impl PartialEq for Error {
             (Self::CreateDirectoryError(l0, l1), Self::CreateDirectoryError(r0, r1)) => {
                 l0 == r0 && l1.kind() == r1.kind()
             }
+            (
+                Self::UnresolvedInput {
+                    pkg: l_pkg,
+                    input: l_input,
+                },
+                Self::UnresolvedInput {
+                    pkg: r_pkg,
+                    input: r_input,
+                },
+            ) => l_pkg == r_pkg && l_input == r_input,
             _ => false,
         }
     }

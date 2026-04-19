@@ -6,14 +6,75 @@ type = "file"
 path = "~/.cargo/env"
 
 [[pkg.cargo.shell.env_init.bash]]
+type = "comment"
+text = "Rust/Cargo environment"
+
+[[pkg.cargo.shell.env_init.bash]]
 type = "source"
 path = "~/.cargo/env"
-comment = "Rust/Cargo environment"
+
+[[pkg.cargo.shell.env_init.zsh]]
+type = "comment"
+text = "Rust/Cargo environment"
 
 [[pkg.cargo.shell.env_init.zsh]]
 type = "source"
 path = "~/.cargo/env"
-comment = "Rust/Cargo environment"
+
+[pkg.sk]
+enable = "detect"
+
+[[pkg.sk.detect]]
+type = "file"
+path = "~/.cargo/bin/sk"
+
+[[pkg.sk.detect]]
+type = "file"
+path = "/opt/homebrew/bin/sk"
+
+[[pkg.sk.detect]]
+type = "file"
+path = "/usr/local/bin/sk"
+
+[[pkg.sk.detect]]
+type = "which"
+binary = "sk"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "comment"
+text = "Setup sk (fuzzy find)"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "export"
+optional = true
+name = "SKIM_DEFAULT_COMMAND"
+value = "${skim_default_command}"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "source_output"
+command = ["sk", "--shell", "bash"]
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "source_output"
+command = ["sk", "--shell", "bash", "--shell-bindings"]
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "comment"
+text = "Setup sk (fuzzy find)"
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "export"
+optional = true
+name = "SKIM_DEFAULT_COMMAND"
+value = "${skim_default_command}"
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "source_output"
+command = ["sk", "--shell", "zsh"]
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "source_output"
+command = ["sk", "--shell", "zsh", "--shell-bindings"]
 
 [pkg.starship]
 enable = "detect"
@@ -27,11 +88,17 @@ type = "which"
 binary = "starship"
 
 [[pkg.starship.shell.interactive_init.bash]]
+type = "comment"
+text = "Setup starship (fancy prompt)"
+
+[[pkg.starship.shell.interactive_init.bash]]
 type = "eval_output"
 command = ["starship", "init", "bash"]
-comment = "Setup starship (fancy prompt)"
+
+[[pkg.starship.shell.interactive_init.zsh]]
+type = "comment"
+text = "Setup starship (fancy prompt)"
 
 [[pkg.starship.shell.interactive_init.zsh]]
 type = "eval_output"
 command = ["starship", "init", "zsh"]
-comment = "Setup starship (fancy prompt)"

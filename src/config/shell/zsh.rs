@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use super::common::{
     StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment, write_path_variable,
-    write_pkg_inits, write_sk_setup,
+    write_pkg_inits,
 };
 use crate::{
     config::{Config, pkg::Shell},
@@ -65,10 +65,6 @@ pub(super) fn make_config_files(
         _ = writeln!(zshrc, "# Initialize Zsh completions");
         _ = writeln!(zshrc, "autoload -Uz compinit && compinit");
         zshrc.push('\n');
-    }
-
-    if config.has_sk() {
-        write_sk_setup(&mut zshrc, "zsh");
     }
 
     write_pkg_inits(&mut zshrc, &config.interactive_pkg_inits(Shell::Zsh));
