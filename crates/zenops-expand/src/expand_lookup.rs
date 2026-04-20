@@ -1,6 +1,9 @@
 use std::fmt;
 
+/// Resolves `${name}` placeholders to their values.
 pub trait ExpandLookup {
+    /// Write the value of `name` into `f`, or return
+    /// [`ExpandLookupError::Unresolved`] without writing anything.
     fn write_value<'a>(
         &self,
         name: &'a str,
@@ -8,6 +11,7 @@ pub trait ExpandLookup {
     ) -> Result<(), ExpandLookupError<'a>>;
 }
 
+/// Try each lookup in order; return the first hit.
 impl<const SIZE: usize, T: ExpandLookup> ExpandLookup for [&T; SIZE] {
     fn write_value<'a>(
         &self,
@@ -83,10 +87,13 @@ where
     }
 }
 
+/// Error returned from [`ExpandLookup::write_value`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExpandLookupError<'a> {
+    /// `name` is not known to this lookup.
     #[error("Failed to resolve `${{{0}}}`")]
     Unresolved(&'a str),
+    /// The [`fmt::Write`] sink returned an error.
     #[error(transparent)]
     WriteFmt(#[from] fmt::Error),
 }

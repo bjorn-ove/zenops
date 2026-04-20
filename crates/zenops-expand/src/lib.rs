@@ -1,3 +1,18 @@
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![warn(missing_docs)]
+
+//! String newtype that carries `${name}` placeholders which must be expanded
+//! before use.
+//!
+//! [`ExpandStr`] deliberately does not implement `Display`, `AsRef<str>`, or
+//! `Deref<str>` — callers go through [`ExpandStr::expand_to_string`] or
+//! [`ExpandStr::write_expanded`] with an [`ExpandLookup`]. `${name}` is the
+//! only placeholder syntax; there is no escape sequence.
+//!
+//! # Features
+//!
+//! - `indexmap` — [`ExpandLookup`] impl for [`indexmap::IndexMap`].
+
 mod expand_lookup;
 
 use std::fmt;
@@ -5,37 +20,89 @@ use std::fmt;
 use serde::Deserialize;
 use smol_str::SmolStr;
 
-pub use expand_lookup::ExpandLookup;
+pub use expand_lookup::{ExpandLookup, ExpandLookupError};
 
+/// Error returned from expanding an [`ExpandStr`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExpandError {
+    /// A `${name}` placeholder was not resolved by the lookup.
     #[error("unresolved placeholder `${{{0}}}`")]
     Unresolved(SmolStr),
+    /// The [`fmt::Write`] sink returned an error.
     #[error(transparent)]
     WriteFmt(#[from] fmt::Error),
+    /// A `${` sequence was never closed by `}`.
     #[error("unterminated `${{` in template")]
     Unterminated,
 }
 
+/// A template string containing `${name}` placeholders.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(transparent)]
 pub struct ExpandStr(SmolStr);
 
 impl ExpandStr {
+    /// Wrap a template string.
     pub fn new(raw: SmolStr) -> Self {
         Self(raw)
     }
 
+    /// Wrap a `'static` template string without allocating.
     pub fn new_static(raw: &'static str) -> Self {
         Self(SmolStr::new_static(raw))
     }
 
+    /// Expand the template into a new [`String`].
+    ///
+    /// Each `${name}` is replaced with the value `lookup` writes for that
+    /// name. Literal characters pass through unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use zenops_expand::ExpandStr;
+    ///
+    /// let t = ExpandStr::new_static("${greeting}, ${name}!");
+    ///
+    /// let mut lookup: HashMap<&str, &str> = HashMap::new();
+    /// lookup.insert("greeting", "hi");
+    /// lookup.insert("name", "Ada");
+    ///
+    /// assert_eq!(t.expand_to_string(&lookup).unwrap(), "hi, Ada!");
+    /// ```
     pub fn expand_to_string(&self, lookup: &impl ExpandLookup) -> Result<String, ExpandError> {
         let mut out = String::with_capacity(self.0.len() * 2);
         self.write_expanded(lookup, &mut out)?;
         Ok(out)
     }
 
+    /// Expand the template into an existing [`fmt::Write`] sink.
+    ///
+    /// Equivalent to [`expand_to_string`] but writes into a caller-supplied
+    /// buffer, so multiple templates can be concatenated without
+    /// intermediate allocations. On error the sink may have been written
+    /// to partially.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use std::fmt::Write;
+    /// use zenops_expand::ExpandStr;
+    ///
+    /// let mut lookup: HashMap<&str, &str> = HashMap::new();
+    /// lookup.insert("user", "ada");
+    ///
+    /// let mut out = String::from("path=");
+    /// let t = ExpandStr::new_static("/home/${user}");
+    /// t.write_expanded(&lookup, &mut out).unwrap();
+    /// write!(out, ";").unwrap();
+    ///
+    /// assert_eq!(out, "path=/home/ada;");
+    /// ```
+    ///
+    /// [`expand_to_string`]: ExpandStr::expand_to_string
     pub fn write_expanded(
         &self,
         lookup: &impl ExpandLookup,
@@ -54,6 +121,7 @@ impl ExpandStr {
         Ok(())
     }
 
+    /// Get the raw template string.
     pub fn as_template(&self) -> &str {
         &self.0
     }
