@@ -1,0 +1,34 @@
+#
+# starship (fancy prompt)
+#
+
+[pkg.starship]
+enable = "detect"
+description = "starship — cross-shell prompt."
+
+[pkg.starship.install_hint.brew]
+packages = ["starship"]
+
+[[pkg.starship.detect]]
+type = "file"
+path = "~/.cargo/bin/starship"
+
+[[pkg.starship.detect]]
+type = "which"
+binary = "starship"
+
+[[pkg.starship.shell.interactive_init.bash]]
+type = "comment"
+text = "Setup starship (fancy prompt)"
+
+[[pkg.starship.shell.interactive_init.bash]]
+type = "eval_output"
+command = ["starship", "init", "bash"]
+
+[[pkg.starship.shell.interactive_init.zsh]]
+type = "comment"
+text = "Setup starship (fancy prompt)"
+
+[[pkg.starship.shell.interactive_init.zsh]]
+type = "eval_output"
+command = ["starship", "init", "zsh"]

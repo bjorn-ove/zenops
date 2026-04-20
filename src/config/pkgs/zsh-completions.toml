@@ -1,0 +1,18 @@
+#
+# Zsh completions
+#
+
+[pkg.zsh-completions]
+enable = "on"
+description = "Zsh completion system initialization (compinit)."
+
+[pkg.zsh-completions.install_hint.brew]
+packages = []
+
+[[pkg.zsh-completions.shell.interactive_init.zsh]]
+type = "comment"
+text = "Initialize Zsh completions"
+
+[[pkg.zsh-completions.shell.interactive_init.zsh]]
+type = "line"
+line = "autoload -Uz compinit && compinit"

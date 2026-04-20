@@ -1,0 +1,22 @@
+#
+# bash-completion (brew)
+#
+
+[pkg.bash-completion]
+enable = "detect"
+description = "Brew-managed bash completion loader."
+
+[pkg.bash-completion.install_hint.brew]
+packages = ["bash-completion@2"]
+
+[[pkg.bash-completion.detect]]
+type = "file"
+path = "${brew_prefix}/etc/bash_completion"
+
+[[pkg.bash-completion.shell.interactive_init.bash]]
+type = "comment"
+text = "Bash completions (brew-managed)"
+
+[[pkg.bash-completion.shell.interactive_init.bash]]
+type = "source"
+path = "${brew_prefix}/etc/bash_completion"

@@ -1,0 +1,30 @@
+#
+# Homebrew Python — PATH append for brew-installed python
+#
+
+[pkg.brew-python]
+enable = "detect"
+description = "Homebrew Python — prepends libexec/bin to PATH so `python` resolves to the brew copy."
+
+[pkg.brew-python.install_hint.brew]
+packages = ["python"]
+
+[[pkg.brew-python.detect]]
+type = "file"
+path = "${brew_prefix}/opt/python"
+
+[[pkg.brew-python.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew Python (brew-managed)"
+
+[[pkg.brew-python.shell.env_init.bash]]
+type = "path_append"
+value = "${brew_prefix}/opt/python/libexec/bin"
+
+[[pkg.brew-python.shell.env_init.zsh]]
+type = "comment"
+text = "Homebrew Python (brew-managed)"
+
+[[pkg.brew-python.shell.env_init.zsh]]
+type = "path_append"
+value = "${brew_prefix}/opt/python/libexec/bin"

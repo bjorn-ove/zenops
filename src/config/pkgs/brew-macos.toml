@@ -1,0 +1,37 @@
+#
+# Homebrew — shellenv initialization
+#
+# Split by OS because the convention differs:
+#   macOS zsh → .zprofile (login shells)
+#   Linux zsh → .zshrc    (interactive shells)
+# Bash emits the same shellenv line on both OSes; duplicated here since only
+# one of the two pkgs is active on any given host (`supported_os` gates it).
+#
+
+[pkg.brew-macos]
+enable = "detect"
+supported_os = ["macos"]
+description = "Homebrew shellenv initialization (macOS convention: login profile)."
+
+[pkg.brew-macos.install_hint.brew]
+packages = []
+
+[[pkg.brew-macos.detect]]
+type = "file"
+path = "${brew_prefix}/bin/brew"
+
+[[pkg.brew-macos.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH)"
+
+[[pkg.brew-macos.shell.env_init.bash]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "bash"]
+
+[[pkg.brew-macos.shell.login_init.zsh]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH, fpath)"
+
+[[pkg.brew-macos.shell.login_init.zsh]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "zsh"]

@@ -66,6 +66,30 @@ fn build_system_inputs(brew_prefix: Option<&Path>) -> IndexMap<SmolStr, SmolStr>
     m
 }
 
+static DEFAULT_PKGS: &[(&str, &str)] = &[
+    ("brew-macos", include_str!("config/pkgs/brew-macos.toml")),
+    ("brew-linux", include_str!("config/pkgs/brew-linux.toml")),
+    (
+        "bashrc-chain",
+        include_str!("config/pkgs/bashrc-chain.toml"),
+    ),
+    ("local-bin", include_str!("config/pkgs/local-bin.toml")),
+    ("brew-python", include_str!("config/pkgs/brew-python.toml")),
+    ("cargo", include_str!("config/pkgs/cargo.toml")),
+    (
+        "bash-completion",
+        include_str!("config/pkgs/bash-completion.toml"),
+    ),
+    (
+        "zsh-completions",
+        include_str!("config/pkgs/zsh-completions.toml"),
+    ),
+    ("sk", include_str!("config/pkgs/sk.toml")),
+    ("starship", include_str!("config/pkgs/starship.toml")),
+    ("zenops", include_str!("config/pkgs/zenops.toml")),
+    ("llvm", include_str!("config/pkgs/llvm.toml")),
+];
+
 fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
         (toml::Value::Table(b), toml::Value::Table(o)) => {
@@ -96,9 +120,13 @@ impl<'dirs> Config<'dirs> {
 
         let path = dirs.zenops().join("config.toml");
 
-        let defaults_str = include_str!("config/defaults.toml");
-        let mut merged: toml::Value = toml::from_str(defaults_str)
-            .map_err(|e| Error::ParseDb(std::path::PathBuf::from("<defaults>"), e))?;
+        let mut merged = toml::Value::Table(Default::default());
+        for (name, src) in DEFAULT_PKGS {
+            let v: toml::Value = toml::from_str(src).map_err(|e| {
+                Error::ParseDb(std::path::PathBuf::from(format!("<defaults:{name}>")), e)
+            })?;
+            deep_merge(&mut merged, v);
+        }
 
         let user_bytes = std::fs::read(&path).map_err(|e| Error::OpenDb(path.clone(), e))?;
         let user_val: toml::Value =

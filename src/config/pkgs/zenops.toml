@@ -1,0 +1,26 @@
+#
+# zenops CLI completions
+#
+
+[pkg.zenops]
+enable = "on"
+description = "zenops itself — shell completions for the zenops CLI."
+
+[pkg.zenops.install_hint.brew]
+packages = []
+
+[[pkg.zenops.shell.interactive_init.bash]]
+type = "comment"
+text = "zenops shell completions"
+
+[[pkg.zenops.shell.interactive_init.bash]]
+type = "source_output"
+command = ["zenops", "completions", "bash"]
+
+[[pkg.zenops.shell.interactive_init.zsh]]
+type = "comment"
+text = "zenops shell completions"
+
+[[pkg.zenops.shell.interactive_init.zsh]]
+type = "source_output"
+command = ["zenops", "completions", "zsh"]

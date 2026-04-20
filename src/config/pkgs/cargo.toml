@@ -1,0 +1,26 @@
+[pkg.cargo]
+enable = "detect"
+description = "Rust toolchain (cargo) — loads ~/.cargo/env into the shell."
+
+[pkg.cargo.install_hint.brew]
+packages = ["rustup-init"]
+
+[[pkg.cargo.detect]]
+type = "file"
+path = "~/.cargo/env"
+
+[[pkg.cargo.shell.env_init.bash]]
+type = "comment"
+text = "Rust/Cargo environment"
+
+[[pkg.cargo.shell.env_init.bash]]
+type = "source"
+path = "~/.cargo/env"
+
+[[pkg.cargo.shell.env_init.zsh]]
+type = "comment"
+text = "Rust/Cargo environment"
+
+[[pkg.cargo.shell.env_init.zsh]]
+type = "source"
+path = "~/.cargo/env"

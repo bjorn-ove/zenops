@@ -1,0 +1,62 @@
+#
+# skim fuzzy finder (sk)
+#
+
+[pkg.sk]
+enable = "detect"
+description = "skim (sk) — fuzzy finder used by interactive shell keybindings."
+
+[pkg.sk.install_hint.brew]
+packages = ["sk"]
+
+[[pkg.sk.detect]]
+type = "file"
+path = "~/.cargo/bin/sk"
+
+[[pkg.sk.detect]]
+type = "file"
+path = "/opt/homebrew/bin/sk"
+
+[[pkg.sk.detect]]
+type = "file"
+path = "/usr/local/bin/sk"
+
+[[pkg.sk.detect]]
+type = "which"
+binary = "sk"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "comment"
+text = "Setup sk (fuzzy find)"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "export"
+optional = true
+name = "SKIM_DEFAULT_COMMAND"
+value = "${skim_default_command}"
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "source_output"
+command = ["sk", "--shell", "bash"]
+
+[[pkg.sk.shell.interactive_init.bash]]
+type = "source_output"
+command = ["sk", "--shell", "bash", "--shell-bindings"]
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "comment"
+text = "Setup sk (fuzzy find)"
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "export"
+optional = true
+name = "SKIM_DEFAULT_COMMAND"
+value = "${skim_default_command}"
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "source_output"
+command = ["sk", "--shell", "zsh"]
+
+[[pkg.sk.shell.interactive_init.zsh]]
+type = "source_output"
+command = ["sk", "--shell", "zsh", "--shell-bindings"]

@@ -1,0 +1,50 @@
+#
+# LLVM toolchain (brew)
+#
+
+[pkg.llvm]
+enable = "detect"
+description = "LLVM toolchain (brew) — exports LDFLAGS/CPPFLAGS for compilers."
+
+[pkg.llvm.install_hint.brew]
+packages = ["llvm"]
+
+[[pkg.llvm.detect]]
+type = "file"
+path = "${brew_prefix}/opt/llvm"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "comment"
+text = "LLVM compiler flags (brew-managed)"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "export"
+name = "LDFLAGS"
+value = "-L${brew_prefix}/opt/llvm/lib"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "export"
+name = "CPPFLAGS"
+value = "-L${brew_prefix}/opt/llvm/include"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "path_prepend"
+value = "${brew_prefix}/opt/llvm/bin"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "comment"
+text = "LLVM compiler flags (brew-managed)"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "export"
+name = "LDFLAGS"
+value = "-L${brew_prefix}/opt/llvm/lib"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "export"
+name = "CPPFLAGS"
+value = "-L${brew_prefix}/opt/llvm/include"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "path_prepend"
+value = "${brew_prefix}/opt/llvm/bin"

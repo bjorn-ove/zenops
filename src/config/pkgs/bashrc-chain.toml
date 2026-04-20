@@ -1,0 +1,14 @@
+#
+# Bash login → .bashrc chain
+#
+
+[pkg.bashrc-chain]
+enable = "on"
+description = "Chain ~/.bashrc from the login profile so login shells inherit interactive config."
+
+[pkg.bashrc-chain.install_hint.brew]
+packages = []
+
+[[pkg.bashrc-chain.shell.login_init.bash]]
+type = "line"
+line = "[ -f ~/.bashrc ] && source ~/.bashrc"

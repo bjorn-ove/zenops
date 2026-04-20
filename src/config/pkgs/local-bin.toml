@@ -1,0 +1,26 @@
+#
+# Always-on PATH additions
+#
+
+[pkg.local-bin]
+enable = "on"
+description = "Append ~/.local/bin to PATH."
+
+[pkg.local-bin.install_hint.brew]
+packages = []
+
+[[pkg.local-bin.shell.env_init.bash]]
+type = "comment"
+text = "Local user binaries"
+
+[[pkg.local-bin.shell.env_init.bash]]
+type = "path_append"
+value = "~/.local/bin"
+
+[[pkg.local-bin.shell.env_init.zsh]]
+type = "comment"
+text = "Local user binaries"
+
+[[pkg.local-bin.shell.env_init.zsh]]
+type = "path_append"
+value = "~/.local/bin"

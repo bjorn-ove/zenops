@@ -1,0 +1,27 @@
+[pkg.brew-linux]
+enable = "detect"
+supported_os = ["linux"]
+description = "Homebrew shellenv initialization (Linux convention: interactive shells)."
+
+[pkg.brew-linux.install_hint.brew]
+packages = []
+
+[[pkg.brew-linux.detect]]
+type = "file"
+path = "${brew_prefix}/bin/brew"
+
+[[pkg.brew-linux.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH)"
+
+[[pkg.brew-linux.shell.env_init.bash]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "bash"]
+
+[[pkg.brew-linux.shell.interactive_init.zsh]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH, fpath)"
+
+[[pkg.brew-linux.shell.interactive_init.zsh]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "zsh"]
