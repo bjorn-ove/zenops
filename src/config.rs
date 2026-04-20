@@ -126,6 +126,10 @@ impl<'dirs> Config<'dirs> {
             .is_some_and(|p| p.join("opt/python").exists())
     }
 
+    pub fn is_linux(&self) -> bool {
+        std::env::consts::OS == "linux"
+    }
+
     pub fn pkgs(&self) -> &IndexMap<SmolStr, PkgConfig> {
         &self.pkgs
     }
@@ -153,12 +157,14 @@ impl<'dirs> Config<'dirs> {
     pub fn path_variable(&self) -> Option<String> {
         let mut paths = "$PATH".to_string();
 
-        if self.has_brew_python() {
-            paths.push_str(":$(brew --prefix python)/libexec/bin");
-        }
+        if let Some(prefix) = self.brew_prefix.as_ref() {
+            if self.has_brew_python() {
+                paths.push_str(&format!(":{}/opt/python/libexec/bin", prefix.display()));
+            }
 
-        if self.has_brew_llvm() {
-            paths.insert_str(0, "$(brew --prefix)/opt/llvm/bin:");
+            if self.has_brew_llvm() {
+                paths.insert_str(0, &format!("{}/opt/llvm/bin:", prefix.display()));
+            }
         }
 
         paths.push_str(":~/.local/bin");
