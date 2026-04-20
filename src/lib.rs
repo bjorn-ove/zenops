@@ -5,6 +5,7 @@ pub mod git;
 pub mod output;
 pub mod pkg_list;
 pub mod pkg_manager;
+pub mod prompt;
 
 use std::io::IsTerminal;
 
@@ -17,6 +18,7 @@ use crate::{
     error::Error,
     git::GitCmd,
     output::{DiffLog, Output},
+    prompt::{DryRunPrompter, Prompter, TerminalPrompter, YesPrompter},
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -51,6 +53,12 @@ pub enum Cmd {
         /// Pull the latest version of the config using git pull --rebase in the zenops config directory
         #[clap(long, short)]
         pull_config: bool,
+        /// Apply every change without prompting.
+        #[clap(long, short = 'y', conflicts_with = "dry_run")]
+        yes: bool,
+        /// Show each prompt with its diff, but apply nothing.
+        #[clap(long, short = 'n')]
+        dry_run: bool,
     },
     Status {
         /// Show a diff of what would change
@@ -94,6 +102,18 @@ impl Cmd {
     }
 }
 
+fn build_prompter(yes: bool, dry_run: bool, color: bool) -> Result<Box<dyn Prompter>, Error> {
+    if dry_run {
+        Ok(Box::new(DryRunPrompter::new(color)))
+    } else if yes {
+        Ok(Box::new(YesPrompter))
+    } else if std::io::stdin().is_terminal() {
+        Ok(Box::new(TerminalPrompter::new(color)))
+    } else {
+        Err(Error::ApplyNeedsYesOrTty)
+    }
+}
+
 pub fn real_main(
     args: &Args,
     command: &Cmd,
@@ -111,9 +131,14 @@ pub fn real_main(
     let mut config_files = ConfigFiles::new(dirs);
 
     match command {
-        Cmd::Apply { pull_config: _ } => {
+        Cmd::Apply {
+            pull_config: _,
+            yes,
+            dry_run,
+        } => {
+            let mut prompter = build_prompter(*yes, *dry_run, args.color.enabled())?;
             config.update_config_files(&sh, &mut config_files)?;
-            config_files.apply_changes(output)?;
+            config_files.apply_changes(output, prompter.as_mut())?;
         }
         Cmd::Status { diff } => {
             config.check_own_status(&sh, output)?;

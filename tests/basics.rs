@@ -337,7 +337,11 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Apply { pull_config: false }),
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false
+        }),
         Ok(Output {
             entries: vec![
                 Entry::AppliedAction(AppliedAction::CreatedSymlink {
@@ -356,7 +360,11 @@ fn symlinked_configs() {
     env.delete_dir_all(dummy2_config_symlink.safe_parent().unwrap());
 
     assert_eq!(
-        env.run(&Cmd::Apply { pull_config: false }),
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false
+        }),
         Ok(Output {
             entries: vec![
                 Entry::AppliedAction(AppliedAction::CreatedDir(dummy_symlink.parent().unwrap())),
@@ -423,8 +431,12 @@ fn apply_injects_zenops_completions_into_generated_bash_profile() {
     "#,
     );
 
-    env.run(&Cmd::Apply { pull_config: false })
-        .expect("apply should succeed");
+    env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+    })
+    .expect("apply should succeed");
 
     let rc_path = env.resolve_path(srpath!("home/bob/.zenops_bash_profile"));
     let rc = std::fs::read_to_string(&rc_path)
@@ -490,7 +502,11 @@ fn symlink_dst_is_regular_file() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Apply { pull_config: false }),
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false
+        }),
         Err(Error::RefusingToOverwriteFileWithSymlink {
             real: real.clone(),
             symlink: symlink.clone(),
@@ -517,10 +533,36 @@ fn symlink_dst_is_directory() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Apply { pull_config: false }),
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false
+        }),
         Err(Error::RefusingToOverwriteDirectoryWithSymlink {
             real: real.clone(),
             symlink: symlink.clone(),
         })
+    );
+}
+
+#[test]
+fn apply_dry_run_skips_all_changes() {
+    let (env, symlink_full, _real, _symlink) = init_single_symlink_env();
+
+    // Dry-run: every change is rendered as a prompt but never applied.
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: false,
+            dry_run: true,
+        }),
+        Ok(Output { entries: vec![] }),
+    );
+
+    // The symlink must not have been created on disk.
+    let symlink_disk = env.resolve_path(&symlink_full);
+    assert!(
+        symlink_disk.symlink_metadata().is_err(),
+        "dry-run should not have created {symlink_disk:?}"
     );
 }

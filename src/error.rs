@@ -32,6 +32,12 @@ pub enum Error {
         "Package {pkg} references undefined input {input}; mark the action optional or set [pkg.{pkg}.inputs].{input}"
     )]
     UnresolvedInput { pkg: SmolStr, input: SmolStr },
+    #[error(
+        "apply requires a terminal for prompts; pass --yes to apply all changes non-interactively, or --dry-run to preview"
+    )]
+    ApplyNeedsYesOrTty,
+    #[error("Failed to read confirmation from stdin: {0}")]
+    PromptRead(#[source] std::io::Error),
 }
 
 impl PartialEq for Error {
@@ -77,6 +83,8 @@ impl PartialEq for Error {
                     input: r_input,
                 },
             ) => l_pkg == r_pkg && l_input == r_input,
+            (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
+            (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             _ => false,
         }
     }

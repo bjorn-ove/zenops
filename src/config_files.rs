@@ -10,7 +10,9 @@ use indexmap::IndexMap;
 use crate::{
     error::Error,
     output::{AppliedAction, FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
+    prompt::{PendingChange, Prompter},
 };
+use similar::{DiffOp, TextDiff};
 use zenops_safe_relative_path::SafeRelativePath;
 
 #[derive(Clone, PartialEq)]
@@ -225,84 +227,190 @@ impl<'dirs> ConfigFiles<'dirs> {
         }
     }
 
-    pub fn apply_changes(&self, output: &mut dyn Output) -> Result<(), Error> {
+    pub fn apply_changes(
+        &self,
+        output: &mut dyn Output,
+        prompter: &mut dyn Prompter,
+    ) -> Result<(), Error> {
         for (path, entry) in &self.files {
             let status = self.entry_status(path.clone(), entry);
             match status {
                 Status::Generated {
-                    want_content,
-                    cur_content: _,
+                    status: FileStatus::Ok,
                     path,
-                    status,
+                    ..
                 } => {
-                    let expect_action = match status {
-                        FileStatus::Ok => {
-                            log::debug!("Config is already up to date {path}");
-                            continue;
-                        }
-                        FileStatus::Modified => {
-                            log::debug!("Updating modified config {path}");
-                            AppliedAction::UpdatedFile
-                        }
-                        FileStatus::New => {
-                            log::debug!("Creating new config {path}");
-                            AppliedAction::CreatedFile
-                        }
-                    };
-
-                    std::fs::write(&path.full, want_content.as_bytes())
-                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
-
-                    output.push_applied_action(expect_action(path));
+                    log::debug!("Config is already up to date {path}");
                 }
-                Status::Symlink {
-                    real,
-                    symlink,
-                    status,
-                } => match status {
-                    SymlinkStatus::Ok => {
-                        log::debug!("Symlink from {symlink} to {real} is already in place",);
+                Status::Generated {
+                    status: FileStatus::New,
+                    want_content,
+                    path,
+                    ..
+                } => {
+                    if !prompter.confirm(PendingChange::CreateFile {
+                        path: &path,
+                        content: &want_content,
+                    })? {
                         continue;
                     }
-                    SymlinkStatus::WrongLink(_) => todo!(),
-                    SymlinkStatus::New => {
-                        log::debug!("Creating symlink from {symlink} to {real}",);
-                        create_symlink(&real.full, &symlink.full)?;
-                        output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                    log::debug!("Creating new config {path}");
+                    std::fs::write(&path.full, want_content.as_bytes())
+                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
+                    output.push_applied_action(AppliedAction::CreatedFile(path));
+                }
+                Status::Generated {
+                    status: FileStatus::Modified,
+                    want_content,
+                    cur_content,
+                    path,
+                } => {
+                    let cur = cur_content.as_deref().unwrap_or("");
+                    let want = want_content.as_ref();
+                    let diff = TextDiff::from_lines(cur, want);
+                    let groups = diff.grouped_ops(3);
+                    let total = groups.len();
+                    let mut approvals = Vec::with_capacity(total);
+                    for (i, ops) in groups.iter().enumerate() {
+                        approvals.push(prompter.confirm(PendingChange::UpdateFileHunk {
+                            path: &path,
+                            index: i + 1,
+                            total,
+                            diff: &diff,
+                            ops,
+                        })?);
                     }
-                    SymlinkStatus::IsFile => {
-                        return Err(Error::RefusingToOverwriteFileWithSymlink {
-                            symlink: symlink.clone(),
-                            real: real.clone(),
-                        });
+                    if !approvals.iter().any(|&a| a) {
+                        continue;
                     }
-                    SymlinkStatus::IsDir => {
-                        return Err(Error::RefusingToOverwriteDirectoryWithSymlink {
-                            symlink: symlink.clone(),
-                            real: real.clone(),
-                        });
+                    log::debug!("Updating modified config {path}");
+                    let content = reconstruct(cur, want, &groups, &approvals);
+                    std::fs::write(&path.full, content.as_bytes())
+                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
+                    output.push_applied_action(AppliedAction::UpdatedFile(path));
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::Ok,
+                    real,
+                    symlink,
+                } => {
+                    log::debug!("Symlink from {symlink} to {real} is already in place");
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::New,
+                    real,
+                    symlink,
+                } => {
+                    if !prompter.confirm(PendingChange::CreateSymlink {
+                        real: &real,
+                        symlink: &symlink,
+                    })? {
+                        continue;
                     }
-                    SymlinkStatus::RealPathIsMissing => todo!(),
-                    SymlinkStatus::DstDirIsMissing => {
-                        log::debug!("Creating symlink from {symlink} to {real}",);
-                        let dir = symlink.parent().unwrap_or_else(|| {
-                            todo!("This should not be possible due to earlier check")
-                        });
-                        match std::fs::create_dir_all(&dir.full) {
-                            Ok(()) => {}
-                            Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
-                        }
-                        output.push_applied_action(AppliedAction::CreatedDir(dir));
-                        create_symlink(&real.full, &symlink.full)?;
-                        output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                    log::debug!("Creating symlink from {symlink} to {real}");
+                    create_symlink(&real.full, &symlink.full)?;
+                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::DstDirIsMissing,
+                    real,
+                    symlink,
+                } => {
+                    let dir = symlink.parent().unwrap_or_else(|| {
+                        todo!("This should not be possible due to earlier check")
+                    });
+                    if !prompter.confirm(PendingChange::CreateSymlinkWithParent {
+                        real: &real,
+                        symlink: &symlink,
+                        parent: &dir,
+                    })? {
+                        continue;
                     }
-                },
+                    log::debug!("Creating symlink from {symlink} to {real}");
+                    match std::fs::create_dir_all(&dir.full) {
+                        Ok(()) => {}
+                        Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
+                    }
+                    output.push_applied_action(AppliedAction::CreatedDir(dir));
+                    create_symlink(&real.full, &symlink.full)?;
+                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::IsFile,
+                    real,
+                    symlink,
+                } => {
+                    return Err(Error::RefusingToOverwriteFileWithSymlink { real, symlink });
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::IsDir,
+                    real,
+                    symlink,
+                } => {
+                    return Err(Error::RefusingToOverwriteDirectoryWithSymlink { real, symlink });
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::WrongLink(_) | SymlinkStatus::RealPathIsMissing,
+                    ..
+                } => todo!(),
                 Status::Git { repo, status } => todo!("{repo}: {status:?}"),
             }
         }
 
         Ok(())
     }
+}
+
+fn reconstruct(old: &str, new: &str, groups: &[Vec<DiffOp>], approvals: &[bool]) -> String {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(old.len().max(new.len()));
+    let mut old_idx = 0;
+
+    for (group, &approved) in groups.iter().zip(approvals) {
+        let group_old_start = group.first().expect("non-empty group").old_range().start;
+        let group_old_end = group.last().expect("non-empty group").old_range().end;
+
+        while old_idx < group_old_start {
+            out.push_str(old_lines[old_idx]);
+            old_idx += 1;
+        }
+
+        if approved {
+            for op in group {
+                match *op {
+                    DiffOp::Equal { old_index, len, .. } => {
+                        for i in 0..len {
+                            out.push_str(old_lines[old_index + i]);
+                        }
+                    }
+                    DiffOp::Delete { .. } => {}
+                    DiffOp::Insert {
+                        new_index, new_len, ..
+                    }
+                    | DiffOp::Replace {
+                        new_index, new_len, ..
+                    } => {
+                        for i in 0..new_len {
+                            out.push_str(new_lines[new_index + i]);
+                        }
+                    }
+                }
+            }
+        } else {
+            while old_idx < group_old_end {
+                out.push_str(old_lines[old_idx]);
+                old_idx += 1;
+            }
+        }
+        old_idx = group_old_end;
+    }
+
+    while old_idx < old_lines.len() {
+        out.push_str(old_lines[old_idx]);
+        old_idx += 1;
+    }
+    out
 }
 
 enum SymlinkInfo {
@@ -347,5 +455,51 @@ fn create_symlink(real_path: &Path, symlink_path: &Path) -> Result<(), Error> {
             ErrorKind::NotFound => todo!(),
             unk => todo!("{unk:?}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn groups_for(old: &str, new: &str) -> Vec<Vec<DiffOp>> {
+        TextDiff::from_lines(old, new).grouped_ops(3)
+    }
+
+    #[test]
+    fn reconstruct_all_approved_equals_want() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\n";
+        let groups = groups_for(old, new);
+        let approvals = vec![true; groups.len()];
+        assert_eq!(reconstruct(old, new, &groups, &approvals), new);
+    }
+
+    #[test]
+    fn reconstruct_none_approved_equals_cur() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\n";
+        let groups = groups_for(old, new);
+        let approvals = vec![false; groups.len()];
+        assert_eq!(reconstruct(old, new, &groups, &approvals), old);
+    }
+
+    #[test]
+    fn reconstruct_mixed_applies_only_approved_hunks() {
+        // Two distant hunks so grouped_ops(3) splits them.
+        let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n";
+        let new = "1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\nY\n15\n";
+        let groups = groups_for(old, new);
+        assert_eq!(groups.len(), 2, "expected two separate hunks");
+        // Approve only the first hunk.
+        let approvals = vec![true, false];
+        let got = reconstruct(old, new, &groups, &approvals);
+        let expected = "1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n";
+        assert_eq!(got, expected);
+        // And the opposite: approve only the second hunk.
+        let approvals = vec![false, true];
+        let got = reconstruct(old, new, &groups, &approvals);
+        let expected = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\nY\n15\n";
+        assert_eq!(got, expected);
     }
 }
