@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
@@ -49,10 +49,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 smol_str = { version = "0.3.6", features = ["serde"] }
 thiserror = "2.0.18"
 indexmap = { version = "2.14.0", features = ["serde"] }
-zenops-expand = { version = "0.4.0", path = "crates/zenops-expand" }
-zenops-safe-relative-path = { version = "0.4.0", path = "crates/zenops-safe-relative-path" }
-zenops-safe-relative-path-macros = { version = "0.4.0", path = "crates/zenops-safe-relative-path-macros" }
-zenops-safe-relative-path-validator = { version = "0.4.0", path = "crates/zenops-safe-relative-path-validator" }
+zenops-expand = { version = "0.4.1", path = "crates/zenops-expand" }
+zenops-safe-relative-path = { version = "0.4.1", path = "crates/zenops-safe-relative-path" }
+zenops-safe-relative-path-macros = { version = "0.4.1", path = "crates/zenops-safe-relative-path-macros" }
+zenops-safe-relative-path-validator = { version = "0.4.1", path = "crates/zenops-safe-relative-path-validator" }
 
 [dev-dependencies]
 similar-asserts = "2.0.0"
