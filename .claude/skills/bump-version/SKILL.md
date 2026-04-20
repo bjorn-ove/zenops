@@ -36,6 +36,12 @@ Bump the workspace `version` in `Cargo.toml` according to SemVer, based on what 
 
 6. **Report** the old version, new version, bump type, and the reasoning. Mention if `Cargo.lock` was refreshed.
 
+7. **Output a changelog** for the user to paste into the GitHub release notes. Keep it short and user-facing:
+   - Group under `### Added`, `### Changed`, `### Fixed`, `### Removed` (omit empty groups).
+   - One bullet per item, written from the perspective of an external user — what they can now do, what changed for them, what broke. No commit hashes, no author names, no internal refactors, no dependency bumps unless they affect users.
+   - Skip anything a user wouldn't care about (CI tweaks, doc-only edits, test-only changes, internal renames).
+   - Put the whole block inside a fenced ```markdown code block so it copies cleanly.
+
 ## Notes
 
 - All workspace crates inherit `version.workspace = true`, so only the root `Cargo.toml` needs editing.
