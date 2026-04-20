@@ -15,8 +15,9 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.2"
 env_logger = "0.11.10"
 home = "0.5.12"
-indexmap = { version = "2.14.0", features = ["serde"] }
+indexmap.workspace = true
 log = "0.4.29"
+zenops-expand = { workspace = true, features = ["indexmap"] }
 zenops-safe-relative-path.workspace = true
 semver = "1.0.28"
 serde.workspace = true
@@ -29,6 +30,7 @@ xshell = "0.2.7"
 [workspace]
 resolver = "3"
 members = [
+  "crates/zenops-expand",
   "crates/zenops-safe-relative-path",
   "crates/zenops-safe-relative-path-macros",
   "crates/zenops-safe-relative-path-validator",
@@ -46,6 +48,8 @@ relative-path = "2.0.1"
 serde = { version = "1.0.228", features = ["derive"] }
 smol_str = { version = "0.3.6", features = ["serde"] }
 thiserror = "2.0.18"
+indexmap = { version = "2.14.0", features = ["serde"] }
+zenops-expand = { version = "0.3.0", path = "crates/zenops-expand" }
 zenops-safe-relative-path = { version = "0.3.0", path = "crates/zenops-safe-relative-path" }
 zenops-safe-relative-path-macros = { version = "0.3.0", path = "crates/zenops-safe-relative-path-macros" }
 zenops-safe-relative-path-validator = { version = "0.3.0", path = "crates/zenops-safe-relative-path-validator" }

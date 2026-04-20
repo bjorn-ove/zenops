@@ -124,7 +124,7 @@ pub fn render(config: &Config, opts: Options) -> String {
     for (name, pkg) in entries {
         let (status_color, marker) = if pkg.is_disabled() {
             (s.dim(), "-")
-        } else if pkg.is_installed(home) {
+        } else if pkg.is_installed(home, config.system_inputs()) {
             (s.green(), "\u{2713}")
         } else {
             (s.red(), "\u{2717}")
@@ -143,12 +143,12 @@ pub fn render(config: &Config, opts: Options) -> String {
         let _ = writeln!(out);
 
         if opts.verbose
-            && let Some(d) = pkg.matched_detect(home)
+            && let Some(d) = pkg.matched_detect(home, config.system_inputs())
         {
             let _ = writeln!(out, "{indent}{dim}detect: {d}{reset}", dim = s.dim());
         }
 
-        if !pkg.is_installed(home) && !pkg.is_disabled() {
+        if !pkg.is_installed(home, config.system_inputs()) && !pkg.is_disabled() {
             let hint = s.hint();
             if opts.all_hints {
                 for line in all_hints_lines(pkg) {
@@ -199,34 +199,33 @@ fn all_hints_lines(pkg: &PkgConfig) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::pkg::{BrewHint, DetectStrategy, InstallHint, PkgEnable, StoredPkgConfig};
+    use indexmap::IndexMap;
     use smol_str::SmolStr;
 
-    fn pkg(name: &str, stored: StoredPkgConfig) -> (SmolStr, PkgConfig) {
-        let resolved = stored.resolve(&SmolStr::new(name)).unwrap();
-        (SmolStr::new(name), resolved)
-    }
-
-    fn stored_with_brew(packages: &[&str]) -> StoredPkgConfig {
-        StoredPkgConfig {
-            install_hint: InstallHint {
-                brew: BrewHint {
-                    packages: packages.iter().map(|p| (*p).to_string()).collect(),
-                },
-            },
-            ..Default::default()
-        }
+    fn pkg_with_brew(packages: &[&str]) -> PkgConfig {
+        let toml_src = format!(
+            r#"
+            [install_hint.brew]
+            packages = [{}]
+            "#,
+            packages
+                .iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        toml::from_str(&toml_src).unwrap()
     }
 
     #[test]
     fn all_hints_lines_lists_every_manager_with_packages() {
-        let (_, p) = pkg("sk", stored_with_brew(&["sk"]));
+        let p = pkg_with_brew(&["sk"]);
         assert_eq!(all_hints_lines(&p), vec!["brew: sk".to_string()]);
     }
 
     #[test]
     fn all_hints_lines_skips_managers_with_empty_packages() {
-        let (_, p) = pkg("ghost", stored_with_brew(&[]));
+        let p = pkg_with_brew(&[]);
         assert!(all_hints_lines(&p).is_empty());
     }
 
@@ -237,18 +236,20 @@ mod tests {
         let marker = home.join(".marker");
         std::fs::write(&marker, "").unwrap();
 
-        let (_, p) = pkg(
-            "foo",
-            StoredPkgConfig {
-                enable: PkgEnable::Detect,
-                detect: vec![DetectStrategy::File {
-                    path: marker.to_string_lossy().into_owned(),
-                }],
-                ..stored_with_brew(&["foo"])
-            },
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = ["foo"]
+            [[detect]]
+            type = "file"
+            path = "{}"
+            "#,
+            marker.display()
         );
-
-        assert!(p.is_installed(home));
-        assert!(p.matched_detect(home).is_some());
+        let p: PkgConfig = toml::from_str(&toml_src).unwrap();
+        let system: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        assert!(p.is_installed(home, &system));
+        assert!(p.matched_detect(home, &system).is_some());
     }
 }

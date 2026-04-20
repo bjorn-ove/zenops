@@ -2,8 +2,7 @@ use std::path::Path;
 
 use indexmap::IndexMap;
 use smol_str::SmolStr;
-
-use crate::error::Error;
+use zenops_expand::{ExpandLookup, ExpandStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shell {
@@ -23,18 +22,27 @@ pub(crate) enum PkgEnable {
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DetectStrategy {
-    File { path: String },
-    Which { binary: String },
+    File { path: ExpandStr },
+    Which { binary: ExpandStr },
 }
 
 impl DetectStrategy {
-    pub fn check(&self, home: &Path) -> bool {
+    /// Expand placeholders and check the resulting detect target. An unresolved
+    /// placeholder (e.g. `${brew_prefix}` on a brew-less system) means the
+    /// strategy is inapplicable on this host — return `false`.
+    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> bool {
         match self {
             Self::File { path } => {
-                let expanded = path.replacen('~', &home.to_string_lossy(), 1);
-                Path::new(&expanded).exists()
+                let Ok(expanded) = path.expand_to_string(lookup) else {
+                    return false;
+                };
+                let resolved = expanded.replacen('~', &home.to_string_lossy(), 1);
+                Path::new(&resolved).exists()
             }
-            Self::Which { binary } => which_on_path(binary),
+            Self::Which { binary } => match binary.expand_to_string(lookup) {
+                Ok(b) => which_on_path(&b),
+                Err(_) => false,
+            },
         }
     }
 }
@@ -42,8 +50,8 @@ impl DetectStrategy {
 impl std::fmt::Display for DetectStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::File { path } => write!(f, "{path}"),
-            Self::Which { binary } => write!(f, "which {binary}"),
+            Self::File { path } => write!(f, "{}", path.as_template()),
+            Self::Which { binary } => write!(f, "which {}", binary.as_template()),
         }
     }
 }
@@ -82,11 +90,12 @@ pub struct ShellInitAction {
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionKind {
-    Comment { text: String },
-    Source { path: String },
-    EvalOutput { command: Vec<String> },
-    SourceOutput { command: Vec<String> },
-    Export { name: String, value: String },
+    Comment { text: ExpandStr },
+    Source { path: ExpandStr },
+    EvalOutput { command: Vec<ExpandStr> },
+    SourceOutput { command: Vec<ExpandStr> },
+    Export { name: ExpandStr, value: ExpandStr },
+    Line { line: ExpandStr },
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
@@ -107,72 +116,34 @@ impl PerShellActions {
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
-pub(crate) struct StoredPkgShellConfig {
+pub(crate) struct PkgShellConfig {
     pub env_init: PerShellActions,
     pub interactive_init: PerShellActions,
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
-pub(crate) struct StoredPkgConfig {
-    #[serde(default)]
-    pub enable: PkgEnable,
-    #[serde(default)]
-    pub detect: Vec<DetectStrategy>,
-    #[serde(default)]
-    pub inputs: IndexMap<SmolStr, SmolStr>,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub install_hint: InstallHint,
-    #[serde(default)]
-    pub shell: StoredPkgShellConfig,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct PkgConfig {
+    #[serde(default)]
     pub(super) enable: PkgEnable,
+    #[serde(default)]
     pub(super) detect: Vec<DetectStrategy>,
+    #[serde(default)]
+    pub(super) inputs: IndexMap<SmolStr, SmolStr>,
+    #[serde(default)]
     pub description: Option<String>,
     pub install_hint: InstallHint,
-    pub(super) env_init: PerShellActions,
-    pub(super) interactive_init: PerShellActions,
-}
-
-impl StoredPkgConfig {
-    pub fn resolve(self, pkg_name: &SmolStr) -> Result<PkgConfig, Error> {
-        // A pkg that can never be "installed" (detection will always return false)
-        // won't have its shell actions emitted — so we skip action resolution to
-        // avoid erroring on unresolved inputs that the user will never hit.
-        let can_ever_install = match self.enable {
-            PkgEnable::On => true,
-            PkgEnable::Detect => !self.detect.is_empty(),
-            PkgEnable::Disabled => false,
-        };
-
-        let (env_init, interactive_init) = if can_ever_install {
-            (
-                resolve_per_shell(self.shell.env_init, &self.inputs, pkg_name)?,
-                resolve_per_shell(self.shell.interactive_init, &self.inputs, pkg_name)?,
-            )
-        } else {
-            (PerShellActions::default(), PerShellActions::default())
-        };
-
-        Ok(PkgConfig {
-            enable: self.enable,
-            detect: self.detect,
-            description: self.description,
-            install_hint: self.install_hint,
-            env_init,
-            interactive_init,
-        })
-    }
+    #[serde(default)]
+    pub(crate) shell: PkgShellConfig,
 }
 
 impl PkgConfig {
-    pub fn is_installed(&self, home: &Path) -> bool {
+    pub fn is_installed(&self, home: &Path, system_inputs: &IndexMap<SmolStr, SmolStr>) -> bool {
         match self.enable {
             PkgEnable::On => true,
-            PkgEnable::Detect => self.detect.iter().any(|s| s.check(home)),
+            PkgEnable::Detect => {
+                let lookup = [&self.inputs, system_inputs];
+                self.detect.iter().any(|s| s.check(home, &lookup))
+            }
             PkgEnable::Disabled => false,
         }
     }
@@ -182,110 +153,23 @@ impl PkgConfig {
     }
 
     /// First detect strategy that matches, if any — used for debuggable output.
-    pub fn matched_detect(&self, home: &Path) -> Option<&DetectStrategy> {
+    pub fn matched_detect(
+        &self,
+        home: &Path,
+        system_inputs: &IndexMap<SmolStr, SmolStr>,
+    ) -> Option<&DetectStrategy> {
         match self.enable {
-            PkgEnable::Detect => self.detect.iter().find(|s| s.check(home)),
+            PkgEnable::Detect => {
+                let lookup = [&self.inputs, system_inputs];
+                self.detect.iter().find(|s| s.check(home, &lookup))
+            }
             PkgEnable::On | PkgEnable::Disabled => None,
         }
     }
-}
 
-fn resolve_per_shell(
-    actions: PerShellActions,
-    inputs: &IndexMap<SmolStr, SmolStr>,
-    pkg_name: &SmolStr,
-) -> Result<PerShellActions, Error> {
-    Ok(PerShellActions {
-        bash: resolve_actions(actions.bash, inputs, pkg_name)?,
-        zsh: resolve_actions(actions.zsh, inputs, pkg_name)?,
-    })
-}
-
-fn resolve_actions(
-    actions: Vec<ShellInitAction>,
-    inputs: &IndexMap<SmolStr, SmolStr>,
-    pkg_name: &SmolStr,
-) -> Result<Vec<ShellInitAction>, Error> {
-    let mut out = Vec::with_capacity(actions.len());
-    for action in actions {
-        if let Some(a) = resolve_action(action, inputs, pkg_name)? {
-            out.push(a);
-        }
+    pub(crate) fn inputs(&self) -> &IndexMap<SmolStr, SmolStr> {
+        &self.inputs
     }
-    Ok(out)
-}
-
-fn resolve_action(
-    action: ShellInitAction,
-    inputs: &IndexMap<SmolStr, SmolStr>,
-    pkg_name: &SmolStr,
-) -> Result<Option<ShellInitAction>, Error> {
-    let ShellInitAction { optional, kind } = action;
-    match resolve_kind(kind, inputs) {
-        Ok(kind) => Ok(Some(ShellInitAction { optional, kind })),
-        Err(input) => {
-            if optional {
-                Ok(None)
-            } else {
-                Err(Error::UnresolvedInput {
-                    pkg: pkg_name.clone(),
-                    input,
-                })
-            }
-        }
-    }
-}
-
-fn resolve_kind(
-    kind: ActionKind,
-    inputs: &IndexMap<SmolStr, SmolStr>,
-) -> Result<ActionKind, SmolStr> {
-    Ok(match kind {
-        ActionKind::Comment { text } => ActionKind::Comment {
-            text: substitute(&text, inputs)?,
-        },
-        ActionKind::Source { path } => ActionKind::Source {
-            path: substitute(&path, inputs)?,
-        },
-        ActionKind::EvalOutput { command } => ActionKind::EvalOutput {
-            command: substitute_vec(command, inputs)?,
-        },
-        ActionKind::SourceOutput { command } => ActionKind::SourceOutput {
-            command: substitute_vec(command, inputs)?,
-        },
-        ActionKind::Export { name, value } => ActionKind::Export {
-            name: substitute(&name, inputs)?,
-            value: substitute(&value, inputs)?,
-        },
-    })
-}
-
-fn substitute_vec(
-    command: Vec<String>,
-    inputs: &IndexMap<SmolStr, SmolStr>,
-) -> Result<Vec<String>, SmolStr> {
-    command
-        .into_iter()
-        .map(|s| substitute(&s, inputs))
-        .collect()
-}
-
-fn substitute(s: &str, inputs: &IndexMap<SmolStr, SmolStr>) -> Result<String, SmolStr> {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + 2..];
-        let end = after_open
-            .find('}')
-            .ok_or_else(|| SmolStr::new(&after_open[..after_open.len().min(32)]))?;
-        let name = &after_open[..end];
-        let value = inputs.get(name).ok_or_else(|| SmolStr::new(name))?;
-        out.push_str(value);
-        rest = &after_open[end + 1..];
-    }
-    out.push_str(rest);
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -299,67 +183,13 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn substitute_resolves_placeholders() {
-        let inputs = inputs(&[("name", "world"), ("greet", "hello")]);
-        assert_eq!(
-            substitute("${greet}, ${name}!", &inputs).unwrap(),
-            "hello, world!"
-        );
-    }
-
-    #[test]
-    fn substitute_missing_returns_name() {
-        let inputs = inputs(&[]);
-        assert_eq!(
-            substitute("a ${missing} b", &inputs),
-            Err(SmolStr::new("missing"))
-        );
-    }
-
-    #[test]
-    fn substitute_no_placeholders_passes_through() {
-        let inputs = inputs(&[]);
-        assert_eq!(substitute("plain text", &inputs).unwrap(), "plain text");
-    }
-
-    #[test]
-    fn optional_action_skipped_when_input_missing() {
-        let action = ShellInitAction {
-            optional: true,
-            kind: ActionKind::Export {
-                name: "FOO".into(),
-                value: "${missing}".into(),
-            },
-        };
-        let pkg = SmolStr::new("testpkg");
-        let result = resolve_action(action, &inputs(&[]), &pkg).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn required_action_errors_when_input_missing() {
-        let action = ShellInitAction {
-            optional: false,
-            kind: ActionKind::Export {
-                name: "FOO".into(),
-                value: "${missing}".into(),
-            },
-        };
-        let pkg = SmolStr::new("testpkg");
-        let err = resolve_action(action, &inputs(&[]), &pkg).unwrap_err();
-        assert_eq!(
-            err,
-            Error::UnresolvedInput {
-                pkg: SmolStr::new("testpkg"),
-                input: SmolStr::new("missing"),
-            }
-        );
+    fn system_empty() -> IndexMap<SmolStr, SmolStr> {
+        IndexMap::new()
     }
 
     #[test]
     fn install_hint_round_trips_from_toml() {
-        let stored: StoredPkgConfig = toml::from_str(
+        let pkg: PkgConfig = toml::from_str(
             r#"
             description = "fuzzy finder"
             [install_hint.brew]
@@ -367,17 +197,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(stored.description.as_deref(), Some("fuzzy finder"));
-        assert_eq!(stored.install_hint.brew.packages, vec!["sk".to_string()]);
-        let resolved = stored.resolve(&SmolStr::new("sk")).unwrap();
-        assert_eq!(resolved.description.as_deref(), Some("fuzzy finder"));
-        assert_eq!(resolved.install_hint.brew.packages, vec!["sk".to_string()]);
+        assert_eq!(pkg.description.as_deref(), Some("fuzzy finder"));
+        assert_eq!(pkg.install_hint.brew.packages, vec!["sk".to_string()]);
     }
 
     #[test]
     fn install_hint_is_required_in_toml() {
-        let err = toml::from_str::<StoredPkgConfig>(r#"description = "missing install_hint""#)
-            .unwrap_err();
+        let err =
+            toml::from_str::<PkgConfig>(r#"description = "missing install_hint""#).unwrap_err();
         assert!(
             err.to_string().contains("install_hint"),
             "expected error to mention install_hint, got: {err}"
@@ -385,42 +212,78 @@ mod tests {
     }
 
     #[test]
-    fn disabled_pkg_resolves_without_evaluating_actions() {
-        let stored: StoredPkgConfig = toml::from_str(
+    fn detect_strategy_with_unresolved_input_reports_not_installed() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "${brew_prefix}/opt/x"
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+        assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
+    }
+
+    #[test]
+    fn detect_strategy_resolves_system_input_and_checks_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opt = tmp.path().join("opt/x");
+        std::fs::create_dir_all(&opt).unwrap();
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "${root}/opt/x"
+            "#,
+        )
+        .unwrap();
+        let sys = inputs(&[("root", tmp.path().to_str().unwrap())]);
+        assert!(pkg.is_installed(tmp.path(), &sys));
+    }
+
+    #[test]
+    fn pkg_inputs_shadow_system_inputs_at_detect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker_a = tmp.path().join("a");
+        std::fs::write(&marker_a, "").unwrap();
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [inputs]
+            name = "a"
+            [[detect]]
+            type = "file"
+            path = "{}/${{name}}"
+            "#,
+            tmp.path().display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        let sys = inputs(&[("name", "b")]);
+        assert!(pkg.is_installed(tmp.path(), &sys));
+    }
+
+    #[test]
+    fn disabled_pkg_is_never_installed() {
+        let pkg: PkgConfig = toml::from_str(
             r#"
             enable = "disabled"
             [install_hint.brew]
             packages = []
-            [[shell.env_init.bash]]
-            type = "export"
-            name = "X"
-            value = "${missing_input}"
             "#,
         )
         .unwrap();
-        // Under the previous behavior this would have short-circuited to None;
-        // the new behavior resolves the pkg but skips action resolution so the
-        // unresolved input does not error.
-        let resolved = stored.resolve(&SmolStr::new("ghost")).unwrap();
-        assert!(resolved.is_disabled());
-    }
-
-    #[test]
-    fn action_resolves_when_input_present() {
-        let action = ShellInitAction {
-            optional: true,
-            kind: ActionKind::Export {
-                name: "FOO".into(),
-                value: "${bar}".into(),
-            },
-        };
-        let pkg = SmolStr::new("testpkg");
-        let resolved = resolve_action(action, &inputs(&[("bar", "baz")]), &pkg)
-            .unwrap()
-            .unwrap();
-        match resolved.kind {
-            ActionKind::Export { value, .. } => assert_eq!(value, "baz"),
-            _ => panic!("unexpected kind"),
-        }
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+        assert!(pkg.is_disabled());
     }
 }

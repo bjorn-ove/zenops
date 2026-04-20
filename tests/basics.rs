@@ -420,6 +420,39 @@ fn completions_subcommand_generates_zsh_script() {
 }
 
 #[test]
+fn apply_emits_zsh_compinit_via_line_action() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "zsh"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+
+    env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+    })
+    .expect("apply should succeed");
+
+    let zshrc_path = env.resolve_path(srpath!("home/bob/.zshrc"));
+    let zshrc = std::fs::read_to_string(&zshrc_path)
+        .unwrap_or_else(|e| panic!("failed to read {zshrc_path:?}: {e}"));
+
+    assert!(
+        zshrc.contains("# Initialize Zsh completions"),
+        "expected compinit comment in generated zshrc, got:\n{zshrc}"
+    );
+    assert!(
+        zshrc.contains("autoload -Uz compinit && compinit"),
+        "expected verbatim compinit line in generated zshrc, got:\n{zshrc}"
+    );
+}
+
+#[test]
 fn apply_injects_zenops_completions_into_generated_bash_profile() {
     let env = test_env::TestEnv::load();
     env.init_config(

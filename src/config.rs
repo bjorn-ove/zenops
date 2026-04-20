@@ -17,7 +17,7 @@ pub use crate::config::pkg::PkgConfig;
 
 use crate::{
     config::{
-        pkg::{Shell, ShellInitAction, StoredPkgConfig},
+        pkg::{Shell, ShellInitAction},
         shell::StoredShellEnvironment,
         stored_config_files::StoredConfigFilesBase,
     },
@@ -32,15 +32,15 @@ use crate::{
 struct StoredConfig {
     shell: StoredShellEnvironment,
     configs: Vec<StoredConfigFilesBase>,
-    pkg: IndexMap<SmolStr, StoredPkgConfig>,
+    pkg: IndexMap<SmolStr, PkgConfig>,
 }
 
 pub struct Config<'dirs> {
     dirs: &'dirs ConfigFileDirs,
     zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
-    pkgs: IndexMap<SmolStr, PkgConfig>,
     brew_prefix: Option<PathBuf>,
+    system_inputs: IndexMap<SmolStr, SmolStr>,
 }
 
 fn detect_brew_prefix() -> Option<PathBuf> {
@@ -50,6 +50,21 @@ fn detect_brew_prefix() -> Option<PathBuf> {
         .map(Path::new)
         .find(|prefix| prefix.join("bin/brew").exists())
         .map(PathBuf::from)
+}
+
+fn build_system_inputs(brew_prefix: Option<&Path>) -> IndexMap<SmolStr, SmolStr> {
+    let mut m = IndexMap::new();
+    if let Some(p) = brew_prefix {
+        m.insert(
+            SmolStr::new_static("brew_prefix"),
+            SmolStr::new(p.to_string_lossy()),
+        );
+    }
+    m.insert(
+        SmolStr::new_static("os"),
+        SmolStr::new_static(std::env::consts::OS),
+    );
+    m
 }
 
 fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
@@ -96,28 +111,20 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
-        let mut pkgs = IndexMap::new();
-        for (k, v) in stored.pkg.iter() {
-            pkgs.insert(k.clone(), v.clone().resolve(k)?);
-        }
+        let brew_prefix = detect_brew_prefix();
+        let system_inputs = build_system_inputs(brew_prefix.as_deref());
 
         Ok(Self {
             dirs,
             zenops_repo,
             stored,
-            pkgs,
-            brew_prefix: detect_brew_prefix(),
+            brew_prefix,
+            system_inputs,
         })
     }
 
     pub fn brew_prefix(&self) -> Option<&Path> {
         self.brew_prefix.as_deref()
-    }
-
-    pub fn has_brew_llvm(&self) -> bool {
-        self.brew_prefix
-            .as_ref()
-            .is_some_and(|p| p.join("opt/llvm").exists())
     }
 
     pub fn has_brew_python(&self) -> bool {
@@ -131,26 +138,50 @@ impl<'dirs> Config<'dirs> {
     }
 
     pub fn pkgs(&self) -> &IndexMap<SmolStr, PkgConfig> {
-        &self.pkgs
+        &self.stored.pkg
     }
 
     pub fn home(&self) -> &Path {
         self.dirs.home()
     }
 
-    pub(crate) fn env_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
-        self.pkgs
-            .values()
-            .filter(|p| p.is_installed(self.dirs.home()))
-            .flat_map(|p| p.env_init.for_shell(shell))
+    pub fn system_inputs(&self) -> &IndexMap<SmolStr, SmolStr> {
+        &self.system_inputs
+    }
+
+    pub(crate) fn env_pkg_inits(
+        &self,
+        shell: Shell,
+    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
+        self.stored
+            .pkg
+            .iter()
+            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .flat_map(|(name, p)| {
+                p.shell
+                    .env_init
+                    .for_shell(shell)
+                    .iter()
+                    .map(move |a| (name, p, a))
+            })
             .collect()
     }
 
-    pub(crate) fn interactive_pkg_inits(&self, shell: Shell) -> Vec<&ShellInitAction> {
-        self.pkgs
-            .values()
-            .filter(|p| p.is_installed(self.dirs.home()))
-            .flat_map(|p| p.interactive_init.for_shell(shell))
+    pub(crate) fn interactive_pkg_inits(
+        &self,
+        shell: Shell,
+    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
+        self.stored
+            .pkg
+            .iter()
+            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .flat_map(|(name, p)| {
+                p.shell
+                    .interactive_init
+                    .for_shell(shell)
+                    .iter()
+                    .map(move |a| (name, p, a))
+            })
             .collect()
     }
 
@@ -162,7 +193,7 @@ impl<'dirs> Config<'dirs> {
                 paths.push_str(&format!(":{}/opt/python/libexec/bin", prefix.display()));
             }
 
-            if self.has_brew_llvm() {
+            if prefix.join("opt/llvm").exists() {
                 paths.insert_str(0, &format!("{}/opt/llvm/bin:", prefix.display()));
             }
         }

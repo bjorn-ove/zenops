@@ -20,9 +20,14 @@ ZenOps is a Rust (edition 2024) system configuration management tool. It reads a
 
 **Workspace layout:**
 - `src/` — main binary crate
+- `crates/zenops-expand` — `ExpandStr` newtype for strings with `${name}` placeholders that must be `.expand(lookup)`ed before use
 - `crates/zenops-safe-relative-path` — custom path type that prevents `..` traversal; used throughout for all managed file paths
 - `crates/zenops-safe-relative-path-macros` — `srpath!()` compile-time macro
 - `crates/zenops-safe-relative-path-validator` — shared validation logic
+
+## Conventions
+
+- `SmolStr`: use `SmolStr::new_static(s)` when `s` is `&'static str` (string literals, `std::env::consts::*`, etc.); reserve `SmolStr::new` for runtime-owned values. `new_static` avoids the allocation check and stores the literal directly.
 
 **Command flow (`src/`):**
 1. `main.rs` — clap CLI, calls into `lib.rs`

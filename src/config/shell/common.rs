@@ -1,9 +1,13 @@
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 use std::fmt::Write as _;
-use std::path::Path;
 
-use crate::config::pkg::{ActionKind, ShellInitAction};
+use zenops_expand::{ExpandError, ExpandLookup};
+
+use crate::{
+    config::pkg::{ActionKind, PkgConfig, ShellInitAction},
+    error::Error,
+};
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 pub(in super::super) struct StoredShellConfig {
@@ -11,34 +15,138 @@ pub(in super::super) struct StoredShellConfig {
     pub(super) alias: IndexMap<SmolStr, SmolStr>,
 }
 
-pub(super) fn render_posix(action: &ShellInitAction) -> String {
-    match &action.kind {
-        ActionKind::Comment { text } => format!("# {text}"),
-        ActionKind::Source { path } => {
-            let posix = if let Some(rest) = path.strip_prefix("~/") {
-                format!("$HOME/{rest}")
-            } else {
-                path.clone()
-            };
-            format!(r#". "{posix}""#)
+/// Writes a rendered action into `buf`. Returns `true` on emit, `false` when
+/// the action is optional and a placeholder was unresolved (skip quietly).
+fn write_action(
+    buf: &mut String,
+    action: &ShellInitAction,
+    lookup: &impl ExpandLookup,
+) -> Result<bool, ExpandError> {
+    let restore = buf.len();
+    match write_action_body(buf, &action.kind, lookup) {
+        Ok(()) => Ok(true),
+        Err(ExpandError::Unresolved(_)) if action.optional => {
+            buf.truncate(restore);
+            Ok(false)
         }
-        ActionKind::EvalOutput { command } => format!(r#"eval "$({})""#, command.join(" ")),
-        ActionKind::SourceOutput { command } => format!("source <({})", command.join(" ")),
-        ActionKind::Export { name, value } => format!(r#"export {name}="{value}""#),
+        Err(e) => {
+            buf.truncate(restore);
+            Err(e)
+        }
     }
 }
 
-pub(super) fn write_pkg_inits(buf: &mut String, actions: &[&ShellInitAction]) {
-    for (i, action) in actions.iter().enumerate() {
-        _ = writeln!(buf, "{}", render_posix(action));
+fn write_action_body(
+    buf: &mut String,
+    kind: &ActionKind,
+    lookup: &impl ExpandLookup,
+) -> Result<(), ExpandError> {
+    match kind {
+        ActionKind::Comment { text } => {
+            buf.push_str("# ");
+            text.write_expanded(lookup, buf)?;
+        }
+        ActionKind::Source { path } => {
+            // POSIX `~/…` → `$HOME/…` translation needs the expanded path, so
+            // materialize it once into a scratch String.
+            let expanded = path.expand_to_string(lookup)?;
+            if let Some(rest) = expanded.strip_prefix("~/") {
+                write!(buf, r#". "$HOME/{rest}""#)?;
+            } else {
+                write!(buf, r#". "{expanded}""#)?;
+            }
+        }
+        ActionKind::EvalOutput { command } => {
+            buf.push_str(r#"eval "$("#);
+            write_command(buf, command, lookup)?;
+            buf.push_str(r#")""#);
+        }
+        ActionKind::SourceOutput { command } => {
+            buf.push_str("source <(");
+            write_command(buf, command, lookup)?;
+            buf.push(')');
+        }
+        ActionKind::Export { name, value } => {
+            buf.push_str("export ");
+            name.write_expanded(lookup, buf)?;
+            buf.push_str(r#"=""#);
+            value.write_expanded(lookup, buf)?;
+            buf.push('"');
+        }
+        ActionKind::Line { line } => {
+            line.write_expanded(lookup, buf)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_command(
+    buf: &mut String,
+    command: &[zenops_expand::ExpandStr],
+    lookup: &impl ExpandLookup,
+) -> Result<(), ExpandError> {
+    for (i, part) in command.iter().enumerate() {
+        if i > 0 {
+            buf.push(' ');
+        }
+        part.write_expanded(lookup, buf)?;
+    }
+    Ok(())
+}
+
+pub(super) fn write_pkg_inits(
+    buf: &mut String,
+    actions: &[(&SmolStr, &PkgConfig, &ShellInitAction)],
+    system_inputs: &IndexMap<SmolStr, SmolStr>,
+) -> Result<(), Error> {
+    // Pass 1: render each action into its own scratch String (or None if an
+    // optional action was skipped due to an unresolved placeholder).
+    let mut rendered: Vec<Option<(&ShellInitAction, String)>> = Vec::with_capacity(actions.len());
+    for (pkg_name, pkg, action) in actions {
+        let lookup = [pkg.inputs(), system_inputs];
+        let mut line = String::new();
+        let wrote =
+            write_action(&mut line, action, &lookup).map_err(|e| map_expand_err(e, pkg_name))?;
+        rendered.push(if wrote { Some((*action, line)) } else { None });
+    }
+
+    // Pass 2: walk the emitted (non-None) subset and apply the legacy spacing
+    // rule — after a non-comment, insert a blank line when followed by a
+    // comment (group boundary) or at the end.
+    let emitted: Vec<(&ShellInitAction, &String)> = rendered
+        .iter()
+        .filter_map(|entry| entry.as_ref().map(|(a, s)| (*a, s)))
+        .collect();
+    for (i, (action, line)) in emitted.iter().enumerate() {
+        buf.push_str(line);
+        buf.push('\n');
         let is_comment = matches!(action.kind, ActionKind::Comment { .. });
-        let next_is_comment = matches!(
-            actions.get(i + 1),
-            Some(next) if matches!(next.kind, ActionKind::Comment { .. })
-        );
-        let is_last = actions.get(i + 1).is_none();
+        let next_is_comment = emitted
+            .get(i + 1)
+            .is_some_and(|(next, _)| matches!(next.kind, ActionKind::Comment { .. }));
+        let is_last = i + 1 == emitted.len();
         if !is_comment && (is_last || next_is_comment) {
             buf.push('\n');
+        }
+    }
+
+    Ok(())
+}
+
+fn map_expand_err(e: ExpandError, pkg_name: &SmolStr) -> Error {
+    match e {
+        ExpandError::Unresolved(input) => Error::UnresolvedInput {
+            pkg: pkg_name.clone(),
+            input,
+        },
+        ExpandError::Unterminated => Error::TemplateUnterminated {
+            pkg: pkg_name.clone(),
+        },
+        ExpandError::WriteFmt(_) => {
+            // Writing into a `String` never fails; this branch is unreachable.
+            Error::TemplateUnterminated {
+                pkg: pkg_name.clone(),
+            }
         }
     }
 }
@@ -63,13 +171,5 @@ pub(super) fn write_aliases(buf: &mut String, alias: &IndexMap<SmolStr, SmolStr>
 
 pub(super) fn write_path_variable(buf: &mut String, path: &str) {
     _ = writeln!(buf, "export PATH={path}");
-    buf.push('\n');
-}
-
-pub(super) fn write_brew_llvm_flags(buf: &mut String, brew_prefix: &Path) {
-    let prefix = brew_prefix.display();
-    _ = writeln!(buf, "# LLVM compiler flags (brew-managed)");
-    _ = writeln!(buf, "export LDFLAGS=-L{prefix}/opt/llvm/lib");
-    _ = writeln!(buf, "export CPPFLAGS=-L{prefix}/opt/llvm/include");
     buf.push('\n');
 }

@@ -876,7 +876,19 @@ dependencies = [
  "thiserror",
  "toml",
  "xshell",
+ "zenops-expand",
  "zenops-safe-relative-path",
+]
+
+[[package]]
+name = "zenops-expand"
+version = "0.3.0"
+dependencies = [
+ "indexmap",
+ "serde",
+ "smol_str",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

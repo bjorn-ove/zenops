@@ -1,0 +1,23 @@
+[package]
+name = "zenops-expand"
+description = "String newtype with `${name}` placeholders that must be expanded before use."
+readme = "README.md"
+categories = ["template-engine", "data-structures"]
+keywords = ["template", "expand", "substitution", "interpolation"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+indexmap = { workspace = true, optional = true }
+
+[features]
+indexmap = ["dep:indexmap"]
+
+[dev-dependencies]
+toml = "1.1.2"

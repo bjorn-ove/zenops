@@ -25,6 +25,52 @@ text = "Rust/Cargo environment"
 type = "source"
 path = "~/.cargo/env"
 
+#
+# bash-completion (brew)
+#
+
+[pkg.bash-completion]
+enable = "detect"
+description = "Brew-managed bash completion loader."
+
+[pkg.bash-completion.install_hint.brew]
+packages = ["bash-completion@2"]
+
+[[pkg.bash-completion.detect]]
+type = "file"
+path = "${brew_prefix}/etc/bash_completion"
+
+[[pkg.bash-completion.shell.interactive_init.bash]]
+type = "comment"
+text = "Bash completions (brew-managed)"
+
+[[pkg.bash-completion.shell.interactive_init.bash]]
+type = "source"
+path = "${brew_prefix}/etc/bash_completion"
+
+#
+# Zsh completions
+#
+
+[pkg.zsh-completions]
+enable = "on"
+description = "Zsh completion system initialization (compinit)."
+
+[pkg.zsh-completions.install_hint.brew]
+packages = []
+
+[[pkg.zsh-completions.shell.interactive_init.zsh]]
+type = "comment"
+text = "Initialize Zsh completions"
+
+[[pkg.zsh-completions.shell.interactive_init.zsh]]
+type = "line"
+line = "autoload -Uz compinit && compinit"
+
+#
+# skim fuzzy finder (sk)
+#
+
 [pkg.sk]
 enable = "detect"
 description = "skim (sk) — fuzzy finder used by interactive shell keybindings."
@@ -84,6 +130,10 @@ command = ["sk", "--shell", "zsh"]
 type = "source_output"
 command = ["sk", "--shell", "zsh", "--shell-bindings"]
 
+#
+# starship (fancy prompt)
+#
+
 [pkg.starship]
 enable = "detect"
 description = "starship — cross-shell prompt."
@@ -115,6 +165,10 @@ text = "Setup starship (fancy prompt)"
 type = "eval_output"
 command = ["starship", "init", "zsh"]
 
+#
+# zenops CLI completions
+#
+
 [pkg.zenops]
 enable = "on"
 description = "zenops itself — shell completions for the zenops CLI."
@@ -137,3 +191,46 @@ text = "zenops shell completions"
 [[pkg.zenops.shell.interactive_init.zsh]]
 type = "source_output"
 command = ["zenops", "completions", "zsh"]
+
+#
+# LLVM toolchain (brew)
+#
+
+[pkg.llvm]
+enable = "detect"
+description = "LLVM toolchain (brew) — exports LDFLAGS/CPPFLAGS for compilers."
+
+[pkg.llvm.install_hint.brew]
+packages = ["llvm"]
+
+[[pkg.llvm.detect]]
+type = "file"
+path = "${brew_prefix}/opt/llvm"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "comment"
+text = "LLVM compiler flags (brew-managed)"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "export"
+name = "LDFLAGS"
+value = "-L${brew_prefix}/opt/llvm/lib"
+
+[[pkg.llvm.shell.env_init.bash]]
+type = "export"
+name = "CPPFLAGS"
+value = "-L${brew_prefix}/opt/llvm/include"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "comment"
+text = "LLVM compiler flags (brew-managed)"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "export"
+name = "LDFLAGS"
+value = "-L${brew_prefix}/opt/llvm/lib"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "export"
+name = "CPPFLAGS"
+value = "-L${brew_prefix}/opt/llvm/include"

@@ -32,6 +32,8 @@ pub enum Error {
         "Package {pkg} references undefined input {input}; mark the action optional or set [pkg.{pkg}.inputs].{input}"
     )]
     UnresolvedInput { pkg: SmolStr, input: SmolStr },
+    #[error("Package {pkg} has an unterminated `${{` in a template")]
+    TemplateUnterminated { pkg: SmolStr },
     #[error(
         "apply requires a terminal for prompts; pass --yes to apply all changes non-interactively, or --dry-run to preview"
     )]
@@ -83,6 +85,9 @@ impl PartialEq for Error {
                     input: r_input,
                 },
             ) => l_pkg == r_pkg && l_input == r_input,
+            (Self::TemplateUnterminated { pkg: l }, Self::TemplateUnterminated { pkg: r }) => {
+                l == r
+            }
             (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             _ => false,

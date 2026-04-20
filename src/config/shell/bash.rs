@@ -2,8 +2,7 @@ use std::fmt::Write as _;
 use zenops_safe_relative_path::srpath;
 
 use super::common::{
-    StoredShellConfig, write_aliases, write_brew_llvm_flags, write_environment,
-    write_path_variable, write_pkg_inits,
+    StoredShellConfig, write_aliases, write_environment, write_path_variable, write_pkg_inits,
 };
 use crate::{
     config::{Config, pkg::Shell},
@@ -37,23 +36,13 @@ pub(super) fn make_config_files(
             prefix.display()
         );
         bash_config.push('\n');
-
-        _ = writeln!(bash_config, "# Bash completions (brew-managed)");
-        _ = writeln!(
-            bash_config,
-            "if [ -f {}/etc/bash_completion ]; then",
-            prefix.display()
-        );
-        _ = writeln!(
-            bash_config,
-            "    . {}/etc/bash_completion",
-            prefix.display()
-        );
-        _ = writeln!(bash_config, "fi");
-        bash_config.push('\n');
     }
 
-    write_pkg_inits(&mut bash_config, &config.env_pkg_inits(Shell::Bash));
+    write_pkg_inits(
+        &mut bash_config,
+        &config.env_pkg_inits(Shell::Bash),
+        config.system_inputs(),
+    )?;
 
     write_aliases(&mut bash_config, alias);
     write_environment(&mut bash_config, environment);
@@ -61,16 +50,14 @@ pub(super) fn make_config_files(
     _ = writeln!(bash_config, "[ -f ~/.bashrc ] && source ~/.bashrc");
     bash_config.push('\n');
 
-    write_pkg_inits(&mut bash_config, &config.interactive_pkg_inits(Shell::Bash));
+    write_pkg_inits(
+        &mut bash_config,
+        &config.interactive_pkg_inits(Shell::Bash),
+        config.system_inputs(),
+    )?;
 
     if let Some(path) = config.path_variable() {
         write_path_variable(&mut bash_config, &path);
-    }
-
-    if let Some(prefix) = config.brew_prefix()
-        && config.has_brew_llvm()
-    {
-        write_brew_llvm_flags(&mut bash_config, prefix);
     }
 
     config_files.add(
