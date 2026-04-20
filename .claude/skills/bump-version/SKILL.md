@@ -30,11 +30,15 @@ Bump the workspace `version` in `Cargo.toml` according to SemVer, based on what 
    State the rationale briefly: which commits or diffs drove the classification.
 
 5. **Apply the bump.**
+   - First, check `git status` for other modified or untracked files. The version-bump commit must touch only `Cargo.toml` and `Cargo.lock`.
+     - If there are unrelated changes that clearly belong in their own commit (e.g. in-progress feature work, unstaged edits to source files), **stop and ask the user** how to handle them — commit them first with their own message, stash them, or abandon the bump.
+     - If it's obvious the other changes should land before the bump (e.g. a release-prep commit the user already described), commit those first with an appropriate message, then proceed.
    - Edit `version = "X.Y.Z"` in `[workspace.package]` in the root `Cargo.toml`.
-   - Run `cargo build` (or `cargo check`) to refresh `Cargo.lock` with the new version for every workspace crate. Stage both files.
-   - Do **not** create the tag or commit — leave that to the user unless they ask.
+   - Also bump the hardcoded `version = "X.Y.Z"` strings on the internal `zenops-*` entries in `[workspace.dependencies]` so path deps stay in lockstep with the workspace version.
+   - Run `cargo build` (or `cargo check`) to refresh `Cargo.lock` with the new version for every workspace crate.
+   - Commit `Cargo.toml` and `Cargo.lock` (only those two files) with the message `Bumped version to vX.Y.Z`. Do **not** create the tag — that's on the user.
 
-6. **Report** the old version, new version, bump type, and the reasoning. Mention if `Cargo.lock` was refreshed.
+6. **Report** the old version, new version, bump type, and the reasoning. Mention that the bump was committed.
 
 7. **Output a changelog** for the user to paste into the GitHub release notes. Keep it short and user-facing:
    - Group under `### Added`, `### Changed`, `### Fixed`, `### Removed` (omit empty groups).
