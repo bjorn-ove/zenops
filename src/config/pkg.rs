@@ -10,6 +10,26 @@ pub(crate) enum Shell {
     Zsh,
 }
 
+/// Operating systems a pkg may opt into supporting. Extend as new platforms are
+/// added. Kept intentionally coarse; finer targeting (e.g. macOS Apple Silicon
+/// vs Intel, specific Linux distros) is deferred until a real use case arrives.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Os {
+    Linux,
+    Macos,
+}
+
+impl Os {
+    pub fn current() -> Option<Self> {
+        match std::env::consts::OS {
+            "linux" => Some(Self::Linux),
+            "macos" => Some(Self::Macos),
+            _ => None,
+        }
+    }
+}
+
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PkgEnable {
@@ -90,12 +110,36 @@ pub struct ShellInitAction {
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionKind {
-    Comment { text: ExpandStr },
-    Source { path: ExpandStr },
-    EvalOutput { command: Vec<ExpandStr> },
-    SourceOutput { command: Vec<ExpandStr> },
-    Export { name: ExpandStr, value: ExpandStr },
-    Line { line: ExpandStr },
+    Comment {
+        text: ExpandStr,
+    },
+    Source {
+        path: ExpandStr,
+    },
+    EvalOutput {
+        command: Vec<ExpandStr>,
+    },
+    SourceOutput {
+        command: Vec<ExpandStr>,
+    },
+    Export {
+        name: ExpandStr,
+        value: ExpandStr,
+    },
+    Line {
+        line: ExpandStr,
+    },
+    /// Emit `export PATH="VALUE:$PATH"` using the current shell's PATH
+    /// syntax. The renderer owns the delimiter, quoting, and `$PATH`
+    /// position so non-POSIX shells can change it in one place.
+    PathPrepend {
+        value: ExpandStr,
+    },
+    /// Emit `export PATH="$PATH:VALUE"` using the current shell's PATH
+    /// syntax. See `PathPrepend` for the "renderer owns the how" rationale.
+    PathAppend {
+        value: ExpandStr,
+    },
 }
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
@@ -118,6 +162,7 @@ impl PerShellActions {
 #[serde(default)]
 pub(crate) struct PkgShellConfig {
     pub env_init: PerShellActions,
+    pub login_init: PerShellActions,
     pub interactive_init: PerShellActions,
 }
 
@@ -129,6 +174,10 @@ pub struct PkgConfig {
     pub(super) detect: Vec<DetectStrategy>,
     #[serde(default)]
     pub(super) inputs: IndexMap<SmolStr, SmolStr>,
+    /// When non-empty, the pkg is only considered installed on the listed
+    /// operating systems — an empty list means "any OS".
+    #[serde(default)]
+    pub(super) supported_os: Vec<Os>,
     #[serde(default)]
     pub description: Option<String>,
     pub install_hint: InstallHint,
@@ -138,6 +187,9 @@ pub struct PkgConfig {
 
 impl PkgConfig {
     pub fn is_installed(&self, home: &Path, system_inputs: &IndexMap<SmolStr, SmolStr>) -> bool {
+        if !self.supports_current_os() {
+            return false;
+        }
         match self.enable {
             PkgEnable::On => true,
             PkgEnable::Detect => {
@@ -158,6 +210,9 @@ impl PkgConfig {
         home: &Path,
         system_inputs: &IndexMap<SmolStr, SmolStr>,
     ) -> Option<&DetectStrategy> {
+        if !self.supports_current_os() {
+            return None;
+        }
         match self.enable {
             PkgEnable::Detect => {
                 let lookup = [&self.inputs, system_inputs];
@@ -165,6 +220,11 @@ impl PkgConfig {
             }
             PkgEnable::On | PkgEnable::Disabled => None,
         }
+    }
+
+    fn supports_current_os(&self) -> bool {
+        self.supported_os.is_empty()
+            || Os::current().is_some_and(|os| self.supported_os.contains(&os))
     }
 
     pub(crate) fn inputs(&self) -> &IndexMap<SmolStr, SmolStr> {
@@ -285,5 +345,81 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(!pkg.is_installed(tmp.path(), &system_empty()));
         assert!(pkg.is_disabled());
+    }
+
+    #[test]
+    fn supported_os_gates_installation() {
+        // Pick the OS that is not current so the pkg must be filtered out.
+        let other = match Os::current().expect("tests run on supported OS") {
+            Os::Linux => "macos",
+            Os::Macos => "linux",
+        };
+        let toml_src = format!(
+            r#"
+            enable = "on"
+            supported_os = ["{other}"]
+            [install_hint.brew]
+            packages = []
+            "#
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+        assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
+    }
+
+    #[test]
+    fn supported_os_allows_installation_when_current_os_listed() {
+        let current = match Os::current().expect("tests run on supported OS") {
+            Os::Linux => "linux",
+            Os::Macos => "macos",
+        };
+        let toml_src = format!(
+            r#"
+            enable = "on"
+            supported_os = ["{current}"]
+            [install_hint.brew]
+            packages = []
+            "#
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn empty_supported_os_means_any_os() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn path_action_kinds_round_trip_from_toml() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            [[shell.env_init.bash]]
+            type = "path_prepend"
+            value = "/opt/foo/bin"
+            [[shell.env_init.bash]]
+            type = "path_append"
+            value = "/opt/bar/bin"
+            "#,
+        )
+        .unwrap();
+        let actions = &pkg.shell.env_init.for_shell(Shell::Bash);
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions[0].kind, ActionKind::PathPrepend { .. }));
+        assert!(matches!(actions[1].kind, ActionKind::PathAppend { .. }));
     }
 }

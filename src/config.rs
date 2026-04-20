@@ -39,7 +39,6 @@ pub struct Config<'dirs> {
     dirs: &'dirs ConfigFileDirs,
     zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
-    brew_prefix: Option<PathBuf>,
     system_inputs: IndexMap<SmolStr, SmolStr>,
 }
 
@@ -111,30 +110,14 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
-        let brew_prefix = detect_brew_prefix();
-        let system_inputs = build_system_inputs(brew_prefix.as_deref());
+        let system_inputs = build_system_inputs(detect_brew_prefix().as_deref());
 
         Ok(Self {
             dirs,
             zenops_repo,
             stored,
-            brew_prefix,
             system_inputs,
         })
-    }
-
-    pub fn brew_prefix(&self) -> Option<&Path> {
-        self.brew_prefix.as_deref()
-    }
-
-    pub fn has_brew_python(&self) -> bool {
-        self.brew_prefix
-            .as_ref()
-            .is_some_and(|p| p.join("opt/python").exists())
-    }
-
-    pub fn is_linux(&self) -> bool {
-        std::env::consts::OS == "linux"
     }
 
     pub fn pkgs(&self) -> &IndexMap<SmolStr, PkgConfig> {
@@ -167,6 +150,24 @@ impl<'dirs> Config<'dirs> {
             .collect()
     }
 
+    pub(crate) fn login_pkg_inits(
+        &self,
+        shell: Shell,
+    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
+        self.stored
+            .pkg
+            .iter()
+            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .flat_map(|(name, p)| {
+                p.shell
+                    .login_init
+                    .for_shell(shell)
+                    .iter()
+                    .map(move |a| (name, p, a))
+            })
+            .collect()
+    }
+
     pub(crate) fn interactive_pkg_inits(
         &self,
         shell: Shell,
@@ -183,24 +184,6 @@ impl<'dirs> Config<'dirs> {
                     .map(move |a| (name, p, a))
             })
             .collect()
-    }
-
-    pub fn path_variable(&self) -> Option<String> {
-        let mut paths = "$PATH".to_string();
-
-        if let Some(prefix) = self.brew_prefix.as_ref() {
-            if self.has_brew_python() {
-                paths.push_str(&format!(":{}/opt/python/libexec/bin", prefix.display()));
-            }
-
-            if prefix.join("opt/llvm").exists() {
-                paths.insert_str(0, &format!("{}/opt/llvm/bin:", prefix.display()));
-            }
-        }
-
-        paths.push_str(":~/.local/bin");
-
-        Some(paths)
     }
 
     pub fn update_config_files(

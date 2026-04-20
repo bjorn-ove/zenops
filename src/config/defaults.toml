@@ -1,3 +1,142 @@
+#
+# Homebrew — shellenv initialization
+#
+# Split by OS because the convention differs:
+#   macOS zsh → .zprofile (login shells)
+#   Linux zsh → .zshrc    (interactive shells)
+# Bash emits the same shellenv line on both OSes; duplicated here since only
+# one of the two pkgs is active on any given host (`supported_os` gates it).
+#
+
+[pkg.brew-macos]
+enable = "detect"
+supported_os = ["macos"]
+description = "Homebrew shellenv initialization (macOS convention: login profile)."
+
+[pkg.brew-macos.install_hint.brew]
+packages = []
+
+[[pkg.brew-macos.detect]]
+type = "file"
+path = "${brew_prefix}/bin/brew"
+
+[[pkg.brew-macos.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH)"
+
+[[pkg.brew-macos.shell.env_init.bash]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "bash"]
+
+[[pkg.brew-macos.shell.login_init.zsh]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH, fpath)"
+
+[[pkg.brew-macos.shell.login_init.zsh]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "zsh"]
+
+[pkg.brew-linux]
+enable = "detect"
+supported_os = ["linux"]
+description = "Homebrew shellenv initialization (Linux convention: interactive shells)."
+
+[pkg.brew-linux.install_hint.brew]
+packages = []
+
+[[pkg.brew-linux.detect]]
+type = "file"
+path = "${brew_prefix}/bin/brew"
+
+[[pkg.brew-linux.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH)"
+
+[[pkg.brew-linux.shell.env_init.bash]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "bash"]
+
+[[pkg.brew-linux.shell.interactive_init.zsh]]
+type = "comment"
+text = "Homebrew environment (PATH, MANPATH, INFOPATH, fpath)"
+
+[[pkg.brew-linux.shell.interactive_init.zsh]]
+type = "eval_output"
+command = ["${brew_prefix}/bin/brew", "shellenv", "zsh"]
+
+#
+# Bash login → .bashrc chain
+#
+
+[pkg.bashrc-chain]
+enable = "on"
+description = "Chain ~/.bashrc from the login profile so login shells inherit interactive config."
+
+[pkg.bashrc-chain.install_hint.brew]
+packages = []
+
+[[pkg.bashrc-chain.shell.login_init.bash]]
+type = "line"
+line = "[ -f ~/.bashrc ] && source ~/.bashrc"
+
+#
+# Always-on PATH additions
+#
+
+[pkg.local-bin]
+enable = "on"
+description = "Append ~/.local/bin to PATH."
+
+[pkg.local-bin.install_hint.brew]
+packages = []
+
+[[pkg.local-bin.shell.env_init.bash]]
+type = "comment"
+text = "Local user binaries"
+
+[[pkg.local-bin.shell.env_init.bash]]
+type = "path_append"
+value = "~/.local/bin"
+
+[[pkg.local-bin.shell.env_init.zsh]]
+type = "comment"
+text = "Local user binaries"
+
+[[pkg.local-bin.shell.env_init.zsh]]
+type = "path_append"
+value = "~/.local/bin"
+
+#
+# Homebrew Python — PATH append for brew-installed python
+#
+
+[pkg.brew-python]
+enable = "detect"
+description = "Homebrew Python — prepends libexec/bin to PATH so `python` resolves to the brew copy."
+
+[pkg.brew-python.install_hint.brew]
+packages = ["python"]
+
+[[pkg.brew-python.detect]]
+type = "file"
+path = "${brew_prefix}/opt/python"
+
+[[pkg.brew-python.shell.env_init.bash]]
+type = "comment"
+text = "Homebrew Python (brew-managed)"
+
+[[pkg.brew-python.shell.env_init.bash]]
+type = "path_append"
+value = "${brew_prefix}/opt/python/libexec/bin"
+
+[[pkg.brew-python.shell.env_init.zsh]]
+type = "comment"
+text = "Homebrew Python (brew-managed)"
+
+[[pkg.brew-python.shell.env_init.zsh]]
+type = "path_append"
+value = "${brew_prefix}/opt/python/libexec/bin"
+
 [pkg.cargo]
 enable = "detect"
 description = "Rust toolchain (cargo) — loads ~/.cargo/env into the shell."
@@ -221,6 +360,10 @@ type = "export"
 name = "CPPFLAGS"
 value = "-L${brew_prefix}/opt/llvm/include"
 
+[[pkg.llvm.shell.env_init.bash]]
+type = "path_prepend"
+value = "${brew_prefix}/opt/llvm/bin"
+
 [[pkg.llvm.shell.env_init.zsh]]
 type = "comment"
 text = "LLVM compiler flags (brew-managed)"
@@ -234,3 +377,7 @@ value = "-L${brew_prefix}/opt/llvm/lib"
 type = "export"
 name = "CPPFLAGS"
 value = "-L${brew_prefix}/opt/llvm/include"
+
+[[pkg.llvm.shell.env_init.zsh]]
+type = "path_prepend"
+value = "${brew_prefix}/opt/llvm/bin"

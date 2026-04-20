@@ -50,11 +50,7 @@ fn write_action_body(
             // POSIX `~/…` → `$HOME/…` translation needs the expanded path, so
             // materialize it once into a scratch String.
             let expanded = path.expand_to_string(lookup)?;
-            if let Some(rest) = expanded.strip_prefix("~/") {
-                write!(buf, r#". "$HOME/{rest}""#)?;
-            } else {
-                write!(buf, r#". "{expanded}""#)?;
-            }
+            write!(buf, r#". "{}""#, home_tilde_to_var(&expanded))?;
         }
         ActionKind::EvalOutput { command } => {
             buf.push_str(r#"eval "$("#);
@@ -76,8 +72,32 @@ fn write_action_body(
         ActionKind::Line { line } => {
             line.write_expanded(lookup, buf)?;
         }
+        ActionKind::PathPrepend { value } => {
+            let expanded = value.expand_to_string(lookup)?;
+            write!(
+                buf,
+                r#"export PATH="{}:$PATH""#,
+                home_tilde_to_var(&expanded)
+            )?;
+        }
+        ActionKind::PathAppend { value } => {
+            let expanded = value.expand_to_string(lookup)?;
+            write!(
+                buf,
+                r#"export PATH="$PATH:{}""#,
+                home_tilde_to_var(&expanded)
+            )?;
+        }
     }
     Ok(())
+}
+
+fn home_tilde_to_var(s: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = s.strip_prefix("~/") {
+        std::borrow::Cow::Owned(format!("$HOME/{rest}"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
 }
 
 fn write_command(
@@ -167,9 +187,4 @@ pub(super) fn write_aliases(buf: &mut String, alias: &IndexMap<SmolStr, SmolStr>
         }
         buf.push('\n');
     }
-}
-
-pub(super) fn write_path_variable(buf: &mut String, path: &str) {
-    _ = writeln!(buf, "export PATH={path}");
-    buf.push('\n');
 }
