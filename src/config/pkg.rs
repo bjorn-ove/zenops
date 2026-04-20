@@ -178,6 +178,11 @@ pub struct PkgConfig {
     /// operating systems — an empty list means "any OS".
     #[serde(default)]
     pub(super) supported_os: Vec<Os>,
+    /// Optional display label, used by `pkg_list` instead of the map key.
+    /// Lets two OS-gated entries (e.g. `brew-linux` / `brew-macos`) share a
+    /// single user-facing name while keeping distinct config keys.
+    #[serde(default)]
+    pub name: Option<SmolStr>,
     #[serde(default)]
     pub description: Option<String>,
     pub install_hint: InstallHint,
@@ -222,7 +227,7 @@ impl PkgConfig {
         }
     }
 
-    fn supports_current_os(&self) -> bool {
+    pub(crate) fn supports_current_os(&self) -> bool {
         self.supported_os.is_empty()
             || Os::current().is_some_and(|os| self.supported_os.contains(&os))
     }
@@ -399,6 +404,31 @@ mod tests {
         .unwrap();
         let tmp = tempfile::tempdir().unwrap();
         assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn name_field_round_trips_from_toml() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            name = "brew"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        assert_eq!(pkg.name.as_deref(), Some("brew"));
+    }
+
+    #[test]
+    fn name_field_defaults_to_none() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        assert!(pkg.name.is_none());
     }
 
     #[test]

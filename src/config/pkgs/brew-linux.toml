@@ -1,5 +1,6 @@
 [pkg.brew-linux]
 enable = "detect"
+name = "brew"
 supported_os = ["linux"]
 description = "Homebrew shellenv initialization (Linux convention: interactive shells)."
 

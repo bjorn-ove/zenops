@@ -10,6 +10,7 @@
 
 [pkg.brew-macos]
 enable = "detect"
+name = "brew"
 supported_os = ["macos"]
 description = "Homebrew shellenv initialization (macOS convention: login profile)."
 

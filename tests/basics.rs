@@ -210,6 +210,61 @@ fn pkg_list_all_flag_surfaces_disabled_pkgs() {
 }
 
 #[test]
+fn pkg_list_hides_pkgs_gated_to_other_os() {
+    let other_os = if cfg!(target_os = "macos") {
+        "linux"
+    } else {
+        "macos"
+    };
+    let env = test_env::TestEnv::load();
+    env.init_config(&format!(
+        r#"
+        [pkg.alien]
+        enable = "on"
+        supported_os = ["{other_os}"]
+        description = "Only applies on the other OS."
+        [pkg.alien.install_hint.brew]
+        packages = []
+    "#
+    ));
+
+    let out = env
+        .run_pkg_list(true, false, false, ColorChoice::Never)
+        .expect("pkg list --all should succeed");
+    assert!(
+        !out.contains("alien"),
+        "pkg gated to the other OS must not appear in the list, got: {out}"
+    );
+}
+
+#[test]
+fn pkg_list_renders_name_override_instead_of_key() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.verbose-key-name]
+        enable = "on"
+        name = "short"
+        description = "Pkg with a display-name override."
+        [pkg.verbose-key-name.install_hint.brew]
+        packages = []
+    "#,
+    );
+
+    let out = env
+        .run_pkg_list(false, false, false, ColorChoice::Never)
+        .expect("pkg list should succeed");
+    assert!(
+        out.contains("short"),
+        "display name override should appear in list, got: {out}"
+    );
+    assert!(
+        !out.contains("verbose-key-name"),
+        "map key should not leak when `name` override is set, got: {out}"
+    );
+}
+
+#[test]
 fn symlinked_configs() {
     let env = test_env::TestEnv::load();
     let dummy_config_symlink = paths::CONFIG_DIR.safe_join(srpath!("dummy-util/dummy-util.toml"));

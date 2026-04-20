@@ -93,13 +93,17 @@ pub fn render(config: &Config, opts: Options) -> String {
     }
 
     let home = config.home();
+    // Entries carry (display_label, pkg). The map key is only used to look up
+    // the pkg; OS-filtering and `name` override happen here so the rendered
+    // output matches what actually applies on this host.
     let mut entries: Vec<(&str, &PkgConfig)> = config
         .pkgs()
         .iter()
         .filter(|(_, p)| opts.all || !p.is_disabled())
-        .map(|(name, pkg)| (name.as_str(), pkg))
+        .filter(|(_, p)| p.supports_current_os())
+        .map(|(key, pkg)| (pkg.name.as_deref().unwrap_or(key.as_str()), pkg))
         .collect();
-    entries.sort_by_key(|(name, _)| *name);
+    entries.sort_by_key(|(label, _)| *label);
 
     if entries.is_empty() {
         return "No packages configured.\n".to_string();
@@ -107,7 +111,7 @@ pub fn render(config: &Config, opts: Options) -> String {
 
     let name_width = entries
         .iter()
-        .map(|(name, _)| name.len())
+        .map(|(label, _)| label.len())
         .max()
         .unwrap_or(0);
 
@@ -121,7 +125,7 @@ pub fn render(config: &Config, opts: Options) -> String {
     // name column. Indent for continuation lines aligns under the description.
     let indent = " ".repeat(2 + name_width + 2);
 
-    for (name, pkg) in entries {
+    for (label, pkg) in entries {
         let (status_color, marker) = if pkg.is_disabled() {
             (s.dim(), "-")
         } else if pkg.is_installed(home, config.system_inputs()) {
@@ -132,9 +136,9 @@ pub fn render(config: &Config, opts: Options) -> String {
 
         let _ = write!(
             out,
-            "{status_color}{marker}{reset} {bold}{name:<name_width$}{reset}",
+            "{status_color}{marker}{reset} {bold}{label:<name_width$}{reset}",
             bold = s.bold(),
-            name = name,
+            label = label,
             name_width = name_width,
         );
         if let Some(desc) = pkg.description.as_deref() {
