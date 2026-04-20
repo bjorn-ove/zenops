@@ -4,7 +4,8 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 use zenops_expand::{ExpandLookup, ExpandStr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Shell {
     Bash,
     Zsh,
@@ -178,6 +179,13 @@ pub struct PkgConfig {
     /// operating systems — an empty list means "any OS".
     #[serde(default)]
     pub(super) supported_os: Vec<Os>,
+    /// When non-empty, the pkg only applies when the user has configured
+    /// one of the listed shells — empty means "any shell". Unlike
+    /// `supported_os`, this is a relevance filter rather than an
+    /// "installed on the system" filter; it gates list visibility and
+    /// init-action emission but not `is_installed`.
+    #[serde(default)]
+    pub(super) supported_shells: Vec<Shell>,
     /// Optional display label, used by `pkg_list` instead of the map key.
     /// Lets two OS-gated entries (e.g. `brew-linux` / `brew-macos`) share a
     /// single user-facing name while keeping distinct config keys.
@@ -230,6 +238,11 @@ impl PkgConfig {
     pub(crate) fn supports_current_os(&self) -> bool {
         self.supported_os.is_empty()
             || Os::current().is_some_and(|os| self.supported_os.contains(&os))
+    }
+
+    pub(crate) fn supports_shell(&self, shell: Option<Shell>) -> bool {
+        self.supported_shells.is_empty()
+            || shell.is_some_and(|s| self.supported_shells.contains(&s))
     }
 
     pub(crate) fn inputs(&self) -> &IndexMap<SmolStr, SmolStr> {
@@ -404,6 +417,48 @@ mod tests {
         .unwrap();
         let tmp = tempfile::tempdir().unwrap();
         assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn supported_shells_round_trips_from_toml() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            supported_shells = ["bash", "zsh"]
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        assert_eq!(pkg.supported_shells, vec![Shell::Bash, Shell::Zsh]);
+    }
+
+    #[test]
+    fn supports_shell_empty_list_means_any() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        assert!(pkg.supports_shell(Some(Shell::Bash)));
+        assert!(pkg.supports_shell(Some(Shell::Zsh)));
+        assert!(pkg.supports_shell(None));
+    }
+
+    #[test]
+    fn supports_shell_filters_by_list() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            supported_shells = ["bash"]
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        assert!(pkg.supports_shell(Some(Shell::Bash)));
+        assert!(!pkg.supports_shell(Some(Shell::Zsh)));
+        assert!(!pkg.supports_shell(None));
     }
 
     #[test]

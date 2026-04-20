@@ -93,14 +93,16 @@ pub fn render(config: &Config, opts: Options) -> String {
     }
 
     let home = config.home();
+    let configured_shell = config.shell();
     // Entries carry (display_label, pkg). The map key is only used to look up
-    // the pkg; OS-filtering and `name` override happen here so the rendered
-    // output matches what actually applies on this host.
+    // the pkg; OS / shell filtering and `name` override happen here so the
+    // rendered output matches what actually applies on this host.
     let mut entries: Vec<(&str, &PkgConfig)> = config
         .pkgs()
         .iter()
         .filter(|(_, p)| opts.all || !p.is_disabled())
         .filter(|(_, p)| p.supports_current_os())
+        .filter(|(_, p)| p.supports_shell(configured_shell))
         .map(|(key, pkg)| (pkg.name.as_deref().unwrap_or(key.as_str()), pkg))
         .collect();
     entries.sort_by_key(|(label, _)| *label);

@@ -160,6 +160,10 @@ impl<'dirs> Config<'dirs> {
         &self.system_inputs
     }
 
+    pub(crate) fn shell(&self) -> Option<Shell> {
+        self.stored.shell.shell()
+    }
+
     pub(crate) fn env_pkg_inits(
         &self,
         shell: Shell,
@@ -168,6 +172,7 @@ impl<'dirs> Config<'dirs> {
             .pkg
             .iter()
             .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .filter(|(_, p)| p.supports_shell(Some(shell)))
             .flat_map(|(name, p)| {
                 p.shell
                     .env_init
@@ -186,6 +191,7 @@ impl<'dirs> Config<'dirs> {
             .pkg
             .iter()
             .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .filter(|(_, p)| p.supports_shell(Some(shell)))
             .flat_map(|(name, p)| {
                 p.shell
                     .login_init
@@ -204,6 +210,7 @@ impl<'dirs> Config<'dirs> {
             .pkg
             .iter()
             .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
+            .filter(|(_, p)| p.supports_shell(Some(shell)))
             .flat_map(|(name, p)| {
                 p.shell
                     .interactive_init

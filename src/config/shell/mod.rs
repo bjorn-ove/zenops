@@ -1,5 +1,5 @@
 use crate::{
-    config::{Config, shell::bash::StoredBashConfig, shell::zsh::StoredZshConfig},
+    config::{Config, pkg::Shell, shell::bash::StoredBashConfig, shell::zsh::StoredZshConfig},
     config_files::ConfigFiles,
     error::Error,
 };
@@ -27,6 +27,14 @@ impl StoredShellEnvironment {
             Self::None => Ok(()),
             Self::Bash(shell_config) => bash::make_config_files(shell_config, config, config_files),
             Self::Zsh(shell_config) => zsh::make_config_files(shell_config, config, config_files),
+        }
+    }
+
+    pub(super) fn shell(&self) -> Option<Shell> {
+        match self {
+            Self::None => None,
+            Self::Bash(_) => Some(Shell::Bash),
+            Self::Zsh(_) => Some(Shell::Zsh),
         }
     }
 }

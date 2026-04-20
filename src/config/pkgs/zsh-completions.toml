@@ -4,6 +4,7 @@
 
 [pkg.zsh-completions]
 enable = "on"
+supported_shells = ["zsh"]
 description = "Zsh completion system initialization (compinit)."
 
 [pkg.zsh-completions.install_hint.brew]

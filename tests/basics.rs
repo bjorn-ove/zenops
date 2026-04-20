@@ -238,6 +238,104 @@ fn pkg_list_hides_pkgs_gated_to_other_os() {
 }
 
 #[test]
+fn pkg_list_hides_pkgs_gated_to_other_shell() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "zsh"
+        [shell.environment]
+        [shell.alias]
+
+        [pkg.bash-only]
+        enable = "on"
+        supported_shells = ["bash"]
+        description = "Bash-only pkg."
+        [pkg.bash-only.install_hint.brew]
+        packages = []
+    "#,
+    );
+
+    let out = env
+        .run_pkg_list(true, false, false, ColorChoice::Never)
+        .expect("pkg list --all should succeed");
+    assert!(
+        !out.contains("bash-only"),
+        "pkg gated to other shell must not appear in list, got: {out}"
+    );
+}
+
+#[test]
+fn pkg_list_shell_filter_is_independent_of_shell_actions() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+
+        [pkg.dual-actions]
+        enable = "on"
+        supported_shells = ["zsh"]
+        description = "Has both shell actions but gated to zsh."
+        [pkg.dual-actions.install_hint.brew]
+        packages = []
+        [[pkg.dual-actions.shell.interactive_init.bash]]
+        type = "line"
+        line = "echo from-bash"
+        [[pkg.dual-actions.shell.interactive_init.zsh]]
+        type = "line"
+        line = "echo from-zsh"
+    "#,
+    );
+
+    let out = env
+        .run_pkg_list(false, false, false, ColorChoice::Never)
+        .expect("pkg list should succeed");
+    assert!(
+        !out.contains("dual-actions"),
+        "shell gate must hide pkg even when bash actions exist, got: {out}"
+    );
+}
+
+#[test]
+fn apply_filters_pkg_by_supported_shells() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "zsh"
+        [shell.environment]
+        [shell.alias]
+
+        [pkg.alien-shell]
+        enable = "on"
+        supported_shells = ["bash"]
+        [pkg.alien-shell.install_hint.brew]
+        packages = []
+        [[pkg.alien-shell.shell.interactive_init.zsh]]
+        type = "line"
+        line = "echo wrong-shell"
+    "#,
+    );
+
+    env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+    })
+    .expect("apply should succeed");
+
+    let zshrc = std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.zshrc")))
+        .expect("zshrc should exist");
+    assert!(
+        !zshrc.contains("echo wrong-shell"),
+        "pkg gated by supported_shells must not contribute on the wrong shell, got:\n{zshrc}"
+    );
+}
+
+#[test]
 fn pkg_list_renders_name_override_instead_of_key() {
     let env = test_env::TestEnv::load();
     env.init_config(
