@@ -1,6 +1,6 @@
 ---
 name: bump-version
-description: Bump one or more workspace crates independently using per-crate SemVer, based on changes since each crate's last release tag. Use when the user asks to bump, release, or cut a new version.
+description: Bump one or more workspace crates independently using per-crate SemVer, based on changes since each crate's last release tag. Runs the full pre-release procedure (`scripts/prerelease.sh`) before committing, and refuses to tag if anything fails. Use when the user asks to bump, release, or cut a new version.
 ---
 
 # bump-version
@@ -90,22 +90,33 @@ there must have its pin updated whenever the crate itself is bumped.
    summary of direct changes or "propagated from <crate>".
 
 5. **Apply the bumps.**
-   - Pre-flight `git status`. The bump commit must touch only `Cargo.toml`
-     files (root + any crate manifests being bumped) and `Cargo.lock`.
+   - **5a. Pre-flight `git status`.** The bump commit must touch only
+     `Cargo.toml` files (root + any crate manifests being bumped) and
+     `Cargo.lock`.
      - If unrelated changes exist that clearly belong in their own commit,
        **stop and ask** — commit them first with their own message, stash
        them, or abandon the bump.
      - If the user already described a release-prep commit that should
        land first, commit those changes with an appropriate message, then
        proceed.
-   - For each bumped crate, edit the `version = "X.Y.Z"` on its
-     `[package]` block at its `manifest_path`.
-   - For each bumped crate that also appears in the root
+   - **5b. Edit manifests.** For each bumped crate, edit the
+     `version = "X.Y.Z"` on its `[package]` block at its `manifest_path`.
+     For each bumped crate that also appears in the root
      `[workspace.dependencies]`, update its pinned `version = "X.Y.Z"`
      there too, so consumers resolve to the new release.
-   - Run `cargo build` to refresh `Cargo.lock`.
-   - Commit only the manifests that changed and `Cargo.lock`. Commit
-     message:
+   - **5c. Refresh `Cargo.lock`.** Run `cargo build`.
+   - **5d. Run the pre-release gate.** Execute `./scripts/prerelease.sh`.
+     This runs fmt/clippy/test/build-release/doc plus a packaging check
+     for every publishable crate. If the script exits non-zero, **stop**.
+     Report which step failed (the script prints a visible `==>` heading
+     per step; surface the failing one). Do not commit and do not tag.
+     Recovery paths to offer the user:
+     - Fix forward — edit the offending code and re-run the skill from
+       step 5c.
+     - Abandon the bump —
+       `git checkout -- Cargo.toml crates/*/Cargo.toml Cargo.lock`.
+   - **5e. Commit.** Commit only the manifests that changed and
+     `Cargo.lock`. Commit message:
      - Single crate: `Bumped <crate> to v<X.Y.Z>`.
      - Multiple: `Bumped <crate-a> to v<X.Y.Z>, <crate-b> to v<X.Y.Z>`
        (list each bumped crate).

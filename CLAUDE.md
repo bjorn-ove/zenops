@@ -12,7 +12,10 @@ cargo test --test basics             # integration tests only
 cargo test --test basics <test_name> -- --nocapture  # single test with output
 cargo fmt                            # format
 cargo clippy                         # lint
+./scripts/prerelease.sh              # pre-release gate (fmt/clippy/test/build/doc + cargo package --workspace)
 ```
+
+The `bump-version` skill runs `./scripts/prerelease.sh` automatically before committing the version bump and refuses to tag if anything fails. Run it directly any time you want the same gate outside the skill.
 
 ## Architecture
 
