@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::SafeRelativePath;
+use crate::{SafeRelativePath, error::Error};
 use serde::de;
 use smol_str::{SmolStr, ToSmolStr};
 
@@ -8,6 +8,18 @@ use smol_str::{SmolStr, ToSmolStr};
 pub struct SinglePathComponent(SmolStr);
 
 impl SinglePathComponent {
+    /// Construct a [`SinglePathComponent`] from a string. Fails if the string
+    /// contains traversal (`..`) or more than one path component.
+    pub fn try_new(v: &str) -> Result<Self, Error> {
+        let path = SafeRelativePath::from_relative_path(v)?;
+        let first = path.0.components().map(|c| c.as_str()).next();
+        if first == Some(v) {
+            Ok(Self(v.to_smolstr()))
+        } else {
+            Err(Error::NotASinglePathComponent(v.to_string()))
+        }
+    }
+
     pub fn as_safe_relative_path(&self) -> &SafeRelativePath {
         unsafe { SafeRelativePath::new_unchecked_from_str(self.0.as_str()) }
     }
@@ -45,15 +57,7 @@ impl<'de> de::Deserialize<'de> for SinglePathComponent {
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                let path = SafeRelativePath::from_relative_path(v).map_err(de::Error::custom)?;
-
-                // Check if the first path component is equal to the original string, if it is, we have one component
-                if let Some(first) = path.0.components().map(|v| v.as_str()).next()
-                    && v == first
-                {
-                    return Ok(SinglePathComponent(v.to_smolstr()));
-                }
-                Err(de::Error::custom(format_args!("Invalid value {v:?}")))
+                SinglePathComponent::try_new(v).map_err(de::Error::custom)
             }
         }
 

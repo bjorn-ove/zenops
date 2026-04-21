@@ -4,6 +4,8 @@ use indexmap::IndexMap;
 use smol_str::SmolStr;
 use zenops_expand::{ExpandLookup, ExpandStr};
 
+use super::pkg_config_files::PkgConfigFiles;
+
 #[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Shell {
@@ -34,9 +36,18 @@ impl Os {
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PkgEnable {
+    /// Expect the pkg to be present. Installation state still gates on
+    /// detect strategies (if any), so a miss yields `is_installed = false`
+    /// just like `Detect`. The distinction is intent: `On` signals the user
+    /// expects the pkg, so rendering commands (e.g. `zenops pkg`) may
+    /// surface the miss more prominently than for `Detect`. Default so a
+    /// bare `[pkg.x]` reads as "I want this."
     #[default]
-    Detect,
     On,
+    /// Opt-in: use the pkg when detect matches, ignore it otherwise. Right
+    /// variant for tooling the user may or may not have installed; miss is
+    /// treated as a non-event.
+    Detect,
     Disabled,
 }
 
@@ -196,6 +207,11 @@ pub struct PkgConfig {
     pub install_hint: InstallHint,
     #[serde(default)]
     pub(crate) shell: PkgShellConfig,
+    /// Dotfiles owned by this pkg — symlinks or generated files under
+    /// `~/.config/<name>/` or `~/<dir>/`. Only applied when the pkg is
+    /// considered installed (see `is_installed`).
+    #[serde(default)]
+    pub(super) configs: Vec<PkgConfigFiles>,
 }
 
 impl PkgConfig {
@@ -204,13 +220,45 @@ impl PkgConfig {
             return false;
         }
         match self.enable {
-            PkgEnable::On => true,
-            PkgEnable::Detect => {
+            // `on` and `detect` run the same installation check; empty
+            // detect means "nothing to check" → installed. They diverge
+            // only in how consumers *surface* a miss: for `on`,
+            // `enable_on_but_detect_missing` flags it so callers can push
+            // a `Status::PkgMissing` to structured output; `detect` miss is
+            // silent by design.
+            PkgEnable::On | PkgEnable::Detect => {
+                if self.detect.is_empty() {
+                    return true;
+                }
                 let lookup = [&self.inputs, system_inputs];
                 self.detect.iter().any(|s| s.check(home, &lookup))
             }
             PkgEnable::Disabled => false,
         }
+    }
+
+    /// Config-health predicate: `true` only when the user declared
+    /// `enable = "on"` with at least one detect strategy and none match on
+    /// the current host. Rendering layers use this to push a user-facing
+    /// "pkg is missing" signal via `Output`. Returns `false` for `detect`
+    /// (miss is silent), `disabled`, OS-gated-out pkgs, and `on` pkgs with
+    /// empty or matching detect.
+    pub fn enable_on_but_detect_missing(
+        &self,
+        home: &Path,
+        system_inputs: &IndexMap<SmolStr, SmolStr>,
+    ) -> bool {
+        if !matches!(self.enable, PkgEnable::On) {
+            return false;
+        }
+        if !self.supports_current_os() {
+            return false;
+        }
+        if self.detect.is_empty() {
+            return false;
+        }
+        let lookup = [&self.inputs, system_inputs];
+        !self.detect.iter().any(|s| s.check(home, &lookup))
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -227,11 +275,11 @@ impl PkgConfig {
             return None;
         }
         match self.enable {
-            PkgEnable::Detect => {
+            PkgEnable::On | PkgEnable::Detect => {
                 let lookup = [&self.inputs, system_inputs];
                 self.detect.iter().find(|s| s.check(home, &lookup))
             }
-            PkgEnable::On | PkgEnable::Disabled => None,
+            PkgEnable::Disabled => None,
         }
     }
 
@@ -247,6 +295,10 @@ impl PkgConfig {
 
     pub(crate) fn inputs(&self) -> &IndexMap<SmolStr, SmolStr> {
         &self.inputs
+    }
+
+    pub(super) fn configs(&self) -> &[PkgConfigFiles] {
+        &self.configs
     }
 }
 
@@ -348,6 +400,150 @@ mod tests {
         let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
         let sys = inputs(&[("name", "b")]);
         assert!(pkg.is_installed(tmp.path(), &sys));
+    }
+
+    #[test]
+    fn enable_on_with_matching_detect_is_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".marker");
+        std::fs::write(&marker, "").unwrap();
+        let toml_src = format!(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "{}"
+            "#,
+            marker.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_on_with_missing_detect_flags_health_signal() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "/definitely/does/not/exist/zenops-test"
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_on_with_empty_detect_is_silent() {
+        // No detect strategies → nothing to check → no health signal even
+        // under `enable = "on"`. This is the "always-on meta-pkg" shape
+        // (bashrc-chain, local-bin, zenops).
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_detect_miss_is_silent() {
+        // Silence on miss is the point of `detect`; don't surface a signal.
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "/definitely/does/not/exist/zenops-test"
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_on_with_matching_detect_is_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".marker");
+        std::fs::write(&marker, "").unwrap();
+        let toml_src = format!(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "{}"
+            "#,
+            marker.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_on_with_missing_detect_is_not_installed() {
+        // `on` + detect miss treats the pkg as not installed, same as
+        // `detect` + miss. Rendering code is responsible for any visual
+        // distinction; this predicate only reports installation state.
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            [[detect]]
+            type = "file"
+            path = "/definitely/does/not/exist/zenops-test"
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn enable_on_with_empty_detect_is_installed() {
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn empty_detect_with_enable_detect_means_installed() {
+        // A pkg with `enable = "detect"` but no detect strategies has nothing
+        // to check, so it's treated as installed. This lets config-only pkgs
+        // stay ergonomic without setting `enable = "on"`.
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+        // No detect ran, so `matched_detect` still has nothing to return.
+        assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
     }
 
     #[test]

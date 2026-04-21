@@ -137,10 +137,12 @@ pub fn real_main(
             dry_run,
         } => {
             let mut prompter = build_prompter(*yes, *dry_run, args.color.enabled())?;
+            config.push_pkg_health(output);
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
         }
         Cmd::Status { diff } => {
+            config.push_pkg_health(output);
             config.check_own_status(&sh, output)?;
             config.update_config_files(&sh, &mut config_files)?;
             if *diff {

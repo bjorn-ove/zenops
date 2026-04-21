@@ -1,4 +1,5 @@
 use similar::{ChangeTag, TextDiff};
+use smol_str::SmolStr;
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -76,6 +77,14 @@ pub enum Status {
         repo: ResolvedConfigFilePath,
         status: GitFileStatus,
     },
+    /// A pkg the user expects to be present (`enable = "on"`) whose detect
+    /// strategies don't match on the current host. `install_command` is the
+    /// ready-to-run shell line (`"brew install python"`) when a package
+    /// manager with a non-empty hint is detected, `None` otherwise.
+    PkgMissing {
+        pkg: SmolStr,
+        install_command: Option<String>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -130,6 +139,14 @@ impl Output for Log {
                 GitFileStatus::Modified(path) => log::info!("GIT: {repo}/{path} is modified"),
                 GitFileStatus::Untracked(path) => log::info!("GIT: {repo}/{path} is untracked"),
             },
+            Status::PkgMissing {
+                pkg,
+                install_command: Some(cmd),
+            } => log::warn!("{pkg} is missing — install with: {cmd}"),
+            Status::PkgMissing {
+                pkg,
+                install_command: None,
+            } => log::warn!("{pkg} is missing"),
         }
     }
 

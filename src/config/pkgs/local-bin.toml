@@ -3,7 +3,6 @@
 #
 
 [pkg.local-bin]
-enable = "on"
 description = "Append ~/.local/bin to PATH."
 
 [pkg.local-bin.install_hint.brew]

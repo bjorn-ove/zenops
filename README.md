@@ -22,17 +22,45 @@ Create `~/.config/zenops/config.toml`:
 type = "bash"
 
 [shell.environment]
-EDITOR = "nvim"
+EDITOR = "hx"
 
 [shell.alias]
 ll = "ls -la"
 
-[[configs]]
-type = ".config"               # or "home"
-name = "app"
-source = "configs/app"         # relative path inside the zenops config repo
-symlinks = ["config.toml"]     # listed files are symlinked; others are generated
+# A pkg is a tool zenops knows about: how to install it, how to detect it,
+# which shell hooks it needs, and which dotfiles it owns. Configs live on
+# the pkg that owns them, so `zenops pkg` and `zenops apply` stay in sync.
+# `enable` defaults to "on" — the pkg is expected to be present. Use
+# `enable = "detect"` for silent-miss or `enable = "disabled"` to skip.
+[pkg.helix]
+description = "modal editor"
+install_hint.brew.packages = ["helix"]
+detect = [{ type = "which", binary = "hx" }]
+
+# Dotfiles for helix. The `.config` directory name defaults to the pkg key
+# (`helix`), so these land at `~/.config/helix/`. Override with an explicit
+# `name = "..."` when the pkg key and config dir differ — e.g. a pkg keyed
+# as `neovim` whose dir is `nvim`.
+[[pkg.helix.configs]]
+type = ".config"
+source = "configs/helix"              # relative path inside the zenops config repo
+symlinks = [                          # listed files are symlinked; others are generated
+  "config.toml",
+  "languages.toml",
+  "themes/onedark-boh.toml",
+]
 ```
+
+A pkg's configs (and its shell hooks) only apply when the pkg is considered
+installed — matching `detect` strategies on the current host, or no `detect`
+specified at all (right for config-only or PATH-only pkgs). `enable` defaults
+to `"on"` — "I expect this pkg to be here." If detect misses, `zenops apply`
+and `zenops status` emit `<pkg> is missing — install with: …` so you notice
+the drift. Use `enable = "detect"` for tools you may or may not have (silent
+miss), or `enable = "disabled"` to skip a pkg entirely.
+
+Use `type = "home"` with `dir = ".something"` instead of `.config` for
+dotfiles that live directly under `~/`.
 
 ## Commands
 

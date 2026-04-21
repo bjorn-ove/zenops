@@ -3,7 +3,6 @@
 #
 
 [pkg.bashrc-chain]
-enable = "on"
 supported_shells = ["bash"]
 description = "Chain ~/.bashrc from the login profile so login shells inherit interactive config."
 

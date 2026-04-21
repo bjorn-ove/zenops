@@ -1,6 +1,6 @@
 pub(crate) mod pkg;
+mod pkg_config_files;
 mod shell;
-mod stored_config_files;
 mod stored_relative_path;
 
 use std::{
@@ -19,19 +19,18 @@ use crate::{
     config::{
         pkg::{Shell, ShellInitAction},
         shell::StoredShellEnvironment,
-        stored_config_files::StoredConfigFilesBase,
     },
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
     git::Git,
     output::{Output, ResolvedConfigFilePath, Status},
+    pkg_manager,
 };
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields, default)]
 struct StoredConfig {
     shell: StoredShellEnvironment,
-    configs: Vec<StoredConfigFilesBase>,
     pkg: IndexMap<SmolStr, PkgConfig>,
 }
 
@@ -227,8 +226,13 @@ impl<'dirs> Config<'dirs> {
         config_files: &mut ConfigFiles<'_>,
     ) -> Result<(), Error> {
         self.stored.shell.update_config_files(self, config_files)?;
-        for config in &self.stored.configs {
-            config.update_config_files(self, config_files)?;
+        for (pkg_key, pkg) in &self.stored.pkg {
+            if !pkg.is_installed(self.dirs.home(), &self.system_inputs) {
+                continue;
+            }
+            for cfg in pkg.configs() {
+                cfg.update_config_files(pkg_key, self, config_files)?;
+            }
         }
         Ok(())
     }
@@ -248,5 +252,68 @@ impl<'dirs> Config<'dirs> {
             }
         }
         Ok(())
+    }
+
+    /// Emit a `Status::PkgMissing` for every pkg that the user declared
+    /// `enable = "on"` on, yet whose detect strategies don't match on this
+    /// host. No-op for `detect`/`disabled` pkgs — silence on miss is the
+    /// defining behavior of `detect`. Called from the apply/status entry
+    /// points, not from `Config::load` — a load isn't an event, and these
+    /// observations should only surface from commands the user runs.
+    pub fn push_pkg_health(&self, output: &mut dyn Output) {
+        let manager = pkg_manager::detect();
+        for (key, pkg) in &self.stored.pkg {
+            if !pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs) {
+                continue;
+            }
+            let label = pkg.name.clone().unwrap_or_else(|| key.clone());
+            let install_command = manager.and_then(|m| {
+                let pkgs = m.packages_for(&pkg.install_hint);
+                (!pkgs.is_empty()).then(|| m.install_command(pkgs))
+            });
+            output.push_status(Status::PkgMissing {
+                pkg: label,
+                install_command,
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod readme_tests {
+    use super::StoredConfig;
+
+    /// Every ```toml block in README.md must deserialize as a full
+    /// [`StoredConfig`]. Guards against docs silently drifting away from the
+    /// real config shape (e.g. after a breaking rename like `[[configs]]` →
+    /// `[[pkg.x.configs]]`).
+    #[test]
+    fn readme_toml_blocks_parse_as_stored_config() {
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("read README.md");
+
+        let mut blocks = Vec::new();
+        let mut in_toml = false;
+        let mut current = String::new();
+        for line in readme.lines() {
+            if in_toml {
+                if line.trim_start().starts_with("```") {
+                    blocks.push(std::mem::take(&mut current));
+                    in_toml = false;
+                } else {
+                    current.push_str(line);
+                    current.push('\n');
+                }
+            } else if line.trim_start().starts_with("```toml") {
+                in_toml = true;
+            }
+        }
+        assert!(!blocks.is_empty(), "README has no ```toml blocks");
+
+        for (i, block) in blocks.iter().enumerate() {
+            toml::from_str::<StoredConfig>(block).unwrap_or_else(|e| {
+                panic!("README ```toml block #{i} failed to parse: {e}\n---\n{block}---")
+            });
+        }
     }
 }

@@ -1,4 +1,5 @@
 use similar_asserts::assert_eq;
+use smol_str::SmolStr;
 use zenops::{
     Cmd, ColorChoice,
     config_files::ConfigFilePath,
@@ -374,15 +375,22 @@ fn symlinked_configs() {
 
     env.init_config(
         r#"
-        [[configs]]
+        [pkg.dummy-util]
+        enable = "on"
+        [pkg.dummy-util.install_hint.brew]
+        packages = []
+        [[pkg.dummy-util.configs]]
         type = ".config"
-        name = "dummy-util"
         source = "configs/dummy-util"
         symlinks = [
           "dummy-util.toml"
         ]
 
-        [[configs]]
+        [pkg.dummy2]
+        enable = "on"
+        [pkg.dummy2.install_hint.brew]
+        packages = []
+        [[pkg.dummy2.configs]]
         type = "home"
         dir = ".dummy2"
         source = "configs/dummy2"
@@ -532,6 +540,239 @@ fn symlinked_configs() {
                 })
             ]
         })
+    );
+}
+
+#[test]
+fn pkg_configs_default_dir_name_to_pkg_key() {
+    // `.config` entries under a pkg default their directory to the pkg key,
+    // so `[pkg.helix]` lands at `~/.config/helix/` without an explicit `name`.
+    let env = test_env::TestEnv::load();
+    let real = env.cfpath("configs/helix/config.toml", ConfigFilePath::Zenops);
+    let symlink = env.cfpath("helix/config.toml", ConfigFilePath::DotConfig);
+
+    env.init_config(
+        r#"
+        [pkg.helix]
+        enable = "on"
+        [pkg.helix.install_hint.brew]
+        packages = ["helix"]
+        [[pkg.helix.configs]]
+        type = ".config"
+        source = "configs/helix"
+        symlinks = ["config.toml"]
+    "#,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status { diff: false }),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real,
+                symlink,
+                status: SymlinkStatus::DstDirIsMissing,
+            })],
+        })
+    );
+}
+
+#[test]
+fn pkg_configs_explicit_name_overrides_pkg_key() {
+    // Useful when the pkg key and the on-disk config dir disagree (e.g. pkg
+    // keyed `neovim` whose config dir is `nvim`).
+    let env = test_env::TestEnv::load();
+    let real = env.cfpath("configs/nvim/init.lua", ConfigFilePath::Zenops);
+    let symlink = env.cfpath("nvim/init.lua", ConfigFilePath::DotConfig);
+
+    env.init_config(
+        r#"
+        [pkg.neovim]
+        enable = "on"
+        [pkg.neovim.install_hint.brew]
+        packages = ["neovim"]
+        [[pkg.neovim.configs]]
+        type = ".config"
+        name = "nvim"
+        source = "configs/nvim"
+        symlinks = ["init.lua"]
+    "#,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status { diff: false }),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Symlink {
+                real,
+                symlink,
+                status: SymlinkStatus::DstDirIsMissing,
+            })],
+        })
+    );
+}
+
+#[test]
+fn disabled_pkg_skips_its_configs() {
+    // Configs gate on `is_installed`, so a disabled pkg contributes nothing.
+    let env = test_env::TestEnv::load();
+
+    env.init_config(
+        r#"
+        [pkg.ghost]
+        enable = "disabled"
+        [pkg.ghost.install_hint.brew]
+        packages = []
+        [[pkg.ghost.configs]]
+        type = ".config"
+        source = "configs/ghost"
+        symlinks = ["ghost.toml"]
+    "#,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Status { diff: false }),
+        Ok(Output { entries: vec![] })
+    );
+}
+
+#[test]
+fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
+    // `enable = "on"` says the user expects this pkg. Detect misses on the
+    // temp host → push a Status::PkgMissing with the brew-install hint.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.ghosttool]
+        enable = "on"
+        [pkg.ghosttool.install_hint.brew]
+        packages = ["ghosttool"]
+        [[pkg.ghosttool.detect]]
+        type = "file"
+        path = "/definitely/does/not/exist/zenops-test-ghosttool"
+    "#,
+    );
+
+    let brew_available = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .any(|dir| std::path::Path::new(dir).join("brew").is_file());
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        })
+        .expect("apply should succeed");
+
+    let expected_install_command = brew_available.then(|| "brew install ghosttool".to_string());
+    assert!(
+        out.entries.contains(&Entry::Status(Status::PkgMissing {
+            pkg: SmolStr::new("ghosttool"),
+            install_command: expected_install_command,
+        })),
+        "expected PkgMissing for ghosttool, got: {:?}",
+        out.entries
+    );
+}
+
+#[test]
+fn apply_is_silent_for_detect_variant_miss() {
+    // Silence on miss is the point of `enable = "detect"`; no PkgMissing.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.quietpkg]
+        enable = "detect"
+        [pkg.quietpkg.install_hint.brew]
+        packages = ["quietpkg"]
+        [[pkg.quietpkg.detect]]
+        type = "file"
+        path = "/definitely/does/not/exist/zenops-test-quietpkg"
+    "#,
+    );
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        })
+        .expect("apply should succeed");
+
+    assert!(
+        !out.entries.iter().any(|e| matches!(
+            e,
+            Entry::Status(Status::PkgMissing { pkg, .. }) if pkg == "quietpkg"
+        )),
+        "detect-miss should not push PkgMissing, got: {:?}",
+        out.entries
+    );
+}
+
+#[test]
+fn apply_pkg_missing_with_no_install_hint_has_no_command() {
+    // `on` + detect miss + empty brew packages → PkgMissing without an
+    // install command; the user just sees "X is missing".
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.hintless]
+        enable = "on"
+        [pkg.hintless.install_hint.brew]
+        packages = []
+        [[pkg.hintless.detect]]
+        type = "file"
+        path = "/definitely/does/not/exist/zenops-test-hintless"
+    "#,
+    );
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        })
+        .expect("apply should succeed");
+
+    assert!(
+        out.entries.contains(&Entry::Status(Status::PkgMissing {
+            pkg: SmolStr::new("hintless"),
+            install_command: None,
+        })),
+        "expected PkgMissing without install_command, got: {:?}",
+        out.entries
+    );
+}
+
+#[test]
+fn apply_no_pkg_missing_when_detect_is_empty() {
+    // `on` + no detect → nothing to check, no signal to emit. This is the
+    // always-on meta-pkg shape (local-bin, bashrc-chain, etc.).
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.metapkg]
+        enable = "on"
+        [pkg.metapkg.install_hint.brew]
+        packages = []
+    "#,
+    );
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        })
+        .expect("apply should succeed");
+
+    assert!(
+        !out.entries.iter().any(|e| matches!(
+            e,
+            Entry::Status(Status::PkgMissing { pkg, .. }) if pkg == "metapkg"
+        )),
+        "empty-detect pkg should not emit PkgMissing, got: {:?}",
+        out.entries
     );
 }
 
@@ -900,9 +1141,12 @@ fn init_single_symlink_env() -> (
 
     env.init_config(
         r#"
-        [[configs]]
+        [pkg.dummy-util]
+        enable = "on"
+        [pkg.dummy-util.install_hint.brew]
+        packages = []
+        [[pkg.dummy-util.configs]]
         type = ".config"
-        name = "dummy-util"
         source = "configs/dummy-util"
         symlinks = [
           "dummy-util.toml"

@@ -3,7 +3,6 @@
 #
 
 [pkg.zenops]
-enable = "on"
 description = "zenops itself — shell completions for the zenops CLI."
 
 [pkg.zenops.install_hint.brew]

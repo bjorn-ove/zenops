@@ -15,7 +15,7 @@ pub(super) struct StoredConfigFiles {
 }
 
 impl StoredConfigFiles {
-    pub fn update_config_files<'a>(
+    fn update_config_files<'a>(
         &'a self,
         _config: &Config,
         config_files: &mut ConfigFiles,
@@ -35,10 +35,15 @@ impl StoredConfigFiles {
 
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, tag = "type")]
-pub(super) enum StoredConfigFilesBase {
+pub(super) enum PkgConfigFiles {
     #[serde(rename = ".config")]
     DotConfig {
-        name: SinglePathComponent,
+        /// Override for the `~/.config/<name>/` directory. Defaults to the
+        /// pkg key when omitted — e.g. `[pkg.helix]` lands at `~/.config/helix/`.
+        /// Only set this when the pkg key differs from the config dir (e.g. a
+        /// pkg keyed as `neovim` whose config dir is `nvim`).
+        #[serde(default)]
+        name: Option<SinglePathComponent>,
         #[serde(flatten)]
         configs: StoredConfigFiles,
     },
@@ -50,16 +55,25 @@ pub(super) enum StoredConfigFilesBase {
     },
 }
 
-impl StoredConfigFilesBase {
+impl PkgConfigFiles {
     pub fn update_config_files(
         &self,
+        pkg_key: &str,
         config: &Config,
         config_files: &mut ConfigFiles,
     ) -> Result<(), Error> {
         match self {
             Self::DotConfig { name, configs } => {
+                let fallback;
+                let dir: &SinglePathComponent = match name {
+                    Some(n) => n,
+                    None => {
+                        fallback = SinglePathComponent::try_new(pkg_key)?;
+                        &fallback
+                    }
+                };
                 configs.update_config_files(config, config_files, |symlink| {
-                    ConfigFilePath::DotConfig(Arc::from(name.safe_join(symlink)))
+                    ConfigFilePath::DotConfig(Arc::from(dir.safe_join(symlink)))
                 })?
             }
             Self::Home { dir, configs } => {
