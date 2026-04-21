@@ -1,4 +1,4 @@
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 
 //! String newtype that carries `${name}` placeholders which must be expanded
