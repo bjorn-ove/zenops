@@ -128,12 +128,12 @@ there must have its pin updated whenever the crate itself is bumped.
    internal renames, unseen dep bumps). These bodies become both the tag
    annotations and the output in step 9 — write them once, reuse.
 
-7. **Create one annotated tag per bumped crate** pointing at the bump
-   commit (HEAD). Use each crate's changelog as the tag message, with the
-   crate name + version as a title line:
+7. **Create one signed annotated tag per bumped crate** pointing at the
+   bump commit (HEAD). Use each crate's changelog as the tag message, with
+   the crate name + version as a title line:
 
    ```bash
-   git tag -a <crate>-v<X.Y.Z> -F - <<'EOF'
+   git tag -s --cleanup=verbatim <crate>-v<X.Y.Z> -F - <<'EOF'
    <crate> v<X.Y.Z>
 
    ### Added
@@ -143,6 +143,15 @@ there must have its pin updated whenever the crate itself is bumped.
    - …
    EOF
    ```
+
+   - Use `-s`, not `-a`. Even with `tag.gpgsign = true` in git config,
+     annotated tags created with `-a` are not auto-signed in all
+     configurations; being explicit guarantees GitHub marks the tag
+     Verified.
+   - Use `--cleanup=verbatim`. The default `strip` mode treats lines
+     starting with `#` as comments and removes them, which would eat the
+     `### Added` / `### Changed` / `### Fixed` / `### Removed` headings
+     from the changelog.
 
    One tag per crate bumped (direct or propagated). If any `<crate>-v<X.Y.Z>`
    tag already exists locally, **stop and ask** — something is out of sync.
