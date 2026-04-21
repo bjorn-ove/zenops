@@ -9,19 +9,7 @@ description = "skim (sk) — fuzzy finder used by interactive shell keybindings.
 [pkg.sk.install_hint.brew]
 packages = ["sk"]
 
-[[pkg.sk.detect]]
-type = "file"
-path = "~/.cargo/bin/sk"
-
-[[pkg.sk.detect]]
-type = "file"
-path = "/opt/homebrew/bin/sk"
-
-[[pkg.sk.detect]]
-type = "file"
-path = "/usr/local/bin/sk"
-
-[[pkg.sk.detect]]
+[pkg.sk.detect]
 type = "which"
 binary = "sk"
 

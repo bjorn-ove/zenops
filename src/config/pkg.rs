@@ -51,17 +51,58 @@ pub(crate) enum PkgEnable {
     Disabled,
 }
 
+/// A detect strategy wraps a concrete check (`kind`) with an optional OS gate.
+/// When `os` is non-empty and doesn't include the current OS, `check()`
+/// short-circuits to `false` — the strategy is treated as a miss on that host.
+#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct DetectStrategy {
+    #[serde(default)]
+    pub os: Vec<Os>,
+    #[serde(flatten)]
+    pub kind: DetectKind,
+}
+
+/// Concrete detect checks. `File` and `Which` are leaves; `Any` and `All` are
+/// combinators that let a single `detect` field express arbitrary boolean
+/// logic by nesting other strategies.
 #[derive(serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum DetectStrategy {
-    File { path: ExpandStr },
-    Which { binary: ExpandStr },
+pub enum DetectKind {
+    File {
+        path: ExpandStr,
+    },
+    Which {
+        binary: ExpandStr,
+    },
+    /// Matches when **any** child strategy matches (short-circuits).
+    Any {
+        of: Vec<DetectStrategy>,
+    },
+    /// Matches when **every** child strategy matches. An empty `of` is
+    /// vacuously true — callers should prefer omitting the pkg's `detect`
+    /// field entirely to express "no check required".
+    All {
+        of: Vec<DetectStrategy>,
+    },
 }
 
 impl DetectStrategy {
-    /// Expand placeholders and check the resulting detect target. An unresolved
-    /// placeholder (e.g. `${brew_prefix}` on a brew-less system) means the
-    /// strategy is inapplicable on this host — return `false`.
+    /// Apply the OS gate first, then delegate to the kind. Unresolved
+    /// `${var}` placeholders inside the leaf checks also yield `false`.
+    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> bool {
+        if !self.os.is_empty() {
+            let Some(cur) = Os::current() else {
+                return false;
+            };
+            if !self.os.contains(&cur) {
+                return false;
+            }
+        }
+        self.kind.check(home, lookup)
+    }
+}
+
+impl DetectKind {
     pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> bool {
         match self {
             Self::File { path } => {
@@ -75,17 +116,53 @@ impl DetectStrategy {
                 Ok(b) => which_on_path(&b),
                 Err(_) => false,
             },
+            Self::Any { of } => of.iter().any(|s| s.check(home, lookup)),
+            Self::All { of } => of.iter().all(|s| s.check(home, lookup)),
         }
     }
 }
 
 impl std::fmt::Display for DetectStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !self.os.is_empty() {
+            let names: Vec<&'static str> = self
+                .os
+                .iter()
+                .map(|o| match o {
+                    Os::Linux => "linux",
+                    Os::Macos => "macos",
+                })
+                .collect();
+            write!(f, "[os={}] ", names.join(","))?;
+        }
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl std::fmt::Display for DetectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File { path } => write!(f, "{}", path.as_template()),
             Self::Which { binary } => write!(f, "which {}", binary.as_template()),
+            Self::Any { of } => write_combinator(f, "any", of),
+            Self::All { of } => write_combinator(f, "all", of),
         }
     }
+}
+
+fn write_combinator(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    of: &[DetectStrategy],
+) -> std::fmt::Result {
+    write!(f, "{name}(")?;
+    for (i, s) in of.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{s}")?;
+    }
+    write!(f, ")")
 }
 
 pub(crate) fn which_on_path(binary: &str) -> bool {
@@ -183,7 +260,7 @@ pub struct PkgConfig {
     #[serde(default)]
     pub(super) enable: PkgEnable,
     #[serde(default)]
-    pub(super) detect: Vec<DetectStrategy>,
+    pub(super) detect: Option<DetectStrategy>,
     #[serde(default)]
     pub(super) inputs: IndexMap<SmolStr, SmolStr>,
     /// When non-empty, the pkg is only considered installed on the listed
@@ -220,29 +297,29 @@ impl PkgConfig {
             return false;
         }
         match self.enable {
-            // `on` and `detect` run the same installation check; empty
-            // detect means "nothing to check" → installed. They diverge
-            // only in how consumers *surface* a miss: for `on`,
+            // `on` and `detect` run the same installation check; an absent
+            // `detect` field means "nothing to check" → installed. They
+            // diverge only in how consumers *surface* a miss: for `on`,
             // `enable_on_but_detect_missing` flags it so callers can push
             // a `Status::PkgMissing` to structured output; `detect` miss is
             // silent by design.
             PkgEnable::On | PkgEnable::Detect => {
-                if self.detect.is_empty() {
+                let Some(detect) = self.detect.as_ref() else {
                     return true;
-                }
+                };
                 let lookup = [&self.inputs, system_inputs];
-                self.detect.iter().any(|s| s.check(home, &lookup))
+                detect.check(home, &lookup)
             }
             PkgEnable::Disabled => false,
         }
     }
 
     /// Config-health predicate: `true` only when the user declared
-    /// `enable = "on"` with at least one detect strategy and none match on
-    /// the current host. Rendering layers use this to push a user-facing
+    /// `enable = "on"` with a detect strategy that doesn't match on the
+    /// current host. Rendering layers use this to push a user-facing
     /// "pkg is missing" signal via `Output`. Returns `false` for `detect`
     /// (miss is silent), `disabled`, OS-gated-out pkgs, and `on` pkgs with
-    /// empty or matching detect.
+    /// absent or matching detect.
     pub fn enable_on_but_detect_missing(
         &self,
         home: &Path,
@@ -254,18 +331,21 @@ impl PkgConfig {
         if !self.supports_current_os() {
             return false;
         }
-        if self.detect.is_empty() {
+        let Some(detect) = self.detect.as_ref() else {
             return false;
-        }
+        };
         let lookup = [&self.inputs, system_inputs];
-        !self.detect.iter().any(|s| s.check(home, &lookup))
+        !detect.check(home, &lookup)
     }
 
     pub fn is_disabled(&self) -> bool {
         matches!(self.enable, PkgEnable::Disabled)
     }
 
-    /// First detect strategy that matches, if any — used for debuggable output.
+    /// The top-level detect strategy when it matches on the current host —
+    /// used for debuggable output. Inside an `any` / `all` combinator this
+    /// returns the wrapper; consumers that care about the matching leaf can
+    /// walk `.kind` themselves.
     pub fn matched_detect(
         &self,
         home: &Path,
@@ -276,8 +356,9 @@ impl PkgConfig {
         }
         match self.enable {
             PkgEnable::On | PkgEnable::Detect => {
+                let detect = self.detect.as_ref()?;
                 let lookup = [&self.inputs, system_inputs];
-                self.detect.iter().find(|s| s.check(home, &lookup))
+                detect.check(home, &lookup).then_some(detect)
             }
             PkgEnable::Disabled => None,
         }
@@ -348,7 +429,7 @@ mod tests {
             enable = "detect"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "${brew_prefix}/opt/x"
             "#,
@@ -369,7 +450,7 @@ mod tests {
             enable = "detect"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "${root}/opt/x"
             "#,
@@ -391,7 +472,7 @@ mod tests {
             packages = []
             [inputs]
             name = "a"
-            [[detect]]
+            [detect]
             type = "file"
             path = "{}/${{name}}"
             "#,
@@ -412,7 +493,7 @@ mod tests {
             enable = "on"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "{}"
             "#,
@@ -429,7 +510,7 @@ mod tests {
             enable = "on"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "/definitely/does/not/exist/zenops-test"
             "#,
@@ -464,7 +545,7 @@ mod tests {
             enable = "detect"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "/definitely/does/not/exist/zenops-test"
             "#,
@@ -484,7 +565,7 @@ mod tests {
             enable = "on"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "{}"
             "#,
@@ -504,7 +585,7 @@ mod tests {
             enable = "on"
             [install_hint.brew]
             packages = []
-            [[detect]]
+            [detect]
             type = "file"
             path = "/definitely/does/not/exist/zenops-test"
             "#,
@@ -680,6 +761,200 @@ mod tests {
         )
         .unwrap();
         assert!(pkg.name.is_none());
+    }
+
+    #[test]
+    fn any_combinator_matches_when_any_child_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let present = tmp.path().join(".present");
+        std::fs::write(&present, "").unwrap();
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "any"
+            of = [
+              {{ type = "file", path = "/definitely/does/not/exist/zenops-test" }},
+              {{ type = "file", path = "{}" }},
+            ]
+            "#,
+            present.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn all_combinator_requires_every_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::write(&a, "").unwrap();
+        // Only `a` exists — `all` should miss.
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "all"
+            of = [
+              {{ type = "file", path = "{}" }},
+              {{ type = "file", path = "{}" }},
+            ]
+            "#,
+            a.display(),
+            b.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+
+        std::fs::write(&b, "").unwrap();
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn nested_combinators_compose() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::write(&a, "").unwrap();
+        std::fs::write(&b, "").unwrap();
+        // any(all(a, b), which=<missing>) — inner `all` hits, outer `any` hits.
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "any"
+            of = [
+              {{ type = "all", of = [
+                {{ type = "file", path = "{}" }},
+                {{ type = "file", path = "{}" }},
+              ] }},
+              {{ type = "which", binary = "definitely-not-on-path-zenops-test" }},
+            ]
+            "#,
+            a.display(),
+            b.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn per_strategy_os_skips_when_os_mismatches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".marker");
+        std::fs::write(&marker, "").unwrap();
+        let other = match Os::current().expect("tests run on supported OS") {
+            Os::Linux => "macos",
+            Os::Macos => "linux",
+        };
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "file"
+            path = "{}"
+            os = ["{other}"]
+            "#,
+            marker.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        // The file exists, but the strategy is gated to the other OS — skip.
+        assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn per_strategy_os_allows_when_os_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".marker");
+        std::fs::write(&marker, "").unwrap();
+        let current = match Os::current().expect("tests run on supported OS") {
+            Os::Linux => "linux",
+            Os::Macos => "macos",
+        };
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "file"
+            path = "{}"
+            os = ["{current}"]
+            "#,
+            marker.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn empty_os_list_means_any_os() {
+        // An `os = []` (or field omitted) strategy is applicable on every OS.
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".marker");
+        std::fs::write(&marker, "").unwrap();
+        let toml_src = format!(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "file"
+            path = "{}"
+            os = []
+            "#,
+            marker.display()
+        );
+        let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn absent_detect_field_is_installed_and_silent() {
+        // No `detect` field at all → nothing to check → installed, no health
+        // signal even under `enable = "on"`. This is the "always-on meta-pkg"
+        // shape (bashrc-chain, local-bin, zenops).
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "on"
+            [install_hint.brew]
+            packages = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
+        assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    }
+
+    #[test]
+    fn all_with_empty_of_matches_vacuously() {
+        // An empty `all` is vacuously true. Documented so we don't quietly
+        // change this later; in practice, users should omit `detect` entirely
+        // if they mean "no check required".
+        let pkg: PkgConfig = toml::from_str(
+            r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "all"
+            of = []
+            "#,
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(pkg.is_installed(tmp.path(), &system_empty()));
     }
 
     #[test]

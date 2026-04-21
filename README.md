@@ -35,7 +35,7 @@ ll = "ls -la"
 [pkg.helix]
 description = "modal editor"
 install_hint.brew.packages = ["helix"]
-detect = [{ type = "which", binary = "hx" }]
+detect = { type = "which", binary = "hx" }
 
 # Dotfiles for helix. The `.config` directory name defaults to the pkg key
 # (`helix`), so these land at `~/.config/helix/`. Override with an explicit

@@ -9,11 +9,7 @@ description = "starship — cross-shell prompt."
 [pkg.starship.install_hint.brew]
 packages = ["starship"]
 
-[[pkg.starship.detect]]
-type = "file"
-path = "~/.cargo/bin/starship"
-
-[[pkg.starship.detect]]
+[pkg.starship.detect]
 type = "which"
 binary = "starship"
 

@@ -10,7 +10,7 @@ description = "Brew-managed bash completion loader."
 [pkg.bash-completion.install_hint.brew]
 packages = ["bash-completion@2"]
 
-[[pkg.bash-completion.detect]]
+[pkg.bash-completion.detect]
 type = "file"
 path = "${brew_prefix}/etc/bash_completion"
 

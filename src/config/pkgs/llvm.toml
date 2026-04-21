@@ -9,7 +9,7 @@ description = "LLVM toolchain (brew) — exports LDFLAGS/CPPFLAGS for compilers.
 [pkg.llvm.install_hint.brew]
 packages = ["llvm"]
 
-[[pkg.llvm.detect]]
+[pkg.llvm.detect]
 type = "file"
 path = "${brew_prefix}/opt/llvm"
 

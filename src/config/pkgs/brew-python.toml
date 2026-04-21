@@ -9,7 +9,7 @@ description = "Homebrew Python — prepends libexec/bin to PATH so `python` reso
 [pkg.brew-python.install_hint.brew]
 packages = ["python"]
 
-[[pkg.brew-python.detect]]
+[pkg.brew-python.detect]
 type = "file"
 path = "${brew_prefix}/opt/python"
 

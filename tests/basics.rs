@@ -211,7 +211,7 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
         [pkg.alpha]
         enable = "detect"
         description = "Alpha test pkg."
-        [[pkg.alpha.detect]]
+        [pkg.alpha.detect]
         type = "file"
         path = "~/.alpha-marker"
         [pkg.alpha.install_hint.brew]
@@ -220,7 +220,7 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
         [pkg.bravo]
         enable = "detect"
         description = "Bravo test pkg."
-        [[pkg.bravo.detect]]
+        [pkg.bravo.detect]
         type = "file"
         path = "~/.bravo-marker"
         [pkg.bravo.install_hint.brew]
@@ -733,7 +733,7 @@ fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
         enable = "on"
         [pkg.ghosttool.install_hint.brew]
         packages = ["ghosttool"]
-        [[pkg.ghosttool.detect]]
+        [pkg.ghosttool.detect]
         type = "file"
         path = "/definitely/does/not/exist/zenops-test-ghosttool"
     "#,
@@ -773,7 +773,7 @@ fn apply_is_silent_for_detect_variant_miss() {
         enable = "detect"
         [pkg.quietpkg.install_hint.brew]
         packages = ["quietpkg"]
-        [[pkg.quietpkg.detect]]
+        [pkg.quietpkg.detect]
         type = "file"
         path = "/definitely/does/not/exist/zenops-test-quietpkg"
     "#,
@@ -808,7 +808,7 @@ fn apply_pkg_missing_with_no_install_hint_has_no_command() {
         enable = "on"
         [pkg.hintless.install_hint.brew]
         packages = []
-        [[pkg.hintless.detect]]
+        [pkg.hintless.detect]
         type = "file"
         path = "/definitely/does/not/exist/zenops-test-hintless"
     "#,

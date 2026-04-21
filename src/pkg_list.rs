@@ -247,7 +247,7 @@ mod tests {
             enable = "detect"
             [install_hint.brew]
             packages = ["foo"]
-            [[detect]]
+            [detect]
             type = "file"
             path = "{}"
             "#,
