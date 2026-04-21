@@ -29,6 +29,7 @@ ZenOps is a Rust (edition 2024) system configuration management tool. It reads a
 
 - `SmolStr`: use `SmolStr::new_static(s)` when `s` is `&'static str` (string literals, `std::env::consts::*`, etc.); reserve `SmolStr::new` for runtime-owned values. `new_static` avoids the allocation check and stores the literal directly.
 - License files in subcrates: each published crate needs `LICENSE-APACHE` and `LICENSE-MIT` at its root (cargo packages each crate independently), but they must be **symlinks** to the workspace-root files (`ln -s ../../LICENSE-APACHE LICENSE-APACHE`), not real copies. Cargo resolves symlinks when building the `.crate` tarball, so each published crate ships the license text without duplicating bytes on disk. When adding a new subcrate, create the symlinks — do not copy the files.
+- Per-crate versioning: every crate has its own explicit `version = "X.Y.Z"` in its `[package]` block — the workspace does not share a version. The root `[workspace.dependencies]` pins each internal crate with `version = "X.Y.Z"`; bumping an internal crate means editing both its own `[package] version` and that pin. Release tags are `<crate>-v<X.Y.Z>` (e.g. `zenops-expand-v0.4.3`). The pre-split `v0.4.2` workspace tag is kept as a one-time fallback anchor for the first per-crate bump. The `bump-version` skill automates this.
 
 **Command flow (`src/`):**
 1. `main.rs` — clap CLI, calls into `lib.rs`

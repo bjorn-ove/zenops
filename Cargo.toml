@@ -4,7 +4,7 @@ description = "Declarative system configuration management for shell config and 
 readme = "README.md"
 categories = ["command-line-utilities", "config"]
 keywords = ["dotfiles", "config", "shell", "system"]
-version.workspace = true
+version = "0.4.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -37,7 +37,6 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.2"
 edition = "2024"
 rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
