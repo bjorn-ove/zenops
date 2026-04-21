@@ -27,8 +27,35 @@ pub enum PendingChange<'a> {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreApplyDecision {
+    CommitAndPush { message: String },
+    Continue,
+    Abort,
+}
+
+/// Parse a single-char answer from the pre-apply prompt. `c` commits & pushes,
+/// `y`/empty continues without committing, `n` aborts. Returns `None` for any
+/// other input so the caller can re-prompt.
+pub fn parse_pre_apply_input(line: &str) -> Option<PreApplyAnswer> {
+    match line.trim().to_ascii_lowercase().as_str() {
+        "c" | "commit" => Some(PreApplyAnswer::Commit),
+        "" | "y" | "yes" => Some(PreApplyAnswer::Continue),
+        "n" | "no" | "abort" => Some(PreApplyAnswer::Abort),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreApplyAnswer {
+    Commit,
+    Continue,
+    Abort,
+}
+
 pub trait Prompter {
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error>;
+    fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error>;
 }
 
 pub struct YesPrompter;
@@ -36,6 +63,9 @@ pub struct YesPrompter;
 impl Prompter for YesPrompter {
     fn confirm(&mut self, _change: PendingChange<'_>) -> Result<bool, Error> {
         Ok(true)
+    }
+    fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
+        Ok(PreApplyDecision::Continue)
     }
 }
 
@@ -76,6 +106,60 @@ impl Prompter for TerminalPrompter {
             }
         }
     }
+
+    fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
+        let stderr = io::stderr();
+        let mut out = stderr.lock();
+        loop {
+            write!(out, "[c]ommit & push / [Y]continue / [n]abort: ").map_err(Error::PromptRead)?;
+            out.flush().map_err(Error::PromptRead)?;
+
+            let mut line = String::new();
+            let n = io::stdin()
+                .lock()
+                .read_line(&mut line)
+                .map_err(Error::PromptRead)?;
+            if n == 0 {
+                writeln!(out).map_err(Error::PromptRead)?;
+                return Ok(PreApplyDecision::Abort);
+            }
+            match parse_pre_apply_input(&line) {
+                Some(PreApplyAnswer::Commit) => {
+                    let message = read_commit_message(&mut out)?;
+                    return Ok(PreApplyDecision::CommitAndPush { message });
+                }
+                Some(PreApplyAnswer::Continue) => return Ok(PreApplyDecision::Continue),
+                Some(PreApplyAnswer::Abort) => return Ok(PreApplyDecision::Abort),
+                None => {
+                    writeln!(out, "Please answer c, y, or n.").map_err(Error::PromptRead)?;
+                }
+            }
+        }
+    }
+}
+
+fn read_commit_message(out: &mut dyn Write) -> Result<String, Error> {
+    loop {
+        write!(out, "Commit message: ").map_err(Error::PromptRead)?;
+        out.flush().map_err(Error::PromptRead)?;
+        let mut line = String::new();
+        let n = io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(Error::PromptRead)?;
+        if n == 0 {
+            return Err(Error::PromptRead(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "no commit message provided",
+            )));
+        }
+        let trimmed = line.trim().to_string();
+        if trimmed.is_empty() {
+            writeln!(out, "Commit message cannot be empty.").map_err(Error::PromptRead)?;
+            continue;
+        }
+        return Ok(trimmed);
+    }
 }
 
 pub struct DryRunPrompter {
@@ -95,6 +179,10 @@ impl Prompter for DryRunPrompter {
         render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
         writeln!(out, "[Y/n] (dry-run: skipping)").map_err(Error::PromptRead)?;
         Ok(false)
+    }
+
+    fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
+        Ok(PreApplyDecision::Continue)
     }
 }
 

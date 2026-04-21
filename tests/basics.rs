@@ -6,6 +6,7 @@ use zenops::{
     error::Error,
     git::GitFileStatus,
     output::{AppliedAction, Status, SymlinkStatus},
+    prompt::{PreApplyAnswer, parse_pre_apply_input},
 };
 use zenops_safe_relative_path::srpath;
 
@@ -71,6 +72,93 @@ fn config_dir_git_status() {
             ]
         })
     );
+}
+
+#[test]
+fn apply_warns_on_uncommitted_changes_with_yes() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    // Modify a tracked file and add an untracked one — neither committed.
+    env.append_zenops_file(srpath!("config.toml"), "# Local tweak", None);
+    env.write_zenops_file(srpath!("local-note"), "wip", None);
+
+    // --yes: pre-apply prompt is skipped, warnings still surface, apply runs.
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        }),
+        Ok(Output {
+            entries: vec![
+                Entry::Status(Status::Git {
+                    repo: env.cfpath("", ConfigFilePath::Zenops),
+                    status: GitFileStatus::Modified(srpath!("config.toml").into()),
+                }),
+                Entry::Status(Status::Git {
+                    repo: env.cfpath("", ConfigFilePath::Zenops),
+                    status: GitFileStatus::Untracked(srpath!("local-note").into()),
+                }),
+            ]
+        })
+    );
+}
+
+#[test]
+fn apply_warns_on_deleted_tracked_file() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    // Commit an extra tracked file, then remove it from the working tree.
+    env.write_zenops_file(srpath!("extra"), "to be deleted", Some("add extra"));
+    env.delete_file(paths::ZENOPS_DIR.safe_join(srpath!("extra")));
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        }),
+        Ok(Output {
+            entries: vec![Entry::Status(Status::Git {
+                repo: env.cfpath("", ConfigFilePath::Zenops),
+                status: GitFileStatus::Deleted(srpath!("extra").into()),
+            })]
+        })
+    );
+}
+
+#[test]
+fn apply_clean_repo_emits_no_git_status() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+        }),
+        Ok(Output { entries: vec![] })
+    );
+}
+
+#[test]
+fn parse_pre_apply_input_covers_expected_answers() {
+    assert_eq!(parse_pre_apply_input("c"), Some(PreApplyAnswer::Commit));
+    assert_eq!(parse_pre_apply_input("C"), Some(PreApplyAnswer::Commit));
+    assert_eq!(
+        parse_pre_apply_input("commit\n"),
+        Some(PreApplyAnswer::Commit)
+    );
+    assert_eq!(parse_pre_apply_input(""), Some(PreApplyAnswer::Continue));
+    assert_eq!(parse_pre_apply_input("\n"), Some(PreApplyAnswer::Continue));
+    assert_eq!(parse_pre_apply_input("y"), Some(PreApplyAnswer::Continue));
+    assert_eq!(parse_pre_apply_input("YES"), Some(PreApplyAnswer::Continue));
+    assert_eq!(parse_pre_apply_input("n"), Some(PreApplyAnswer::Abort));
+    assert_eq!(parse_pre_apply_input("abort"), Some(PreApplyAnswer::Abort));
+    assert_eq!(parse_pre_apply_input("maybe"), None);
 }
 
 #[test]

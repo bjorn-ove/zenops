@@ -137,7 +137,12 @@ impl Output for Log {
             },
             Status::Git { repo, status } => match status {
                 GitFileStatus::Modified(path) => log::info!("GIT: {repo}/{path} is modified"),
+                GitFileStatus::Added(path) => log::info!("GIT: {repo}/{path} is added"),
+                GitFileStatus::Deleted(path) => log::info!("GIT: {repo}/{path} is deleted"),
                 GitFileStatus::Untracked(path) => log::info!("GIT: {repo}/{path} is untracked"),
+                GitFileStatus::Other { code, path } => {
+                    log::info!("GIT: {repo}/{path} has status {code}")
+                }
             },
             Status::PkgMissing {
                 pkg,

@@ -16,9 +16,9 @@ use crate::{
     config::Config,
     config_files::{ConfigFileDirs, ConfigFiles},
     error::Error,
-    git::GitCmd,
+    git::{Git, GitCmd},
     output::{DiffLog, Output},
-    prompt::{DryRunPrompter, Prompter, TerminalPrompter, YesPrompter},
+    prompt::{DryRunPrompter, PreApplyDecision, Prompter, TerminalPrompter, YesPrompter},
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -138,6 +138,20 @@ pub fn real_main(
         } => {
             let mut prompter = build_prompter(*yes, *dry_run, args.color.enabled())?;
             config.push_pkg_health(output);
+
+            let git = Git::new(dirs.zenops(), &sh);
+            if git.is_git_repo()? && git.has_uncommitted_changes()? {
+                config.check_own_status(&sh, output)?;
+                git.print_pre_apply_summary(args.color.enabled())?;
+                match prompter.confirm_pre_apply()? {
+                    PreApplyDecision::CommitAndPush { message } => {
+                        git.commit_all_and_push(&message)?;
+                    }
+                    PreApplyDecision::Continue => {}
+                    PreApplyDecision::Abort => return Ok(()),
+                }
+            }
+
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
         }
