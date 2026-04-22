@@ -10,6 +10,14 @@ pub(crate) struct Styler {
 impl Styler {
     pub const BOLD: &'static str = "\x1b[1m";
     pub const DIM: &'static str = "\x1b[2m";
+    /// Stack the `\x1b[2m` faint modifier on top of a light grey (256-color
+    /// level 248). The faint modifier lets the terminal apply its own
+    /// theme-aware fade to the light grey fg, producing a "double-faded
+    /// white" that reads as *less white* than plain `DIM` — rather than a
+    /// solid darker grey, which reads as a different color rather than
+    /// dimmer text. Used for the shared `~/.config/zenops` prefix on
+    /// right-side paths so the identifying tail stands out.
+    pub const EXTRA_DIM: &'static str = "\x1b[2;38;5;248m";
     pub const RED: &'static str = "\x1b[31m";
     pub const GREEN: &'static str = "\x1b[32m";
     pub const YELLOW: &'static str = "\x1b[33m";
@@ -31,6 +39,9 @@ impl Styler {
     }
     pub fn dim(&self) -> &'static str {
         self.code(Self::DIM)
+    }
+    pub fn extra_dim(&self) -> &'static str {
+        self.code(Self::EXTRA_DIM)
     }
     pub fn red(&self) -> &'static str {
         self.code(Self::RED)

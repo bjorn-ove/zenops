@@ -181,7 +181,10 @@ impl Output for JsonOutput<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Style {
+    Default,
     Dim,
+    ExtraDim,
+    Bold,
     Red,
     Green,
     Yellow,
@@ -193,7 +196,10 @@ enum Style {
 impl Style {
     fn open(self, s: &Styler) -> &'static str {
         match self {
+            Style::Default => "",
             Style::Dim => s.dim(),
+            Style::ExtraDim => s.extra_dim(),
+            Style::Bold => s.bold(),
             Style::Red => s.red(),
             Style::Green => s.green(),
             Style::Yellow => s.yellow(),
@@ -223,7 +229,7 @@ impl Segment {
 struct Line {
     marker: char,
     marker_style: Style,
-    path: String,
+    path: Vec<Segment>,
     description: Vec<Segment>,
 }
 
@@ -267,15 +273,18 @@ impl<'w> TerminalRenderer<'w> {
         let s = &self.styler;
         let reset = s.reset();
         let marker_open = line.marker_style.open(s);
-        let dim = s.dim();
-        let pad = path_width.saturating_sub(line.path.chars().count());
+        let path_chars: usize = line.path.iter().map(|seg| seg.text.chars().count()).sum();
+        let pad = path_width.saturating_sub(path_chars);
         write!(
             self.out,
-            "{marker_open}{marker}{reset}  {dim}{path}{reset}{spaces}",
+            "{marker_open}{marker}{reset}  ",
             marker = line.marker,
-            path = line.path,
-            spaces = " ".repeat(pad),
         )?;
+        for seg in &line.path {
+            let open = seg.style.open(s);
+            write!(self.out, "{open}{text}{reset}", text = seg.text)?;
+        }
+        write!(self.out, "{spaces}", spaces = " ".repeat(pad))?;
         if !line.description.is_empty() {
             write!(self.out, "  ")?;
             for seg in &line.description {
@@ -310,13 +319,60 @@ impl<'w> TerminalRenderer<'w> {
     }
 }
 
-fn ok_line(path: String, description: &'static str) -> Line {
+fn ok_line(path: Vec<Segment>, description: &'static str) -> Line {
     Line {
         marker: '✓',
         marker_style: Style::Green,
         path,
-        description: vec![Segment::new(Style::Dim, description)],
+        description: vec![Segment::new(Style::Green, description)],
     }
+}
+
+/// Styled segments for a single resolved path. `Zenops`-rooted paths with a
+/// non-empty relative tail split into an extra-dim `~/.config/zenops` prefix
+/// (fades below the regular dim used for e.g. the left side of a symlink
+/// row) and a default-weight remainder so the identifying tail stands out.
+/// Other paths (including the zenops root itself, like `GitRepoClean`)
+/// render as one dim segment.
+fn path_segments(path: &ResolvedConfigFilePath) -> Vec<Segment> {
+    if let ConfigFilePath::Zenops(rel) = &path.path
+        && !rel.as_str().is_empty()
+    {
+        return vec![
+            Segment::new(Style::ExtraDim, "~/.config/zenops"),
+            Segment::new(Style::Default, format!("/{rel}")),
+        ];
+    }
+    vec![Segment::new(Style::Dim, path.to_string())]
+}
+
+/// Path segments for a `{symlink} → {real}` row: left side all dim, bold
+/// ` → `, right side via `path_segments` (so a zenops-rooted `real` splits
+/// into dim prefix + default-weight tail).
+fn symlink_path_segments(
+    symlink: &ResolvedConfigFilePath,
+    real: &ResolvedConfigFilePath,
+) -> Vec<Segment> {
+    let mut segs = vec![
+        Segment::new(Style::Dim, symlink.to_string()),
+        Segment::new(Style::Bold, " → "),
+    ];
+    segs.extend(path_segments(real));
+    segs
+}
+
+/// Path segments for a git row: `{repo}/{sub}`. `repo` is the zenops root
+/// (extra-dim — same "shared prefix" treatment as right-side symlink paths),
+/// `sub` is the file path inside the repo (default weight).
+fn git_path_segments(repo: &ResolvedConfigFilePath, sub: String) -> Vec<Segment> {
+    vec![
+        Segment::new(Style::ExtraDim, repo.to_string()),
+        Segment::new(Style::Default, format!("/{sub}")),
+    ]
+}
+
+fn raw_dim_path(s: impl Into<String>) -> Vec<Segment> {
+    vec![Segment::new(Style::Dim, s)]
 }
 
 fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
@@ -325,7 +381,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
             path,
             status: FileStatus::Ok,
             ..
-        } => show_clean.then(|| ok_line(path.to_string(), "ok")),
+        } => show_clean.then(|| ok_line(path_segments(path), "ok")),
         Status::Generated {
             path,
             status: FileStatus::Modified,
@@ -333,7 +389,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '~',
             marker_style: Style::Yellow,
-            path: path.to_string(),
+            path: path_segments(path),
             description: vec![Segment::new(Style::Yellow, "modified")],
         }),
         Status::Generated {
@@ -342,15 +398,15 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
             ..
         } => Some(Line {
             marker: '+',
-            marker_style: Style::Green,
-            path: path.to_string(),
-            description: vec![Segment::new(Style::Green, "missing")],
+            marker_style: Style::Yellow,
+            path: path_segments(path),
+            description: vec![Segment::new(Style::Yellow, "missing")],
         }),
         Status::Symlink {
             real,
             symlink,
             status: SymlinkStatus::Ok,
-        } => show_clean.then(|| ok_line(format!("{symlink} → {real}"), "ok")),
+        } => show_clean.then(|| ok_line(symlink_path_segments(symlink, real), "ok")),
         Status::Symlink {
             real,
             symlink,
@@ -358,7 +414,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: format!("{symlink} → {real}"),
+            path: symlink_path_segments(symlink, real),
             description: vec![
                 Segment::new(Style::Red, "wrong target"),
                 Segment::new(Style::Dim, format!(" {}", actual.display())),
@@ -370,9 +426,9 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
             status: SymlinkStatus::New,
         } => Some(Line {
             marker: '+',
-            marker_style: Style::Green,
-            path: format!("{symlink} → {real}"),
-            description: vec![Segment::new(Style::Green, "missing")],
+            marker_style: Style::Yellow,
+            path: symlink_path_segments(symlink, real),
+            description: vec![Segment::new(Style::Yellow, "missing")],
         }),
         Status::Symlink {
             symlink,
@@ -381,7 +437,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: symlink.to_string(),
+            path: path_segments(symlink),
             description: vec![
                 Segment::new(Style::Red, "is a file"),
                 Segment::new(Style::Dim, ", expected symlink"),
@@ -394,7 +450,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: symlink.to_string(),
+            path: path_segments(symlink),
             description: vec![
                 Segment::new(Style::Red, "is a dir"),
                 Segment::new(Style::Dim, ", expected symlink"),
@@ -407,7 +463,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: real.to_string(),
+            path: path_segments(real),
             description: vec![Segment::new(Style::Red, "symlink source missing")],
         }),
         Status::Symlink {
@@ -417,38 +473,38 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: symlink.to_string(),
+            path: path_segments(symlink),
             description: vec![Segment::new(Style::Red, "parent directory missing")],
         }),
         Status::Git { repo, status } => match status {
             GitFileStatus::Modified(p) => Some(Line {
                 marker: 'M',
                 marker_style: Style::Yellow,
-                path: format!("{repo}/{p}"),
+                path: git_path_segments(repo, p.to_string()),
                 description: vec![Segment::new(Style::Yellow, "modified")],
             }),
             GitFileStatus::Added(p) => Some(Line {
                 marker: 'A',
-                marker_style: Style::Green,
-                path: format!("{repo}/{p}"),
-                description: vec![Segment::new(Style::Green, "added")],
+                marker_style: Style::Yellow,
+                path: git_path_segments(repo, p.to_string()),
+                description: vec![Segment::new(Style::Yellow, "added")],
             }),
             GitFileStatus::Deleted(p) => Some(Line {
                 marker: 'D',
                 marker_style: Style::Red,
-                path: format!("{repo}/{p}"),
+                path: git_path_segments(repo, p.to_string()),
                 description: vec![Segment::new(Style::Red, "deleted")],
             }),
             GitFileStatus::Untracked(p) => Some(Line {
                 marker: '?',
                 marker_style: Style::Cyan,
-                path: format!("{repo}/{p}"),
+                path: git_path_segments(repo, p.to_string()),
                 description: vec![Segment::new(Style::Cyan, "untracked")],
             }),
             GitFileStatus::Other { code, path } => Some(Line {
                 marker: '!',
                 marker_style: Style::Magenta,
-                path: format!("{repo}/{path}"),
+                path: git_path_segments(repo, path.to_string()),
                 description: vec![
                     Segment::new(Style::Dim, "status "),
                     Segment::new(Style::Magenta, code.to_string()),
@@ -463,7 +519,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: pkg.to_string(),
+            path: raw_dim_path(pkg.to_string()),
             description: vec![
                 Segment::new(Style::Red, "missing"),
                 Segment::new(Style::Dim, " — install: "),
@@ -478,14 +534,14 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
-            path: pkg.to_string(),
+            path: raw_dim_path(pkg.to_string()),
             description: vec![Segment::new(Style::Red, "missing")],
         }),
         Status::Pkg {
             pkg,
             status: PkgStatus::Ok,
-        } => show_clean.then(|| ok_line(pkg.to_string(), "ok")),
-        Status::GitRepoClean { repo } => show_clean.then(|| ok_line(repo.to_string(), "clean")),
+        } => show_clean.then(|| ok_line(raw_dim_path(pkg.to_string()), "ok")),
+        Status::GitRepoClean { repo } => show_clean.then(|| ok_line(path_segments(repo), "clean")),
     }
 }
 
@@ -494,25 +550,25 @@ fn action_to_line(action: &AppliedAction) -> Line {
         AppliedAction::UpdatedFile(path) => Line {
             marker: '✓',
             marker_style: Style::Green,
-            path: path.to_string(),
+            path: path_segments(path),
             description: vec![Segment::new(Style::Green, "updated")],
         },
         AppliedAction::CreatedFile(path) => Line {
             marker: '✓',
             marker_style: Style::Green,
-            path: path.to_string(),
+            path: path_segments(path),
             description: vec![Segment::new(Style::Green, "created")],
         },
         AppliedAction::CreatedSymlink { real, symlink } => Line {
             marker: '✓',
             marker_style: Style::Green,
-            path: format!("{symlink} → {real}"),
+            path: symlink_path_segments(symlink, real),
             description: vec![Segment::new(Style::Green, "linked")],
         },
         AppliedAction::CreatedDir(path) => Line {
             marker: '✓',
             marker_style: Style::Green,
-            path: path.to_string(),
+            path: path_segments(path),
             description: vec![Segment::new(Style::Green, "mkdir")],
         },
     }
@@ -556,7 +612,7 @@ impl Output for TerminalRenderer<'_> {
         let path_width = self
             .lines
             .iter()
-            .map(|l| l.path.chars().count())
+            .map(|l| l.path.iter().map(|seg| seg.text.chars().count()).sum())
             .max()
             .unwrap_or(0);
         let lines = std::mem::take(&mut self.lines);
@@ -988,6 +1044,122 @@ mod tests {
     fn color_on_pkg_missing_install_command_is_bold_yellow() {
         let got = render_status(pkg_missing("py", Some("brew install py")), true, false);
         assert!(got.contains("\x1b[1;33mbrew install py\x1b[0m"), "{got:?}",);
+    }
+
+    #[test]
+    fn ok_description_is_green_with_color_on() {
+        let s = generated(Some("x\n"), "x\n", "a.toml", FileStatus::Ok);
+        let got = render_status_full(s, true, false, true);
+        assert!(got.contains("\x1b[32m✓\x1b[0m"), "{got:?}");
+        assert!(got.contains("\x1b[32mok\x1b[0m"), "{got:?}");
+    }
+
+    #[test]
+    fn clean_description_is_green_with_color_on() {
+        let s = Status::GitRepoClean {
+            repo: zenops_path(""),
+        };
+        let got = render_status_full(s, true, false, true);
+        assert!(got.contains("\x1b[32m✓\x1b[0m"), "{got:?}");
+        assert!(got.contains("\x1b[32mclean\x1b[0m"), "{got:?}");
+    }
+
+    #[test]
+    fn symlink_ok_splits_zenops_prefix_and_bolds_arrow() {
+        let s = Status::Symlink {
+            real: zenops_path("configs/helix/config.toml"),
+            symlink: home_path(".config/helix/config.toml"),
+            status: SymlinkStatus::Ok,
+        };
+        let got = render_status_full(s, true, false, true);
+        // left symlink path: dim
+        assert!(
+            got.contains("\x1b[2m~/.config/helix/config.toml\x1b[0m"),
+            "{got:?}",
+        );
+        // arrow: bold
+        assert!(got.contains("\x1b[1m → \x1b[0m"), "{got:?}");
+        // right path zenops prefix: extra-dim (fades below the left-side dim)
+        assert!(
+            got.contains("\x1b[2;38;5;248m~/.config/zenops\x1b[0m"),
+            "{got:?}",
+        );
+        // right path remainder: no opening escape, then reset
+        assert!(got.contains("/configs/helix/config.toml\x1b[0m"), "{got:?}");
+        // ok label: green
+        assert!(got.contains("\x1b[32mok\x1b[0m"), "{got:?}");
+    }
+
+    #[test]
+    fn git_row_splits_zenops_prefix() {
+        let repo = zenops_path("");
+        let s = Status::Git {
+            repo,
+            status: GitFileStatus::Modified(relpath("configs/helix/config.toml")),
+        };
+        let got = render_status(s, true, false);
+        assert!(
+            got.contains("\x1b[2;38;5;248m~/.config/zenops\x1b[0m"),
+            "{got:?}",
+        );
+        assert!(got.contains("/configs/helix/config.toml\x1b[0m"), "{got:?}");
+        // tail must not be wrapped in a dim open
+        assert!(
+            !got.contains("\x1b[2m/configs/helix/config.toml"),
+            "tail should not be dim: {got:?}",
+        );
+    }
+
+    #[test]
+    fn path_column_padding_matches_visible_width_for_split_paths() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, true, false, false);
+            // Short zenops-rooted path (splits): ~/.config/zenops/a.toml (22 chars visible)
+            r.push_status(Status::Git {
+                repo: zenops_path(""),
+                status: GitFileStatus::Modified(relpath("a.toml")),
+            })
+            .unwrap();
+            // Longer home path (single dim segment)
+            r.push_status(generated(
+                Some("a\n"),
+                "b\n",
+                "long/nested/path/file.toml",
+                FileStatus::Modified,
+            ))
+            .unwrap();
+            r.finalize().unwrap();
+        }
+        let got = String::from_utf8(buf).unwrap();
+        // Strip ANSI escapes to count visible chars per line.
+        let stripped: String = {
+            let mut out = String::new();
+            let mut in_esc = false;
+            for c in got.chars() {
+                if in_esc {
+                    if c == 'm' {
+                        in_esc = false;
+                    }
+                    continue;
+                }
+                if c == '\x1b' {
+                    in_esc = true;
+                    continue;
+                }
+                out.push(c);
+            }
+            out
+        };
+        let lines: Vec<&str> = stripped.lines().collect();
+        assert_eq!(lines.len(), 2, "{stripped:?}");
+        let short_visible = "~/.config/zenops/a.toml".chars().count();
+        let long_visible = "~/long/nested/path/file.toml".chars().count();
+        let pad = long_visible - short_visible;
+        let expected_short = format!("M  ~/.config/zenops/a.toml{}  modified", " ".repeat(pad));
+        let expected_long = "~  ~/long/nested/path/file.toml  modified";
+        assert_eq!(lines[0], expected_short, "{stripped:?}");
+        assert_eq!(lines[1], expected_long, "{stripped:?}");
     }
 
     // ---- JsonOutput -------------------------------------------------------
