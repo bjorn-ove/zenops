@@ -274,3 +274,163 @@ fn color_code(color: bool, code: &'static str) -> &'static str {
 fn color_reset(color: bool) -> &'static str {
     if color { "\x1b[0m" } else { "" }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{path::Path, sync::Arc};
+
+    use similar::TextDiff;
+    use similar_asserts::assert_eq;
+    use zenops_safe_relative_path::SafeRelativePath;
+
+    use super::*;
+    use crate::{config_files::ConfigFilePath, output::ResolvedConfigFilePath};
+
+    fn home_path(rel: &str) -> ResolvedConfigFilePath {
+        let srp = SafeRelativePath::from_relative_path(rel).unwrap();
+        ResolvedConfigFilePath {
+            path: ConfigFilePath::in_home(srp),
+            full: Arc::from(Path::new("/home/test").join(rel)),
+        }
+    }
+
+    fn render_to_string(change: PendingChange<'_>, color: bool) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        render_change(&mut buf, &change, color).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn render_new_file_emits_plus_prefix_and_missing_newline_marker() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_new_file(&mut buf, "alpha\nbeta", false).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "+alpha\n+beta\n\\ No newline at end of file\n",
+        );
+    }
+
+    #[test]
+    fn render_new_file_skips_marker_when_content_ends_in_newline() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_new_file(&mut buf, "alpha\nbeta\n", false).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "+alpha\n+beta\n");
+    }
+
+    #[test]
+    fn render_new_file_empty_content_emits_nothing() {
+        let mut buf: Vec<u8> = Vec::new();
+        render_new_file(&mut buf, "", false).unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn render_change_create_file_writes_prompt_and_body() {
+        let p = home_path("alpha.toml");
+        assert_eq!(
+            render_to_string(
+                PendingChange::CreateFile {
+                    path: &p,
+                    content: "x\n",
+                },
+                false,
+            ),
+            "Create ~/alpha.toml?\n+x\n",
+        );
+    }
+
+    #[test]
+    fn render_change_create_symlink_writes_single_line() {
+        let real = home_path("src.txt");
+        let symlink = home_path("dst.txt");
+        assert_eq!(
+            render_to_string(
+                PendingChange::CreateSymlink {
+                    real: &real,
+                    symlink: &symlink,
+                },
+                false,
+            ),
+            "Create symlink ~/dst.txt -> ~/src.txt?\n",
+        );
+    }
+
+    #[test]
+    fn render_change_create_symlink_with_parent_mentions_parent_dir() {
+        let real = home_path("src.txt");
+        let symlink = home_path("sub/dst.txt");
+        let parent = home_path("sub");
+        assert_eq!(
+            render_to_string(
+                PendingChange::CreateSymlinkWithParent {
+                    real: &real,
+                    symlink: &symlink,
+                    parent: &parent,
+                },
+                false,
+            ),
+            "Create symlink ~/sub/dst.txt -> ~/src.txt? (will also create directory ~/sub)\n",
+        );
+    }
+
+    #[test]
+    fn render_single_hunk_emits_unified_diff_header_and_markers() {
+        let old = "a\nb\nc\n";
+        let new = "a\nB\nc\n";
+        let diff = TextDiff::from_lines(old, new);
+        let groups = diff.grouped_ops(3);
+        assert_eq!(groups.len(), 1);
+
+        let mut buf: Vec<u8> = Vec::new();
+        render_single_hunk(&mut buf, &diff, &groups[0], false).unwrap();
+        let got = String::from_utf8(buf).unwrap();
+
+        assert!(
+            got.starts_with("@@ -1,3 +1,3 @@\n"),
+            "header wrong: {got:?}",
+        );
+        assert!(got.contains(" a\n"), "context before missing: {got:?}");
+        assert!(got.contains("-b\n"), "delete line missing: {got:?}");
+        assert!(got.contains("+B\n"), "insert line missing: {got:?}");
+        assert!(got.contains(" c\n"), "context after missing: {got:?}");
+    }
+
+    #[test]
+    fn render_single_hunk_uses_ansi_colors_when_enabled() {
+        let diff = TextDiff::from_lines("a\n", "b\n");
+        let groups = diff.grouped_ops(3);
+        let mut buf: Vec<u8> = Vec::new();
+        render_single_hunk(&mut buf, &diff, &groups[0], true).unwrap();
+        let got = String::from_utf8(buf).unwrap();
+
+        assert!(got.contains("\x1b[36m@@"), "cyan header missing: {got:?}");
+        assert!(got.contains("\x1b[31m-a"), "red delete missing: {got:?}");
+        assert!(got.contains("\x1b[32m+b"), "green insert missing: {got:?}");
+        assert!(got.contains("\x1b[0m"), "reset missing: {got:?}");
+    }
+
+    #[test]
+    fn render_single_hunk_marks_missing_trailing_newline() {
+        let diff = TextDiff::from_lines("a\n", "a");
+        let groups = diff.grouped_ops(3);
+        let mut buf: Vec<u8> = Vec::new();
+        render_single_hunk(&mut buf, &diff, &groups[0], false).unwrap();
+        let got = String::from_utf8(buf).unwrap();
+        assert!(
+            got.contains("\\ No newline at end of file"),
+            "missing-newline marker not emitted: {got:?}",
+        );
+    }
+
+    #[test]
+    fn color_helpers_return_empty_when_disabled() {
+        assert_eq!(color_code(false, "\x1b[36m"), "");
+        assert_eq!(color_reset(false), "");
+    }
+
+    #[test]
+    fn color_helpers_return_codes_when_enabled() {
+        assert_eq!(color_code(true, "\x1b[36m"), "\x1b[36m");
+        assert_eq!(color_reset(true), "\x1b[0m");
+    }
+}
