@@ -168,17 +168,47 @@ there must have its pin updated whenever the crate itself is bumped.
    leak.
 
 9. **Report** the per-crate before/after versions, bump types, and
-   reasoning, then list every tag created — each as a ready-to-click
-   GitHub "new release" URL so the user can promote them in the UI:
+   reasoning. Then, **for every tag created**, print the crate's changelog
+   body (from step 6) as copy-pasteable markdown **immediately followed by**
+   a ready-to-click GitHub "new release" URL for that tag. GitHub's
+   `releases/new` form does **not** read the annotated tag message, so the
+   changelog must be presented in the chat where the user can grab it and
+   drop it into the release body field.
 
-   ```
-   https://github.com/<owner>/<repo>/releases/new?tag=<crate>-v<X.Y.Z>
+   Format per tag (repeat for each):
+
+   ````
+   ### <crate> v<X.Y.Z>
+
+   ```markdown
+   ### Added
+   - …
+
+   ### Changed
+   - …
    ```
 
-   Derive `<owner>/<repo>` from `git remote get-url origin` (handle both
-   `git@github.com:owner/repo.git` and `https://github.com/owner/repo.git`
-   forms; strip any trailing `.git`). If the remote is not a GitHub URL,
-   list the raw tag names instead and skip the URL.
+   https://github.com/<owner>/<repo>/releases/new?tag=<crate>-v<X.Y.Z>&title=<crate>%20v<X.Y.Z>
+   ````
+
+   URL construction:
+
+   - Pre-fill the release title via `&title=<crate>%20v<X.Y.Z>` (space as
+     `%20`). Don't use `+`; GitHub's form decodes `+` as a literal plus
+     sign in this field.
+   - Don't pre-fill `&body=` from the changelog. Release notes are often
+     long and contain characters that would need aggressive URL-encoding
+     (newlines, backticks, code fences); URLs also have practical length
+     limits. Printing the body as a fenced code block in chat is more
+     reliable and easier to copy.
+   - Derive `<owner>/<repo>` from `git remote get-url origin` (handle both
+     `git@github.com:owner/repo.git` and
+     `https://github.com/owner/repo.git` forms; strip any trailing `.git`).
+     If `<crate>` contains characters that need URL-encoding (unlikely for
+     Cargo crate names, but be defensive for `+`, spaces, etc.), encode
+     them in both the `tag=` and `title=` params.
+   - If the remote is not a GitHub URL, still print each changelog block
+     but list the raw tag name instead of a URL.
 
 ## Notes
 
