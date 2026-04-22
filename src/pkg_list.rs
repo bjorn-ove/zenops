@@ -2,6 +2,7 @@ use std::{fmt::Write, io::IsTerminal};
 
 use crate::{
     ColorChoice,
+    ansi::Styler,
     config::{Config, PkgConfig},
     config_files::ConfigFileDirs,
     error::Error,
@@ -43,44 +44,8 @@ pub fn list_from_dirs(
     ))
 }
 
-struct Styles {
-    on: bool,
-}
-
-impl Styles {
-    const BOLD: &'static str = "\x1b[1m";
-    const DIM: &'static str = "\x1b[2m";
-    const GREEN: &'static str = "\x1b[32m";
-    const RED: &'static str = "\x1b[31m";
-    const YELLOW: &'static str = "\x1b[33m";
-    const RESET: &'static str = "\x1b[0m";
-
-    fn ansi(&self, code: &'static str) -> &'static str {
-        if self.on { code } else { "" }
-    }
-
-    fn bold(&self) -> &'static str {
-        self.ansi(Self::BOLD)
-    }
-    fn dim(&self) -> &'static str {
-        self.ansi(Self::DIM)
-    }
-    fn green(&self) -> &'static str {
-        self.ansi(Self::GREEN)
-    }
-    fn red(&self) -> &'static str {
-        self.ansi(Self::RED)
-    }
-    fn reset(&self) -> &'static str {
-        self.ansi(Self::RESET)
-    }
-    fn hint(&self) -> String {
-        if self.on {
-            format!("{}{}", Self::BOLD, Self::YELLOW)
-        } else {
-            String::new()
-        }
-    }
+fn hint_prefix(s: &Styler) -> &'static str {
+    s.bold_yellow()
 }
 
 pub fn render(config: &Config, opts: Options) -> String {
@@ -111,9 +76,7 @@ pub fn render(config: &Config, opts: Options) -> String {
         .max()
         .unwrap_or(0);
 
-    let s = Styles {
-        on: opts.color_enabled,
-    };
+    let s = Styler::new(opts.color_enabled);
     let reset = s.reset();
     let mut out = String::new();
     let mut aggregate_packages: Vec<String> = Vec::new();
@@ -149,7 +112,7 @@ pub fn render(config: &Config, opts: Options) -> String {
         }
 
         if !pkg.is_installed(home, config.system_inputs()) && !pkg.is_disabled() {
-            let hint = s.hint();
+            let hint = hint_prefix(&s);
             if opts.all_hints {
                 for line in all_hints_lines(pkg) {
                     let _ = writeln!(out, "{indent}{hint}{line}{reset}");
@@ -177,7 +140,7 @@ pub fn render(config: &Config, opts: Options) -> String {
         let _ = writeln!(
             out,
             "{hint}To install all missing via {name}: {cmd}{reset}",
-            hint = s.hint(),
+            hint = hint_prefix(&s),
             name = mgr.name(),
             cmd = mgr.install_command(&aggregate_packages),
         );

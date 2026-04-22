@@ -10,7 +10,7 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    ansi::{color_code, color_reset},
+    ansi::Styler,
     config_files::{ConfigFileDirs, ConfigFilePath},
     git::GitFileStatus,
 };
@@ -122,6 +122,13 @@ pub enum OutputError {
 pub trait Output {
     fn push_status(&mut self, status: Status) -> Result<(), OutputError>;
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError>;
+    /// Emit any buffered output. `JsonOutput` streams as it goes and has a
+    /// no-op `finalize`; `TerminalRenderer` accumulates lines so it can
+    /// column-align them and flushes here. Safe to call zero or one time at
+    /// the end of a command.
+    fn finalize(&mut self) -> Result<(), OutputError> {
+        Ok(())
+    }
 }
 
 /// Newline-delimited JSON output. One event per line:
@@ -158,154 +165,370 @@ impl Output for JsonOutput<'_> {
     }
 }
 
-/// Human-readable text renderer. Writes every event directly to `out`,
-/// honoring `color` for ANSI escapes and `show_diffs` for whether
-/// `Status::Generated` variants emit a unified diff alongside their summary
-/// line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Style {
+    Dim,
+    Red,
+    Green,
+    Yellow,
+    Cyan,
+    Magenta,
+    BoldYellow,
+}
+
+impl Style {
+    fn open(self, s: &Styler) -> &'static str {
+        match self {
+            Style::Dim => s.dim(),
+            Style::Red => s.red(),
+            Style::Green => s.green(),
+            Style::Yellow => s.yellow(),
+            Style::Cyan => s.cyan(),
+            Style::Magenta => s.magenta(),
+            Style::BoldYellow => s.bold_yellow(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Segment {
+    text: String,
+    style: Style,
+}
+
+impl Segment {
+    fn new(style: Style, text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Line {
+    marker: char,
+    marker_style: Style,
+    path: String,
+    description: Vec<Segment>,
+}
+
+/// Human-readable text renderer. Buffers all events so they can be emitted
+/// in a column-aligned block by `finalize`. Honors `color` for ANSI escapes
+/// and `show_diffs` for whether `Status::Generated` variants emit a unified
+/// diff after the summary block.
 pub struct TerminalRenderer<'w> {
     out: &'w mut dyn Write,
-    color: bool,
+    styler: Styler,
     show_diffs: bool,
+    lines: Vec<Line>,
+    diffs: Vec<PendingDiff>,
+    finalized: bool,
+}
+
+#[derive(Debug)]
+struct PendingDiff {
+    path: ResolvedConfigFilePath,
+    cur_content: Option<String>,
+    want_content: Arc<str>,
 }
 
 impl<'w> TerminalRenderer<'w> {
     pub fn new(out: &'w mut dyn Write, color: bool, show_diffs: bool) -> Self {
         Self {
             out,
-            color,
+            styler: Styler::new(color),
             show_diffs,
+            lines: Vec::new(),
+            diffs: Vec::new(),
+            finalized: false,
         }
     }
 
-    fn render_generated_diff(
-        &mut self,
-        path: &ResolvedConfigFilePath,
-        cur_content: Option<&str>,
-        want_content: &str,
-    ) -> Result<(), OutputError> {
-        let old = cur_content.unwrap_or("");
-        if cur_content.is_some() {
-            writeln!(self.out, "--- {path} (current)")?;
+    fn write_line(&mut self, line: &Line, path_width: usize) -> Result<(), OutputError> {
+        let s = &self.styler;
+        let reset = s.reset();
+        let marker_open = line.marker_style.open(s);
+        let dim = s.dim();
+        let pad = path_width.saturating_sub(line.path.chars().count());
+        write!(
+            self.out,
+            "{marker_open}{marker}{reset}  {dim}{path}{reset}{spaces}",
+            marker = line.marker,
+            path = line.path,
+            spaces = " ".repeat(pad),
+        )?;
+        if !line.description.is_empty() {
+            write!(self.out, "  ")?;
+            for seg in &line.description {
+                let open = seg.style.open(s);
+                write!(self.out, "{open}{text}{reset}", text = seg.text)?;
+            }
+        }
+        writeln!(self.out)?;
+        Ok(())
+    }
+
+    fn write_diff(&mut self, diff: &PendingDiff) -> Result<(), OutputError> {
+        let old = diff.cur_content.as_deref().unwrap_or("");
+        if diff.cur_content.is_some() {
+            writeln!(self.out, "--- {} (current)", diff.path)?;
         } else {
             writeln!(self.out, "--- /dev/null")?;
         }
-        writeln!(self.out, "+++ {path} (generated)")?;
-        let diff = TextDiff::from_lines(old, want_content);
-        let reset = color_reset(self.color);
-        for change in diff.iter_all_changes() {
-            let (prefix, code) = match change.tag() {
-                ChangeTag::Delete => ("-", "\x1b[31m"),
-                ChangeTag::Insert => ("+", "\x1b[32m"),
-                ChangeTag::Equal => (" ", "\x1b[2m"),
+        writeln!(self.out, "+++ {} (generated)", diff.path)?;
+        let text_diff = TextDiff::from_lines(old, &*diff.want_content);
+        let s = &self.styler;
+        let reset = s.reset();
+        for change in text_diff.iter_all_changes() {
+            let (prefix, open) = match change.tag() {
+                ChangeTag::Delete => ("-", s.red()),
+                ChangeTag::Insert => ("+", s.green()),
+                ChangeTag::Equal => (" ", s.dim()),
             };
-            let open = color_code(self.color, code);
             write!(self.out, "{open}{prefix}{change}{reset}")?;
         }
         Ok(())
     }
 }
 
+fn status_to_line(status: &Status) -> Option<Line> {
+    match status {
+        Status::Generated {
+            status: FileStatus::Ok,
+            ..
+        } => None,
+        Status::Generated {
+            path,
+            status: FileStatus::Modified,
+            ..
+        } => Some(Line {
+            marker: '~',
+            marker_style: Style::Yellow,
+            path: path.to_string(),
+            description: vec![Segment::new(Style::Yellow, "modified")],
+        }),
+        Status::Generated {
+            path,
+            status: FileStatus::New,
+            ..
+        } => Some(Line {
+            marker: '+',
+            marker_style: Style::Green,
+            path: path.to_string(),
+            description: vec![Segment::new(Style::Green, "missing")],
+        }),
+        Status::Symlink {
+            status: SymlinkStatus::Ok,
+            ..
+        } => None,
+        Status::Symlink {
+            real,
+            symlink,
+            status: SymlinkStatus::WrongLink(actual),
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: format!("{symlink} → {real}"),
+            description: vec![
+                Segment::new(Style::Red, "wrong target"),
+                Segment::new(Style::Dim, format!(" {}", actual.display())),
+            ],
+        }),
+        Status::Symlink {
+            real,
+            symlink,
+            status: SymlinkStatus::New,
+        } => Some(Line {
+            marker: '+',
+            marker_style: Style::Green,
+            path: format!("{symlink} → {real}"),
+            description: vec![Segment::new(Style::Green, "missing")],
+        }),
+        Status::Symlink {
+            symlink,
+            status: SymlinkStatus::IsFile,
+            ..
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: symlink.to_string(),
+            description: vec![
+                Segment::new(Style::Red, "is a file"),
+                Segment::new(Style::Dim, ", expected symlink"),
+            ],
+        }),
+        Status::Symlink {
+            symlink,
+            status: SymlinkStatus::IsDir,
+            ..
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: symlink.to_string(),
+            description: vec![
+                Segment::new(Style::Red, "is a dir"),
+                Segment::new(Style::Dim, ", expected symlink"),
+            ],
+        }),
+        Status::Symlink {
+            real,
+            status: SymlinkStatus::RealPathIsMissing,
+            ..
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: real.to_string(),
+            description: vec![Segment::new(Style::Red, "symlink source missing")],
+        }),
+        Status::Symlink {
+            symlink,
+            status: SymlinkStatus::DstDirIsMissing,
+            ..
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: symlink.to_string(),
+            description: vec![Segment::new(Style::Red, "parent directory missing")],
+        }),
+        Status::Git { repo, status } => match status {
+            GitFileStatus::Modified(p) => Some(Line {
+                marker: 'M',
+                marker_style: Style::Yellow,
+                path: format!("{repo}/{p}"),
+                description: vec![Segment::new(Style::Yellow, "modified")],
+            }),
+            GitFileStatus::Added(p) => Some(Line {
+                marker: 'A',
+                marker_style: Style::Green,
+                path: format!("{repo}/{p}"),
+                description: vec![Segment::new(Style::Green, "added")],
+            }),
+            GitFileStatus::Deleted(p) => Some(Line {
+                marker: 'D',
+                marker_style: Style::Red,
+                path: format!("{repo}/{p}"),
+                description: vec![Segment::new(Style::Red, "deleted")],
+            }),
+            GitFileStatus::Untracked(p) => Some(Line {
+                marker: '?',
+                marker_style: Style::Cyan,
+                path: format!("{repo}/{p}"),
+                description: vec![Segment::new(Style::Cyan, "untracked")],
+            }),
+            GitFileStatus::Other { code, path } => Some(Line {
+                marker: '!',
+                marker_style: Style::Magenta,
+                path: format!("{repo}/{path}"),
+                description: vec![
+                    Segment::new(Style::Dim, "status "),
+                    Segment::new(Style::Magenta, code.to_string()),
+                ],
+            }),
+        },
+        Status::PkgMissing {
+            pkg,
+            install_command: Some(cmd),
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: pkg.to_string(),
+            description: vec![
+                Segment::new(Style::Red, "missing"),
+                Segment::new(Style::Dim, " — install: "),
+                Segment::new(Style::BoldYellow, cmd.clone()),
+            ],
+        }),
+        Status::PkgMissing {
+            pkg,
+            install_command: None,
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: pkg.to_string(),
+            description: vec![Segment::new(Style::Red, "missing")],
+        }),
+    }
+}
+
+fn action_to_line(action: &AppliedAction) -> Line {
+    match action {
+        AppliedAction::UpdatedFile(path) => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: path.to_string(),
+            description: vec![Segment::new(Style::Green, "updated")],
+        },
+        AppliedAction::CreatedFile(path) => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: path.to_string(),
+            description: vec![Segment::new(Style::Green, "created")],
+        },
+        AppliedAction::CreatedSymlink { real, symlink } => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: format!("{symlink} → {real}"),
+            description: vec![Segment::new(Style::Green, "linked")],
+        },
+        AppliedAction::CreatedDir(path) => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: path.to_string(),
+            description: vec![Segment::new(Style::Green, "mkdir")],
+        },
+    }
+}
+
 impl Output for TerminalRenderer<'_> {
     fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
-        match status {
-            Status::Generated {
-                status: FileStatus::Ok,
-                ..
-            } => {}
-            Status::Generated {
+        if self.show_diffs
+            && let Status::Generated {
                 want_content,
                 cur_content,
                 path,
-                status: FileStatus::Modified,
-            } => {
-                writeln!(self.out, "GEN: {path} is modified")?;
-                if self.show_diffs {
-                    self.render_generated_diff(&path, cur_content.as_deref(), &want_content)?;
-                }
-            }
-            Status::Generated {
-                want_content,
-                cur_content,
-                path,
-                status: FileStatus::New,
-            } => {
-                writeln!(self.out, "GEN: {path} is missing")?;
-                if self.show_diffs {
-                    self.render_generated_diff(&path, cur_content.as_deref(), &want_content)?;
-                }
-            }
-            Status::Symlink {
-                status: SymlinkStatus::Ok,
-                ..
-            } => {}
-            Status::Symlink {
-                real,
-                symlink,
-                status: SymlinkStatus::WrongLink(path),
-            } => writeln!(
-                self.out,
-                "SYM: {symlink} does not point to {real}, but instead {path:?}",
-            )?,
-            Status::Symlink {
-                symlink,
-                status: SymlinkStatus::New,
-                ..
-            } => writeln!(self.out, "SYM: {symlink} is missing")?,
-            Status::Symlink {
-                symlink,
-                status: SymlinkStatus::IsFile,
-                ..
-            } => writeln!(self.out, "SYM: {symlink} is a file")?,
-            Status::Symlink {
-                symlink,
-                status: SymlinkStatus::IsDir,
-                ..
-            } => writeln!(self.out, "SYM: {symlink} is a directory")?,
-            Status::Symlink {
-                real,
-                status: SymlinkStatus::RealPathIsMissing,
-                ..
-            } => writeln!(self.out, "SYM: symlink source {real} is missing")?,
-            Status::Symlink {
-                symlink,
-                status: SymlinkStatus::DstDirIsMissing,
-                ..
-            } => writeln!(self.out, "SYM: {symlink} directory is missing")?,
-            Status::Git { repo, status } => match status {
-                GitFileStatus::Modified(path) => {
-                    writeln!(self.out, "GIT: {repo}/{path} is modified")?
-                }
-                GitFileStatus::Added(path) => writeln!(self.out, "GIT: {repo}/{path} is added")?,
-                GitFileStatus::Deleted(path) => {
-                    writeln!(self.out, "GIT: {repo}/{path} is deleted")?
-                }
-                GitFileStatus::Untracked(path) => {
-                    writeln!(self.out, "GIT: {repo}/{path} is untracked")?
-                }
-                GitFileStatus::Other { code, path } => {
-                    writeln!(self.out, "GIT: {repo}/{path} has status {code}")?
-                }
-            },
-            Status::PkgMissing {
-                pkg,
-                install_command: Some(cmd),
-            } => writeln!(self.out, "{pkg} is missing — install with: {cmd}")?,
-            Status::PkgMissing {
-                pkg,
-                install_command: None,
-            } => writeln!(self.out, "{pkg} is missing")?,
+                status: FileStatus::Modified | FileStatus::New,
+            } = &status
+        {
+            self.diffs.push(PendingDiff {
+                path: path.clone(),
+                cur_content: cur_content.clone(),
+                want_content: Arc::clone(want_content),
+            });
+        }
+        if let Some(line) = status_to_line(&status) {
+            self.lines.push(line);
         }
         Ok(())
     }
 
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
-        match action {
-            AppliedAction::UpdatedFile(path) => writeln!(self.out, "GEN: {path} was updated")?,
-            AppliedAction::CreatedFile(path) => writeln!(self.out, "GEN: {path} was created")?,
-            AppliedAction::CreatedSymlink { real, symlink } => {
-                writeln!(self.out, "SYM: created {symlink} <- {real}")?
-            }
-            AppliedAction::CreatedDir(path) => writeln!(self.out, "DIR: {path} was created")?,
+        self.lines.push(action_to_line(&action));
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), OutputError> {
+        if self.finalized {
+            return Ok(());
+        }
+        self.finalized = true;
+        if self.lines.is_empty() && self.diffs.is_empty() {
+            return Ok(());
+        }
+        let path_width = self
+            .lines
+            .iter()
+            .map(|l| l.path.chars().count())
+            .max()
+            .unwrap_or(0);
+        let lines = std::mem::take(&mut self.lines);
+        for line in &lines {
+            self.write_line(line, path_width)?;
+        }
+        let diffs = std::mem::take(&mut self.diffs);
+        for diff in &diffs {
+            writeln!(self.out)?;
+            self.write_diff(diff)?;
         }
         Ok(())
     }
@@ -329,17 +552,21 @@ mod tests {
 
     fn render_status(status: Status, color: bool, show_diffs: bool) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        TerminalRenderer::new(&mut buf, color, show_diffs)
-            .push_status(status)
-            .unwrap();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, color, show_diffs);
+            r.push_status(status).unwrap();
+            r.finalize().unwrap();
+        }
         String::from_utf8(buf).unwrap()
     }
 
     fn render_action(action: AppliedAction) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        TerminalRenderer::new(&mut buf, false, false)
-            .push_applied_action(action)
-            .unwrap();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            r.push_applied_action(action).unwrap();
+            r.finalize().unwrap();
+        }
         String::from_utf8(buf).unwrap()
     }
 
@@ -359,28 +586,25 @@ mod tests {
     }
 
     #[test]
-    fn generated_modified_summary_without_diff_is_single_line() {
+    fn generated_modified_renders_tilde_marker_and_modified_word() {
         let s = generated(Some("a\n"), "b\n", "a.toml", FileStatus::Modified);
-        assert_eq!(
-            render_status(s, false, false),
-            "GEN: ~/a.toml is modified\n"
-        );
+        assert_eq!(render_status(s, false, false), "~  ~/a.toml  modified\n",);
     }
 
     #[test]
-    fn generated_new_summary_without_diff_is_single_line() {
+    fn generated_new_renders_plus_marker_and_missing_word() {
         let s = generated(None, "x\n", "a.toml", FileStatus::New);
-        assert_eq!(render_status(s, false, false), "GEN: ~/a.toml is missing\n");
+        assert_eq!(render_status(s, false, false), "+  ~/a.toml  missing\n");
     }
 
     #[test]
-    fn generated_modified_with_diff_labels_current_and_generated() {
+    fn generated_modified_with_diff_renders_summary_then_blank_then_diff() {
         let s = generated(Some("a\n"), "b\n", "a.toml", FileStatus::Modified);
         let got = render_status(s, false, true);
-        assert!(got.starts_with("GEN: ~/a.toml is modified\n"), "{got:?}");
+        assert!(got.starts_with("~  ~/a.toml  modified\n"), "{got:?}");
         assert!(
-            got.contains("--- ~/a.toml (current)\n+++ ~/a.toml (generated)\n"),
-            "{got:?}"
+            got.contains("\n--- ~/a.toml (current)\n+++ ~/a.toml (generated)\n"),
+            "{got:?}",
         );
         assert!(got.contains("-a\n"), "{got:?}");
         assert!(got.contains("+b\n"), "{got:?}");
@@ -390,10 +614,10 @@ mod tests {
     fn generated_new_with_diff_labels_dev_null() {
         let s = generated(None, "x\n", "a.toml", FileStatus::New);
         let got = render_status(s, false, true);
-        assert!(got.starts_with("GEN: ~/a.toml is missing\n"), "{got:?}");
+        assert!(got.starts_with("+  ~/a.toml  missing\n"), "{got:?}");
         assert!(
             got.contains("--- /dev/null\n+++ ~/a.toml (generated)\n"),
-            "{got:?}"
+            "{got:?}",
         );
         assert!(got.contains("+x\n"), "{got:?}");
     }
@@ -435,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn symlink_wrong_link_reports_actual_target() {
+    fn symlink_wrong_link_renders_arrow_and_actual_target() {
         let s = symlink(
             "src",
             "dst",
@@ -443,39 +667,55 @@ mod tests {
         );
         assert_eq!(
             render_status(s, false, false),
-            "SYM: ~/dst does not point to ~/src, but instead \"/other\"\n",
+            "✗  ~/dst → ~/src  wrong target /other\n",
         );
     }
 
     #[test]
-    fn symlink_variants_render_expected_lines() {
+    fn symlink_new_renders_plus_and_arrow() {
         assert_eq!(
             render_status(symlink("s", "d", SymlinkStatus::New), false, false),
-            "SYM: ~/d is missing\n",
+            "+  ~/d → ~/s  missing\n",
         );
+    }
+
+    #[test]
+    fn symlink_is_file_renders_cross_and_description() {
         assert_eq!(
             render_status(symlink("s", "d", SymlinkStatus::IsFile), false, false),
-            "SYM: ~/d is a file\n",
+            "✗  ~/d  is a file, expected symlink\n",
         );
+    }
+
+    #[test]
+    fn symlink_is_dir_renders_cross_and_description() {
         assert_eq!(
             render_status(symlink("s", "d", SymlinkStatus::IsDir), false, false),
-            "SYM: ~/d is a directory\n",
+            "✗  ~/d  is a dir, expected symlink\n",
         );
+    }
+
+    #[test]
+    fn symlink_real_missing_reports_source_path() {
         assert_eq!(
             render_status(
                 symlink("s", "d", SymlinkStatus::RealPathIsMissing),
                 false,
-                false
+                false,
             ),
-            "SYM: symlink source ~/s is missing\n",
+            "✗  ~/s  symlink source missing\n",
         );
+    }
+
+    #[test]
+    fn symlink_dst_dir_missing_reports_symlink_path() {
         assert_eq!(
             render_status(
                 symlink("s", "d", SymlinkStatus::DstDirIsMissing),
                 false,
-                false
+                false,
             ),
-            "SYM: ~/d directory is missing\n",
+            "✗  ~/d  parent directory missing\n",
         );
     }
 
@@ -497,26 +737,26 @@ mod tests {
         let cases: Vec<(GitFileStatus, &str)> = vec![
             (
                 GitFileStatus::Modified(relpath("a.toml")),
-                "GIT: ~/.config/zenops/a.toml is modified\n",
+                "M  ~/.config/zenops/a.toml  modified\n",
             ),
             (
                 GitFileStatus::Added(relpath("b.toml")),
-                "GIT: ~/.config/zenops/b.toml is added\n",
+                "A  ~/.config/zenops/b.toml  added\n",
             ),
             (
                 GitFileStatus::Deleted(relpath("c.toml")),
-                "GIT: ~/.config/zenops/c.toml is deleted\n",
+                "D  ~/.config/zenops/c.toml  deleted\n",
             ),
             (
                 GitFileStatus::Untracked(relpath("d.toml")),
-                "GIT: ~/.config/zenops/d.toml is untracked\n",
+                "?  ~/.config/zenops/d.toml  untracked\n",
             ),
             (
                 GitFileStatus::Other {
                     code: SmolStr::new_static("UU"),
                     path: relpath("e.toml"),
                 },
-                "GIT: ~/.config/zenops/e.toml has status UU\n",
+                "!  ~/.config/zenops/e.toml  status UU\n",
             ),
         ];
         for (status, want) in cases {
@@ -536,7 +776,7 @@ mod tests {
         };
         assert_eq!(
             render_status(s, false, false),
-            "python is missing — install with: brew install python\n",
+            "✗  python  missing — install: brew install python\n",
         );
     }
 
@@ -546,30 +786,108 @@ mod tests {
             pkg: SmolStr::new_static("python"),
             install_command: None,
         };
-        assert_eq!(render_status(s, false, false), "python is missing\n");
+        assert_eq!(render_status(s, false, false), "✗  python  missing\n");
     }
 
     #[test]
     fn applied_actions_render_expected_lines() {
         assert_eq!(
             render_action(AppliedAction::UpdatedFile(home_path("a.toml"))),
-            "GEN: ~/a.toml was updated\n",
+            "✓  ~/a.toml  updated\n",
         );
         assert_eq!(
             render_action(AppliedAction::CreatedFile(home_path("a.toml"))),
-            "GEN: ~/a.toml was created\n",
+            "✓  ~/a.toml  created\n",
         );
         assert_eq!(
             render_action(AppliedAction::CreatedSymlink {
                 real: home_path("src"),
                 symlink: home_path("dst"),
             }),
-            "SYM: created ~/dst <- ~/src\n",
+            "✓  ~/dst → ~/src  linked\n",
         );
         assert_eq!(
             render_action(AppliedAction::CreatedDir(home_path("subdir"))),
-            "DIR: ~/subdir was created\n",
+            "✓  ~/subdir  mkdir\n",
         );
+    }
+
+    #[test]
+    fn multiple_lines_pad_path_column_to_widest() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            r.push_status(Status::PkgMissing {
+                pkg: SmolStr::new_static("py"),
+                install_command: None,
+            })
+            .unwrap();
+            r.push_status(generated(
+                Some("a\n"),
+                "b\n",
+                "long/nested/path/file.toml",
+                FileStatus::Modified,
+            ))
+            .unwrap();
+            r.finalize().unwrap();
+        }
+        let got = String::from_utf8(buf).unwrap();
+        let wide = "~/long/nested/path/file.toml".chars().count();
+        let short = "py".chars().count();
+        let pad = wide - short;
+        let expected = format!(
+            "✗  py{spaces}  missing\n~  ~/long/nested/path/file.toml  modified\n",
+            spaces = " ".repeat(pad),
+        );
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn finalize_with_no_events_emits_nothing() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            r.finalize().unwrap();
+        }
+        assert_eq!(String::from_utf8(buf).unwrap(), "");
+    }
+
+    #[test]
+    fn finalize_is_idempotent() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            r.push_status(Status::PkgMissing {
+                pkg: SmolStr::new_static("x"),
+                install_command: None,
+            })
+            .unwrap();
+            r.finalize().unwrap();
+            r.finalize().unwrap();
+        }
+        assert_eq!(String::from_utf8(buf).unwrap(), "✗  x  missing\n");
+    }
+
+    #[test]
+    fn color_on_wraps_marker_path_and_description_with_expected_escapes() {
+        let s = generated(Some("a\n"), "b\n", "a.toml", FileStatus::Modified);
+        let got = render_status(s, true, false);
+        // yellow marker
+        assert!(got.contains("\x1b[33m~\x1b[0m"), "{got:?}");
+        // dim path
+        assert!(got.contains("\x1b[2m~/a.toml\x1b[0m"), "{got:?}");
+        // yellow "modified"
+        assert!(got.contains("\x1b[33mmodified\x1b[0m"), "{got:?}");
+    }
+
+    #[test]
+    fn color_on_pkg_missing_install_command_is_bold_yellow() {
+        let s = Status::PkgMissing {
+            pkg: SmolStr::new_static("py"),
+            install_command: Some("brew install py".to_string()),
+        };
+        let got = render_status(s, true, false);
+        assert!(got.contains("\x1b[1;33mbrew install py\x1b[0m"), "{got:?}",);
     }
 
     // ---- JsonOutput -------------------------------------------------------
@@ -692,14 +1010,15 @@ mod tests {
     }
 
     #[test]
-    fn terminal_renderer_surfaces_writer_errors() {
+    fn terminal_renderer_surfaces_writer_errors_on_finalize() {
         let mut w = FailingWriter;
-        let err = TerminalRenderer::new(&mut w, false, false)
-            .push_status(Status::PkgMissing {
-                pkg: SmolStr::new_static("x"),
-                install_command: None,
-            })
-            .unwrap_err();
+        let mut r = TerminalRenderer::new(&mut w, false, false);
+        r.push_status(Status::PkgMissing {
+            pkg: SmolStr::new_static("x"),
+            install_command: None,
+        })
+        .unwrap();
+        let err = r.finalize().unwrap_err();
         assert!(matches!(err, OutputError::Io(_)), "unexpected: {err:?}");
     }
 
