@@ -73,7 +73,7 @@ impl SafeRelativePath {
     }
 }
 
-impl ser::Serialize for &SafeRelativePath {
+impl ser::Serialize for SafeRelativePath {
     fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(self.as_str())
     }

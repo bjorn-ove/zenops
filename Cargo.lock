@@ -869,6 +869,7 @@ dependencies = [
  "log",
  "semver",
  "serde",
+ "serde_json",
  "similar",
  "similar-asserts",
  "smol_str",

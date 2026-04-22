@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use smol_str::SmolStr;
 
-use crate::output::ResolvedConfigFilePath;
+use crate::output::{OutputError, ResolvedConfigFilePath};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -40,6 +40,8 @@ pub enum Error {
     ApplyNeedsYesOrTty,
     #[error("Failed to read confirmation from stdin: {0}")]
     PromptRead(#[source] std::io::Error),
+    #[error(transparent)]
+    Output(#[from] OutputError),
 }
 
 impl PartialEq for Error {
@@ -90,6 +92,7 @@ impl PartialEq for Error {
             }
             (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
+            (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             _ => false,
         }
     }

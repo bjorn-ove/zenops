@@ -6,6 +6,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use serde::Serialize;
 
 use crate::{
     error::Error,
@@ -15,7 +16,8 @@ use crate::{
 use similar::{DiffOp, TextDiff};
 use zenops_safe_relative_path::SafeRelativePath;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
 pub enum ConfigFilePath {
     Home(Arc<SafeRelativePath>),
     DotConfig(Arc<SafeRelativePath>),
@@ -221,10 +223,11 @@ impl<'dirs> ConfigFiles<'dirs> {
         }
     }
 
-    pub fn check_status(&self, output: &mut dyn Output) {
+    pub fn check_status(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            output.push_status(self.entry_status(path.clone(), entry));
+            output.push_status(self.entry_status(path.clone(), entry))?;
         }
+        Ok(())
     }
 
     pub fn apply_changes(
@@ -237,11 +240,8 @@ impl<'dirs> ConfigFiles<'dirs> {
             match status {
                 Status::Generated {
                     status: FileStatus::Ok,
-                    path,
                     ..
-                } => {
-                    log::debug!("Config is already up to date {path}");
-                }
+                } => {}
                 Status::Generated {
                     status: FileStatus::New,
                     want_content,
@@ -254,10 +254,9 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
-                    log::debug!("Creating new config {path}");
                     std::fs::write(&path.full, want_content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
-                    output.push_applied_action(AppliedAction::CreatedFile(path));
+                    output.push_applied_action(AppliedAction::CreatedFile(path))?;
                 }
                 Status::Generated {
                     status: FileStatus::Modified,
@@ -283,19 +282,15 @@ impl<'dirs> ConfigFiles<'dirs> {
                     if !approvals.iter().any(|&a| a) {
                         continue;
                     }
-                    log::debug!("Updating modified config {path}");
                     let content = reconstruct(cur, want, &groups, &approvals);
                     std::fs::write(&path.full, content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
-                    output.push_applied_action(AppliedAction::UpdatedFile(path));
+                    output.push_applied_action(AppliedAction::UpdatedFile(path))?;
                 }
                 Status::Symlink {
                     status: SymlinkStatus::Ok,
-                    real,
-                    symlink,
-                } => {
-                    log::debug!("Symlink from {symlink} to {real} is already in place");
-                }
+                    ..
+                } => {}
                 Status::Symlink {
                     status: SymlinkStatus::New,
                     real,
@@ -307,9 +302,8 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
-                    log::debug!("Creating symlink from {symlink} to {real}");
                     create_symlink(&real.full, &symlink.full)?;
-                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
                 Status::Symlink {
                     status: SymlinkStatus::DstDirIsMissing,
@@ -326,14 +320,13 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
-                    log::debug!("Creating symlink from {symlink} to {real}");
                     match std::fs::create_dir_all(&dir.full) {
                         Ok(()) => {}
                         Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
                     }
-                    output.push_applied_action(AppliedAction::CreatedDir(dir));
+                    output.push_applied_action(AppliedAction::CreatedDir(dir))?;
                     create_symlink(&real.full, &symlink.full)?;
-                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink });
+                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
                 Status::Symlink {
                     status: SymlinkStatus::IsFile,

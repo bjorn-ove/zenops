@@ -8,7 +8,7 @@ use zenops::{
     Args, Cmd, ColorChoice,
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
-    output::{AppliedAction, ResolvedConfigFilePath, Status},
+    output::{AppliedAction, OutputError, ResolvedConfigFilePath, Status},
 };
 use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
@@ -183,10 +183,7 @@ impl TestEnv {
         self.zenops_shell(|sh| {
             // Rename regardless of the host's init.defaultBranch setting.
             cmd!(sh, "git branch -M main").run().unwrap();
-            cmd!(sh, "git remote add origin")
-                .arg(&bare)
-                .run()
-                .unwrap();
+            cmd!(sh, "git remote add origin").arg(&bare).run().unwrap();
             cmd!(sh, "git push -u origin main")
                 .ignore_stdout()
                 .ignore_stderr()
@@ -280,11 +277,13 @@ pub struct Output {
 }
 
 impl zenops::output::Output for Output {
-    fn push_status(&mut self, status: Status) {
-        self.entries.push(Entry::Status(status))
+    fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
+        self.entries.push(Entry::Status(status));
+        Ok(())
     }
 
-    fn push_applied_action(&mut self, action: AppliedAction) {
+    fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
         self.entries.push(Entry::AppliedAction(action));
+        Ok(())
     }
 }

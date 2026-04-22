@@ -1,3 +1,4 @@
+mod ansi;
 mod config;
 pub mod config_files;
 pub mod error;
@@ -17,7 +18,7 @@ use crate::{
     config_files::{ConfigFileDirs, ConfigFiles},
     error::Error,
     git::{Git, GitCmd},
-    output::{DiffLog, Output},
+    output::Output,
     prompt::{DryRunPrompter, PreApplyDecision, Prompter, TerminalPrompter, YesPrompter},
 };
 
@@ -31,11 +32,14 @@ pub enum ColorChoice {
 }
 
 impl ColorChoice {
-    pub fn enabled(self) -> bool {
+    /// Resolve to a concrete on/off decision. Pass `stream_is_terminal`
+    /// for the stream colors will actually be emitted to (stderr for
+    /// the terminal renderer and the prompter, stdout for `pkg_list`).
+    pub fn enabled(self, stream_is_terminal: bool) -> bool {
         match self {
             Self::Always => true,
             Self::Never => false,
-            Self::Auto => std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal(),
+            Self::Auto => std::env::var_os("NO_COLOR").is_none() && stream_is_terminal,
         }
     }
 }
@@ -136,13 +140,14 @@ pub fn real_main(
             yes,
             dry_run,
         } => {
-            let mut prompter = build_prompter(*yes, *dry_run, args.color.enabled())?;
-            config.push_pkg_health(output);
+            let stderr_color = args.color.enabled(std::io::stderr().is_terminal());
+            let mut prompter = build_prompter(*yes, *dry_run, stderr_color)?;
+            config.push_pkg_health(output)?;
 
             let git = Git::new(dirs.zenops(), &sh);
             if git.is_git_repo()? && git.has_uncommitted_changes()? {
                 config.check_own_status(&sh, output)?;
-                git.print_pre_apply_summary(args.color.enabled())?;
+                git.print_pre_apply_summary(stderr_color)?;
                 match prompter.confirm_pre_apply()? {
                     PreApplyDecision::CommitAndPush { message } => {
                         git.commit_all_and_push(&message)?;
@@ -155,26 +160,28 @@ pub fn real_main(
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
         }
-        Cmd::Status { diff } => {
-            config.push_pkg_health(output);
+        Cmd::Status { diff: _ } => {
+            config.push_pkg_health(output)?;
             config.check_own_status(&sh, output)?;
             config.update_config_files(&sh, &mut config_files)?;
-            if *diff {
-                config_files.check_status(&mut DiffLog);
-            } else {
-                config_files.check_status(output);
-            }
+            config_files.check_status(output)?;
         }
         Cmd::Pkg {
             all,
             all_hints,
             verbose,
         } => {
+            if pkg_manager::detect().is_none() {
+                eprintln!(
+                    "note: no known package manager detected on PATH; install \
+                     guidance will be hidden. Supported managers: brew."
+                );
+            }
             let opts = pkg_list::Options {
                 all: *all,
                 all_hints: *all_hints,
                 verbose: *verbose,
-                color_enabled: args.color.enabled(),
+                color_enabled: args.color.enabled(std::io::stdout().is_terminal()),
             };
             print!("{}", pkg_list::render(&config, opts));
         }

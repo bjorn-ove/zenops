@@ -1,12 +1,14 @@
 use std::path::Path;
 
+use serde::Serialize;
 use smol_str::SmolStr;
 use xshell::{Shell, cmd};
 use zenops_safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
 
 use crate::error::Error;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum GitFileStatus {
     Modified(SafeRelativePathBuf),
     Added(SafeRelativePathBuf),

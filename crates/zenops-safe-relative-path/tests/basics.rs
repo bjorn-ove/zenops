@@ -80,8 +80,7 @@ fn safe_relative_path_buf_round_trips_via_from_str_and_display() {
 
 #[test]
 fn safe_relative_path_buf_asref_variants_all_point_at_same_bytes() {
-    let buf: SafeRelativePathBuf =
-        SafeRelativePathBuf::from_relative_path("hello/world").unwrap();
+    let buf: SafeRelativePathBuf = SafeRelativePathBuf::from_relative_path("hello/world").unwrap();
 
     // &RelativePath: drives relative-path crate interop.
     let rel: &RelativePath = buf.as_ref();

@@ -2,7 +2,11 @@ use std::io::{self, BufRead, Write};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
 
-use crate::{error::Error, output::ResolvedConfigFilePath};
+use crate::{
+    ansi::{color_code, color_reset},
+    error::Error,
+    output::ResolvedConfigFilePath,
+};
 
 pub enum PendingChange<'a> {
     CreateFile {
@@ -265,14 +269,6 @@ fn render_single_hunk(
         }
     }
     Ok(())
-}
-
-fn color_code(color: bool, code: &'static str) -> &'static str {
-    if color { code } else { "" }
-}
-
-fn color_reset(color: bool) -> &'static str {
-    if color { "\x1b[0m" } else { "" }
 }
 
 #[cfg(test)]

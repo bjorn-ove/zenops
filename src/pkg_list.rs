@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, io::IsTerminal};
 
 use crate::{
     ColorChoice,
@@ -38,7 +38,7 @@ pub fn list_from_dirs(
             all,
             all_hints,
             verbose,
-            color_enabled: color.enabled(),
+            color_enabled: color.enabled(std::io::stdout().is_terminal()),
         },
     ))
 }
@@ -85,12 +85,6 @@ impl Styles {
 
 pub fn render(config: &Config, opts: Options) -> String {
     let manager = pkg_manager::detect();
-    if manager.is_none() {
-        log::warn!(
-            "No known package manager detected on PATH; install guidance will be hidden. \
-             Supported managers: brew."
-        );
-    }
 
     let home = config.home();
     let configured_shell = config.shell();

@@ -215,27 +215,6 @@ fn repo_pull_rebase_fast_forwards_remote_commits() {
 }
 
 #[test]
-fn status_diff_dispatches_through_difflog_without_error() {
-    // `Cmd::Status { diff: true }` routes through DiffLog, which writes the
-    // unified diff to stderr. We can't capture stderr from inside the test
-    // process, but running the subcommand verifies the dispatch arm in
-    // src/lib.rs and the Status::Generated arm of DiffLog::push_status
-    // (render_generated_diff itself is covered by the unit tests).
-    let env = test_env::TestEnv::load();
-    env.init_config(
-        r#"
-        [shell]
-        type = "bash"
-        [shell.environment]
-        [shell.alias]
-    "#,
-    );
-
-    env.run(&Cmd::Status { diff: true })
-        .expect("status --diff should succeed when a generated file is new");
-}
-
-#[test]
 fn parse_pre_apply_input_covers_expected_answers() {
     assert_eq!(parse_pre_apply_input("c"), Some(PreApplyAnswer::Commit));
     assert_eq!(parse_pre_apply_input("C"), Some(PreApplyAnswer::Commit));

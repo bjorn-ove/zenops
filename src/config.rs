@@ -248,7 +248,7 @@ impl<'dirs> Config<'dirs> {
                 output.push_status(Status::Git {
                     repo: self.zenops_repo.clone(),
                     status,
-                });
+                })?;
             }
         }
         Ok(())
@@ -260,7 +260,7 @@ impl<'dirs> Config<'dirs> {
     /// defining behavior of `detect`. Called from the apply/status entry
     /// points, not from `Config::load` — a load isn't an event, and these
     /// observations should only surface from commands the user runs.
-    pub fn push_pkg_health(&self, output: &mut dyn Output) {
+    pub fn push_pkg_health(&self, output: &mut dyn Output) -> Result<(), Error> {
         let manager = pkg_manager::detect();
         for (key, pkg) in &self.stored.pkg {
             if !pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs) {
@@ -274,8 +274,9 @@ impl<'dirs> Config<'dirs> {
             output.push_status(Status::PkgMissing {
                 pkg: label,
                 install_command,
-            });
+            })?;
         }
+        Ok(())
     }
 }
 
