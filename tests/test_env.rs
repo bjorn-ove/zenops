@@ -1,4 +1,8 @@
-use std::{io::Write, path::PathBuf, sync::Arc};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use xshell::{Shell, cmd};
 use zenops::{
     Args, Cmd, ColorChoice,
@@ -163,6 +167,75 @@ impl TestEnv {
             cmd!(sh, "git config commit.gpgsign false").run().unwrap();
         });
         self.write_zenops_file(srpath!("config.toml"), config, Some("initial commit"));
+    }
+
+    /// Like [`Self::init_config`], but also creates a bare-repo remote named
+    /// `origin` under `<tmp>/remote.git` and pushes the initial commit to its
+    /// `main` branch. Returns the bare repo's path so tests can inspect it.
+    pub fn init_config_with_remote(&self, config: &str) -> PathBuf {
+        let bare = self.root.path().join("remote.git");
+        cmd!(self.sh, "git init --bare")
+            .arg(&bare)
+            .ignore_stdout()
+            .run()
+            .unwrap();
+        self.init_config(config);
+        self.zenops_shell(|sh| {
+            // Rename regardless of the host's init.defaultBranch setting.
+            cmd!(sh, "git branch -M main").run().unwrap();
+            cmd!(sh, "git remote add origin")
+                .arg(&bare)
+                .run()
+                .unwrap();
+            cmd!(sh, "git push -u origin main")
+                .ignore_stdout()
+                .ignore_stderr()
+                .run()
+                .unwrap();
+        });
+        bare
+    }
+
+    /// Clone the given bare repo into `<tmp>/sidecar`, add a file, commit,
+    /// and push. Used to seed a new upstream commit that the zenops repo can
+    /// then pull.
+    pub fn seed_remote_commit(
+        &self,
+        bare: &Path,
+        filename: &str,
+        content: &str,
+        message: &str,
+    ) -> PathBuf {
+        let sidecar = self.root.path().join("sidecar");
+        cmd!(self.sh, "git clone")
+            .arg(bare)
+            .arg(&sidecar)
+            .ignore_stdout()
+            .ignore_stderr()
+            .run()
+            .unwrap();
+        let _dir = self.sh.push_dir(&sidecar);
+        cmd!(self.sh, "git config commit.gpgsign false")
+            .run()
+            .unwrap();
+        std::fs::write(sidecar.join(filename), content).unwrap();
+        cmd!(self.sh, "git add").arg(filename).run().unwrap();
+        cmd!(self.sh, "git commit -m {message}")
+            .ignore_stdout()
+            .run()
+            .unwrap();
+        cmd!(self.sh, "git push")
+            .ignore_stdout()
+            .ignore_stderr()
+            .run()
+            .unwrap();
+        sidecar
+    }
+
+    /// Run `git <args>` in `dir` and return its stdout.
+    pub fn git_out(&self, dir: &Path, args: &[&str]) -> String {
+        let _dir = self.sh.push_dir(dir);
+        cmd!(self.sh, "git").args(args).read().unwrap()
     }
 
     pub fn run(&self, cmd: &Cmd) -> Result<Output, Error> {
