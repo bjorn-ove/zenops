@@ -47,12 +47,13 @@ fn main() {
     let stderr = io::stderr();
     let stderr_is_terminal = stderr.is_terminal();
     let color = args.color.enabled(stderr_is_terminal);
-    let show_diffs = matches!(command, zenops::Cmd::Status { diff: true });
+    let show_diffs = matches!(command, zenops::Cmd::Status { diff: true, .. });
+    let show_clean = matches!(command, zenops::Cmd::Status { all: true, .. });
 
     let mut lock = stderr.lock();
     let mut renderer: Box<dyn zenops::output::Output> = match output {
         OutputMode::Human => Box::new(zenops::output::TerminalRenderer::new(
-            &mut lock, color, show_diffs,
+            &mut lock, color, show_diffs, show_clean,
         )),
         OutputMode::Json => Box::new(zenops::output::JsonOutput::new(&mut lock)),
     };

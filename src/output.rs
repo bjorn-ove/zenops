@@ -40,6 +40,19 @@ pub enum FileStatus {
     New,
 }
 
+#[derive(Debug, PartialEq, Clone, Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum PkgStatus {
+    Ok,
+    /// A pkg the user expects to be present (`enable = "on"`) whose detect
+    /// strategies don't match on the current host. `install_command` is the
+    /// ready-to-run shell line (`"brew install python"`) when a package
+    /// manager with a non-empty hint is detected, `None` otherwise.
+    Missing {
+        install_command: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedConfigFilePath {
     pub path: ConfigFilePath,
@@ -84,13 +97,14 @@ pub enum Status {
         repo: ResolvedConfigFilePath,
         status: GitFileStatus,
     },
-    /// A pkg the user expects to be present (`enable = "on"`) whose detect
-    /// strategies don't match on the current host. `install_command` is the
-    /// ready-to-run shell line (`"brew install python"`) when a package
-    /// manager with a non-empty hint is detected, `None` otherwise.
-    PkgMissing {
+    /// Emitted when the zenops config repo has no uncommitted changes. The
+    /// dirty case is covered per-file by `Git`.
+    GitRepoClean {
+        repo: ResolvedConfigFilePath,
+    },
+    Pkg {
         pkg: SmolStr,
-        install_command: Option<String>,
+        status: PkgStatus,
     },
 }
 
@@ -214,13 +228,16 @@ struct Line {
 }
 
 /// Human-readable text renderer. Buffers all events so they can be emitted
-/// in a column-aligned block by `finalize`. Honors `color` for ANSI escapes
-/// and `show_diffs` for whether `Status::Generated` variants emit a unified
-/// diff after the summary block.
+/// in a column-aligned block by `finalize`. Honors `color` for ANSI escapes,
+/// `show_diffs` for whether `Status::Generated` variants emit a unified diff
+/// after the summary block, and `show_clean` for whether clean-state events
+/// (e.g. `FileStatus::Ok`, `PkgStatus::Ok`, `GitRepoClean`) get a visible
+/// line or are dropped.
 pub struct TerminalRenderer<'w> {
     out: &'w mut dyn Write,
     styler: Styler,
     show_diffs: bool,
+    show_clean: bool,
     lines: Vec<Line>,
     diffs: Vec<PendingDiff>,
     finalized: bool,
@@ -234,11 +251,12 @@ struct PendingDiff {
 }
 
 impl<'w> TerminalRenderer<'w> {
-    pub fn new(out: &'w mut dyn Write, color: bool, show_diffs: bool) -> Self {
+    pub fn new(out: &'w mut dyn Write, color: bool, show_diffs: bool, show_clean: bool) -> Self {
         Self {
             out,
             styler: Styler::new(color),
             show_diffs,
+            show_clean,
             lines: Vec::new(),
             diffs: Vec::new(),
             finalized: false,
@@ -292,12 +310,22 @@ impl<'w> TerminalRenderer<'w> {
     }
 }
 
-fn status_to_line(status: &Status) -> Option<Line> {
+fn ok_line(path: String, description: &'static str) -> Line {
+    Line {
+        marker: '✓',
+        marker_style: Style::Green,
+        path,
+        description: vec![Segment::new(Style::Dim, description)],
+    }
+}
+
+fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
     match status {
         Status::Generated {
+            path,
             status: FileStatus::Ok,
             ..
-        } => None,
+        } => show_clean.then(|| ok_line(path.to_string(), "ok")),
         Status::Generated {
             path,
             status: FileStatus::Modified,
@@ -319,9 +347,10 @@ fn status_to_line(status: &Status) -> Option<Line> {
             description: vec![Segment::new(Style::Green, "missing")],
         }),
         Status::Symlink {
+            real,
+            symlink,
             status: SymlinkStatus::Ok,
-            ..
-        } => None,
+        } => show_clean.then(|| ok_line(format!("{symlink} → {real}"), "ok")),
         Status::Symlink {
             real,
             symlink,
@@ -426,9 +455,11 @@ fn status_to_line(status: &Status) -> Option<Line> {
                 ],
             }),
         },
-        Status::PkgMissing {
+        Status::Pkg {
             pkg,
-            install_command: Some(cmd),
+            status: PkgStatus::Missing {
+                install_command: Some(cmd),
+            },
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
@@ -439,15 +470,22 @@ fn status_to_line(status: &Status) -> Option<Line> {
                 Segment::new(Style::BoldYellow, cmd.clone()),
             ],
         }),
-        Status::PkgMissing {
+        Status::Pkg {
             pkg,
-            install_command: None,
+            status: PkgStatus::Missing {
+                install_command: None,
+            },
         } => Some(Line {
             marker: '✗',
             marker_style: Style::Red,
             path: pkg.to_string(),
             description: vec![Segment::new(Style::Red, "missing")],
         }),
+        Status::Pkg {
+            pkg,
+            status: PkgStatus::Ok,
+        } => show_clean.then(|| ok_line(pkg.to_string(), "ok")),
+        Status::GitRepoClean { repo } => show_clean.then(|| ok_line(repo.to_string(), "clean")),
     }
 }
 
@@ -496,7 +534,7 @@ impl Output for TerminalRenderer<'_> {
                 want_content: Arc::clone(want_content),
             });
         }
-        if let Some(line) = status_to_line(&status) {
+        if let Some(line) = status_to_line(&status, self.show_clean) {
             self.lines.push(line);
         }
         Ok(())
@@ -551,9 +589,18 @@ mod tests {
     }
 
     fn render_status(status: Status, color: bool, show_diffs: bool) -> String {
+        render_status_full(status, color, show_diffs, false)
+    }
+
+    fn render_status_full(
+        status: Status,
+        color: bool,
+        show_diffs: bool,
+        show_clean: bool,
+    ) -> String {
         let mut buf: Vec<u8> = Vec::new();
         {
-            let mut r = TerminalRenderer::new(&mut buf, color, show_diffs);
+            let mut r = TerminalRenderer::new(&mut buf, color, show_diffs, show_clean);
             r.push_status(status).unwrap();
             r.finalize().unwrap();
         }
@@ -563,7 +610,7 @@ mod tests {
     fn render_action(action: AppliedAction) -> String {
         let mut buf: Vec<u8> = Vec::new();
         {
-            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
             r.push_applied_action(action).unwrap();
             r.finalize().unwrap();
         }
@@ -583,6 +630,15 @@ mod tests {
     fn generated_ok_emits_nothing() {
         let s = generated(Some("x\n"), "x\n", "a.toml", FileStatus::Ok);
         assert_eq!(render_status(s, false, false), "");
+    }
+
+    #[test]
+    fn generated_ok_with_show_clean_renders_checkmark_line() {
+        let s = generated(Some("x\n"), "x\n", "a.toml", FileStatus::Ok);
+        assert_eq!(
+            render_status_full(s, false, false, true),
+            "✓  ~/a.toml  ok\n"
+        );
     }
 
     #[test]
@@ -656,6 +712,15 @@ mod tests {
     fn symlink_ok_emits_nothing() {
         let s = symlink("src", "dst", SymlinkStatus::Ok);
         assert_eq!(render_status(s, false, false), "");
+    }
+
+    #[test]
+    fn symlink_ok_with_show_clean_renders_checkmark_line() {
+        let s = symlink("src", "dst", SymlinkStatus::Ok);
+        assert_eq!(
+            render_status_full(s, false, false, true),
+            "✓  ~/dst → ~/src  ok\n",
+        );
     }
 
     #[test]
@@ -768,25 +833,72 @@ mod tests {
         }
     }
 
+    fn pkg_missing(pkg: &'static str, install_command: Option<&str>) -> Status {
+        Status::Pkg {
+            pkg: SmolStr::new_static(pkg),
+            status: PkgStatus::Missing {
+                install_command: install_command.map(String::from),
+            },
+        }
+    }
+
+    fn pkg_ok(pkg: &'static str) -> Status {
+        Status::Pkg {
+            pkg: SmolStr::new_static(pkg),
+            status: PkgStatus::Ok,
+        }
+    }
+
     #[test]
     fn pkg_missing_with_install_command_includes_hint() {
-        let s = Status::PkgMissing {
-            pkg: SmolStr::new_static("python"),
-            install_command: Some("brew install python".to_string()),
-        };
         assert_eq!(
-            render_status(s, false, false),
+            render_status(
+                pkg_missing("python", Some("brew install python")),
+                false,
+                false
+            ),
             "✗  python  missing — install: brew install python\n",
         );
     }
 
     #[test]
     fn pkg_missing_without_install_command_is_terse() {
-        let s = Status::PkgMissing {
-            pkg: SmolStr::new_static("python"),
-            install_command: None,
+        assert_eq!(
+            render_status(pkg_missing("python", None), false, false),
+            "✗  python  missing\n",
+        );
+    }
+
+    #[test]
+    fn pkg_ok_without_show_clean_emits_nothing() {
+        assert_eq!(render_status(pkg_ok("python"), false, false), "");
+    }
+
+    #[test]
+    fn pkg_ok_with_show_clean_renders_checkmark_line() {
+        assert_eq!(
+            render_status_full(pkg_ok("python"), false, false, true),
+            "✓  python  ok\n",
+        );
+    }
+
+    #[test]
+    fn git_repo_clean_without_show_clean_emits_nothing() {
+        let s = Status::GitRepoClean {
+            repo: zenops_path(""),
         };
-        assert_eq!(render_status(s, false, false), "✗  python  missing\n");
+        assert_eq!(render_status(s, false, false), "");
+    }
+
+    #[test]
+    fn git_repo_clean_with_show_clean_renders_checkmark_line() {
+        let s = Status::GitRepoClean {
+            repo: zenops_path(""),
+        };
+        assert_eq!(
+            render_status_full(s, false, false, true),
+            "✓  ~/.config/zenops  clean\n",
+        );
     }
 
     #[test]
@@ -816,12 +928,8 @@ mod tests {
     fn multiple_lines_pad_path_column_to_widest() {
         let mut buf: Vec<u8> = Vec::new();
         {
-            let mut r = TerminalRenderer::new(&mut buf, false, false);
-            r.push_status(Status::PkgMissing {
-                pkg: SmolStr::new_static("py"),
-                install_command: None,
-            })
-            .unwrap();
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+            r.push_status(pkg_missing("py", None)).unwrap();
             r.push_status(generated(
                 Some("a\n"),
                 "b\n",
@@ -846,7 +954,7 @@ mod tests {
     fn finalize_with_no_events_emits_nothing() {
         let mut buf: Vec<u8> = Vec::new();
         {
-            let mut r = TerminalRenderer::new(&mut buf, false, false);
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
             r.finalize().unwrap();
         }
         assert_eq!(String::from_utf8(buf).unwrap(), "");
@@ -856,12 +964,8 @@ mod tests {
     fn finalize_is_idempotent() {
         let mut buf: Vec<u8> = Vec::new();
         {
-            let mut r = TerminalRenderer::new(&mut buf, false, false);
-            r.push_status(Status::PkgMissing {
-                pkg: SmolStr::new_static("x"),
-                install_command: None,
-            })
-            .unwrap();
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+            r.push_status(pkg_missing("x", None)).unwrap();
             r.finalize().unwrap();
             r.finalize().unwrap();
         }
@@ -882,11 +986,7 @@ mod tests {
 
     #[test]
     fn color_on_pkg_missing_install_command_is_bold_yellow() {
-        let s = Status::PkgMissing {
-            pkg: SmolStr::new_static("py"),
-            install_command: Some("brew install py".to_string()),
-        };
-        let got = render_status(s, true, false);
+        let got = render_status(pkg_missing("py", Some("brew install py")), true, false);
         assert!(got.contains("\x1b[1;33mbrew install py\x1b[0m"), "{got:?}",);
     }
 
@@ -957,14 +1057,33 @@ mod tests {
 
     #[test]
     fn json_status_pkg_missing_preserves_install_command() {
-        let v = json_line_for_status(Status::PkgMissing {
-            pkg: SmolStr::new_static("python"),
-            install_command: Some("brew install python".to_string()),
-        });
+        let v = json_line_for_status(pkg_missing("python", Some("brew install python")));
         assert_eq!(v["event"], "status");
-        assert_eq!(v["kind"], "pkg_missing");
+        assert_eq!(v["kind"], "pkg");
         assert_eq!(v["pkg"], "python");
-        assert_eq!(v["install_command"], "brew install python");
+        assert_eq!(v["status"]["kind"], "missing");
+        assert_eq!(
+            v["status"]["data"]["install_command"],
+            "brew install python"
+        );
+    }
+
+    #[test]
+    fn json_status_pkg_ok_tags_kind_ok() {
+        let v = json_line_for_status(pkg_ok("python"));
+        assert_eq!(v["event"], "status");
+        assert_eq!(v["kind"], "pkg");
+        assert_eq!(v["pkg"], "python");
+        assert_eq!(v["status"]["kind"], "ok");
+    }
+
+    #[test]
+    fn json_status_git_repo_clean_emits_event() {
+        let repo = zenops_path("");
+        let v = json_line_for_status(Status::GitRepoClean { repo });
+        assert_eq!(v["event"], "status");
+        assert_eq!(v["kind"], "git_repo_clean");
+        assert_eq!(v["repo"]["path"]["path"], "");
     }
 
     #[test]
@@ -979,11 +1098,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut out = JsonOutput::new(&mut buf);
-            out.push_status(Status::PkgMissing {
-                pkg: SmolStr::new_static("python"),
-                install_command: None,
-            })
-            .unwrap();
+            out.push_status(pkg_missing("python", None)).unwrap();
             out.push_applied_action(AppliedAction::CreatedDir(home_path("d")))
                 .unwrap();
         }
@@ -1012,12 +1127,8 @@ mod tests {
     #[test]
     fn terminal_renderer_surfaces_writer_errors_on_finalize() {
         let mut w = FailingWriter;
-        let mut r = TerminalRenderer::new(&mut w, false, false);
-        r.push_status(Status::PkgMissing {
-            pkg: SmolStr::new_static("x"),
-            install_command: None,
-        })
-        .unwrap();
+        let mut r = TerminalRenderer::new(&mut w, false, false, false);
+        r.push_status(pkg_missing("x", None)).unwrap();
         let err = r.finalize().unwrap_err();
         assert!(matches!(err, OutputError::Io(_)), "unexpected: {err:?}");
     }
@@ -1026,10 +1137,7 @@ mod tests {
     fn json_output_surfaces_writer_errors() {
         let mut w = FailingWriter;
         let err = JsonOutput::new(&mut w)
-            .push_status(Status::PkgMissing {
-                pkg: SmolStr::new_static("x"),
-                install_command: None,
-            })
+            .push_status(pkg_missing("x", None))
             .unwrap_err();
         // `serde_json::to_writer` wraps the underlying IO failure in its own
         // `serde_json::Error`, which lifts into `OutputError::Json`. Either

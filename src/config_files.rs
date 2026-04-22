@@ -347,8 +347,10 @@ impl<'dirs> ConfigFiles<'dirs> {
                     ..
                 } => todo!(),
                 Status::Git { repo, status } => todo!("{repo}: {status:?}"),
-                Status::PkgMissing { .. } => {
-                    unreachable!("PkgMissing is pushed directly to Output, not through ConfigFiles")
+                Status::GitRepoClean { .. } | Status::Pkg { .. } => {
+                    unreachable!(
+                        "GitRepoClean/Pkg events are pushed directly to Output, not through ConfigFiles",
+                    )
                 }
             }
         }

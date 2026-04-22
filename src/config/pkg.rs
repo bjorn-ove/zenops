@@ -301,8 +301,8 @@ impl PkgConfig {
             // `detect` field means "nothing to check" → installed. They
             // diverge only in how consumers *surface* a miss: for `on`,
             // `enable_on_but_detect_missing` flags it so callers can push
-            // a `Status::PkgMissing` to structured output; `detect` miss is
-            // silent by design.
+            // a `Status::Pkg { status: PkgStatus::Missing }` to structured
+            // output; `detect` miss is silent by design.
             PkgEnable::On | PkgEnable::Detect => {
                 let Some(detect) = self.detect.as_ref() else {
                     return true;
@@ -336,6 +336,33 @@ impl PkgConfig {
         };
         let lookup = [&self.inputs, system_inputs];
         !detect.check(home, &lookup)
+    }
+
+    /// Complement of [`Self::enable_on_but_detect_missing`] within `enable =
+    /// "on"`. True when the user declared `enable = "on"`, there's a detect
+    /// strategy, and it matches on the current host — a real positive check
+    /// that something got verified. Used to emit a clean-state `Status::Pkg
+    /// { status: Ok }` so `zenops status --all` can show the pkg was
+    /// looked at. Absent-detect pkgs (e.g. meta/scaffolding configs like
+    /// `bashrc-chain`) stay silent: "no detect" means "nothing to report
+    /// as verified." Like its counterpart, silent for `detect` /
+    /// `disabled` / OS-gated-out pkgs.
+    pub fn enable_on_and_detect_matches(
+        &self,
+        home: &Path,
+        system_inputs: &IndexMap<SmolStr, SmolStr>,
+    ) -> bool {
+        if !matches!(self.enable, PkgEnable::On) {
+            return false;
+        }
+        if !self.supports_current_os() {
+            return false;
+        }
+        let Some(detect) = self.detect.as_ref() else {
+            return false;
+        };
+        let lookup = [&self.inputs, system_inputs];
+        detect.check(home, &lookup)
     }
 
     pub fn is_disabled(&self) -> bool {

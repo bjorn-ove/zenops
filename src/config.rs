@@ -23,7 +23,7 @@ use crate::{
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
     git::Git,
-    output::{Output, ResolvedConfigFilePath, Status},
+    output::{Output, PkgStatus, ResolvedConfigFilePath, Status},
     pkg_manager,
 };
 
@@ -244,37 +244,51 @@ impl<'dirs> Config<'dirs> {
     ) -> Result<(), Error> {
         let git = Git::new(self.dirs.zenops(), sh);
         if git.is_git_repo()? {
-            for status in git.status()? {
-                output.push_status(Status::Git {
+            let statuses = git.status()?;
+            if statuses.is_empty() {
+                output.push_status(Status::GitRepoClean {
                     repo: self.zenops_repo.clone(),
-                    status,
                 })?;
+            } else {
+                for status in statuses {
+                    output.push_status(Status::Git {
+                        repo: self.zenops_repo.clone(),
+                        status,
+                    })?;
+                }
             }
         }
         Ok(())
     }
 
-    /// Emit a `Status::PkgMissing` for every pkg that the user declared
-    /// `enable = "on"` on, yet whose detect strategies don't match on this
-    /// host. No-op for `detect`/`disabled` pkgs — silence on miss is the
-    /// defining behavior of `detect`. Called from the apply/status entry
-    /// points, not from `Config::load` — a load isn't an event, and these
-    /// observations should only surface from commands the user runs.
+    /// Emit a `Status::Pkg` event for every pkg under the `enable = "on"`
+    /// contract: `PkgStatus::Missing` when detect doesn't match on this
+    /// host, `PkgStatus::Ok` when it does (or when there's no detect to
+    /// check). No-op for `detect`/`disabled` pkgs — silence on miss is the
+    /// defining behavior of `detect`, and `--all` keeps that invariant
+    /// (detect pkgs live in `zenops pkg --all`'s column instead). Called
+    /// from the apply/status entry points, not from `Config::load` — a
+    /// load isn't an event, and these observations should only surface
+    /// from commands the user runs.
     pub fn push_pkg_health(&self, output: &mut dyn Output) -> Result<(), Error> {
         let manager = pkg_manager::detect();
         for (key, pkg) in &self.stored.pkg {
-            if !pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs) {
-                continue;
-            }
             let label = pkg.name.clone().unwrap_or_else(|| key.clone());
-            let install_command = manager.and_then(|m| {
-                let pkgs = m.packages_for(&pkg.install_hint);
-                (!pkgs.is_empty()).then(|| m.install_command(pkgs))
-            });
-            output.push_status(Status::PkgMissing {
-                pkg: label,
-                install_command,
-            })?;
+            if pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs) {
+                let install_command = manager.and_then(|m| {
+                    let pkgs = m.packages_for(&pkg.install_hint);
+                    (!pkgs.is_empty()).then(|| m.install_command(pkgs))
+                });
+                output.push_status(Status::Pkg {
+                    pkg: label,
+                    status: PkgStatus::Missing { install_command },
+                })?;
+            } else if pkg.enable_on_and_detect_matches(self.dirs.home(), &self.system_inputs) {
+                output.push_status(Status::Pkg {
+                    pkg: label,
+                    status: PkgStatus::Ok,
+                })?;
+            }
         }
         Ok(())
     }

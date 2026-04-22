@@ -68,6 +68,9 @@ pub enum Cmd {
         /// Show a diff of what would change
         #[clap(long, short = 'd')]
         diff: bool,
+        /// Also list items that already match the desired state
+        #[clap(long, short = 'a')]
+        all: bool,
     },
     /// List every configured package and whether its dependencies are met
     Pkg {
@@ -160,7 +163,7 @@ pub fn real_main(
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
         }
-        Cmd::Status { diff: _ } => {
+        Cmd::Status { diff: _, all: _ } => {
             config.push_pkg_health(output)?;
             config.check_own_status(&sh, output)?;
             config.update_config_files(&sh, &mut config_files)?;

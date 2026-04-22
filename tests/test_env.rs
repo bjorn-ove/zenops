@@ -66,6 +66,15 @@ impl TestEnv {
         }
     }
 
+    /// The `Status::GitRepoClean` entry emitted for this env's zenops repo
+    /// when it has no uncommitted changes. Every test whose zenops repo is
+    /// in a clean state has this prepended to its expected entries.
+    pub fn git_repo_clean_entry(&self) -> Entry {
+        Entry::Status(Status::GitRepoClean {
+            repo: self.cfpath("", ConfigFilePath::Zenops),
+        })
+    }
+
     pub fn ensure_dir_exists_for_file(&self, file_path: impl AsRef<SafeRelativePath>) {
         if let Some(dir) = file_path.as_ref().safe_parent() {
             let path = dir.to_full_path(self.root.path());

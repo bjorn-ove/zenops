@@ -5,7 +5,7 @@ use zenops::{
     config_files::ConfigFilePath,
     error::Error,
     git::{GitCmd, GitFileStatus},
-    output::{AppliedAction, Status, SymlinkStatus},
+    output::{AppliedAction, PkgStatus, Status, SymlinkStatus},
     prompt::{PreApplyAnswer, parse_pre_apply_input},
 };
 use zenops_safe_relative_path::srpath;
@@ -19,7 +19,10 @@ fn missing_config() {
     let env = test_env::TestEnv::load();
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Err(Error::OpenDb(
             env.resolve_path(paths::ZENOPS_CONFIG),
             std::io::ErrorKind::NotFound.into()
@@ -30,7 +33,10 @@ fn missing_config() {
     env.write_zenops_file(srpath!("config.toml"), "", None);
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output { entries: vec![] }),
     );
 
@@ -38,8 +44,13 @@ fn missing_config() {
     env.init_config("");
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
-        Ok(Output { entries: vec![] }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
+        Ok(Output {
+            entries: vec![env.git_repo_clean_entry()],
+        }),
     );
 }
 
@@ -50,15 +61,23 @@ fn config_dir_git_status() {
     env.init_config("");
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
-        Ok(Output { entries: vec![] })
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
+        Ok(Output {
+            entries: vec![env.git_repo_clean_entry()],
+        })
     );
 
     env.append_zenops_file(srpath!("config.toml"), "# Modification", None);
     env.write_zenops_file(srpath!("untracked-file"), "# Untracked file", None);
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
             entries: vec![
                 Entry::Status(Status::Git {
@@ -559,9 +578,13 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
             entries: vec![
+                env.git_repo_clean_entry(),
                 Entry::Status(Status::Symlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
@@ -587,9 +610,13 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
             entries: vec![
+                env.git_repo_clean_entry(),
                 Entry::Status(Status::Symlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
@@ -617,9 +644,13 @@ fn symlinked_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
             entries: vec![
+                env.git_repo_clean_entry(),
                 Entry::Status(Status::Symlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
@@ -638,9 +669,13 @@ fn symlinked_configs() {
     env.delete_file(&dummy2_config_symlink);
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
             entries: vec![
+                env.git_repo_clean_entry(),
                 Entry::Status(Status::Symlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
@@ -723,13 +758,19 @@ fn pkg_configs_default_dir_name_to_pkg_key() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real,
-                symlink,
-                status: SymlinkStatus::DstDirIsMissing,
-            })],
+            entries: vec![
+                env.git_repo_clean_entry(),
+                Entry::Status(Status::Symlink {
+                    real,
+                    symlink,
+                    status: SymlinkStatus::DstDirIsMissing,
+                }),
+            ],
         })
     );
 }
@@ -757,13 +798,19 @@ fn pkg_configs_explicit_name_overrides_pkg_key() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real,
-                symlink,
-                status: SymlinkStatus::DstDirIsMissing,
-            })],
+            entries: vec![
+                env.git_repo_clean_entry(),
+                Entry::Status(Status::Symlink {
+                    real,
+                    symlink,
+                    status: SymlinkStatus::DstDirIsMissing,
+                }),
+            ],
         })
     );
 }
@@ -787,15 +834,20 @@ fn disabled_pkg_skips_its_configs() {
     );
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
-        Ok(Output { entries: vec![] })
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
+        Ok(Output {
+            entries: vec![env.git_repo_clean_entry()],
+        })
     );
 }
 
 #[test]
 fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
     // `enable = "on"` says the user expects this pkg. Detect misses on the
-    // temp host → push a Status::PkgMissing with the brew-install hint.
+    // temp host → push a Status::Pkg{Missing} with the brew-install hint.
     let env = test_env::TestEnv::load();
     env.init_config(
         r#"
@@ -824,18 +876,20 @@ fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
 
     let expected_install_command = brew_available.then(|| "brew install ghosttool".to_string());
     assert!(
-        out.entries.contains(&Entry::Status(Status::PkgMissing {
+        out.entries.contains(&Entry::Status(Status::Pkg {
             pkg: SmolStr::new("ghosttool"),
-            install_command: expected_install_command,
+            status: PkgStatus::Missing {
+                install_command: expected_install_command,
+            },
         })),
-        "expected PkgMissing for ghosttool, got: {:?}",
+        "expected Pkg{{Missing}} for ghosttool, got: {:?}",
         out.entries
     );
 }
 
 #[test]
 fn apply_is_silent_for_detect_variant_miss() {
-    // Silence on miss is the point of `enable = "detect"`; no PkgMissing.
+    // Silence on miss is the point of `enable = "detect"`; no Pkg event.
     let env = test_env::TestEnv::load();
     env.init_config(
         r#"
@@ -860,16 +914,16 @@ fn apply_is_silent_for_detect_variant_miss() {
     assert!(
         !out.entries.iter().any(|e| matches!(
             e,
-            Entry::Status(Status::PkgMissing { pkg, .. }) if pkg == "quietpkg"
+            Entry::Status(Status::Pkg { pkg, .. }) if pkg == "quietpkg"
         )),
-        "detect-miss should not push PkgMissing, got: {:?}",
+        "detect-miss should not push any Pkg event, got: {:?}",
         out.entries
     );
 }
 
 #[test]
 fn apply_pkg_missing_with_no_install_hint_has_no_command() {
-    // `on` + detect miss + empty brew packages → PkgMissing without an
+    // `on` + detect miss + empty brew packages → Pkg{Missing} without an
     // install command; the user just sees "X is missing".
     let env = test_env::TestEnv::load();
     env.init_config(
@@ -893,11 +947,13 @@ fn apply_pkg_missing_with_no_install_hint_has_no_command() {
         .expect("apply should succeed");
 
     assert!(
-        out.entries.contains(&Entry::Status(Status::PkgMissing {
+        out.entries.contains(&Entry::Status(Status::Pkg {
             pkg: SmolStr::new("hintless"),
-            install_command: None,
+            status: PkgStatus::Missing {
+                install_command: None,
+            },
         })),
-        "expected PkgMissing without install_command, got: {:?}",
+        "expected Pkg{{Missing}} without install_command, got: {:?}",
         out.entries
     );
 }
@@ -927,9 +983,9 @@ fn apply_no_pkg_missing_when_detect_is_empty() {
     assert!(
         !out.entries.iter().any(|e| matches!(
             e,
-            Entry::Status(Status::PkgMissing { pkg, .. }) if pkg == "metapkg"
+            Entry::Status(Status::Pkg { pkg, .. }) if pkg == "metapkg"
         )),
-        "empty-detect pkg should not emit PkgMissing, got: {:?}",
+        "empty-detect pkg should not emit any Pkg event, got: {:?}",
         out.entries
     );
 }
@@ -1328,13 +1384,19 @@ fn symlink_dst_is_regular_file() {
     env.write_file(&symlink_full, "# pre-existing user file\n");
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: real.clone(),
-                symlink: symlink.clone(),
-                status: SymlinkStatus::IsFile,
-            })]
+            entries: vec![
+                env.git_repo_clean_entry(),
+                Entry::Status(Status::Symlink {
+                    real: real.clone(),
+                    symlink: symlink.clone(),
+                    status: SymlinkStatus::IsFile,
+                }),
+            ]
         })
     );
 
@@ -1359,13 +1421,19 @@ fn symlink_dst_is_directory() {
     env.create_dir(&symlink_full);
 
     assert_eq!(
-        env.run(&Cmd::Status { diff: false }),
+        env.run(&Cmd::Status {
+            diff: false,
+            all: false
+        }),
         Ok(Output {
-            entries: vec![Entry::Status(Status::Symlink {
-                real: real.clone(),
-                symlink: symlink.clone(),
-                status: SymlinkStatus::IsDir,
-            })]
+            entries: vec![
+                env.git_repo_clean_entry(),
+                Entry::Status(Status::Symlink {
+                    real: real.clone(),
+                    symlink: symlink.clone(),
+                    status: SymlinkStatus::IsDir,
+                }),
+            ]
         })
     );
 
