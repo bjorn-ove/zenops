@@ -71,7 +71,10 @@ impl ExpandStr {
     ///
     /// assert_eq!(t.expand_to_string(&lookup).unwrap(), "hi, Ada!");
     /// ```
-    pub fn expand_to_string(&self, lookup: &impl ExpandLookup) -> Result<String, ExpandError> {
+    pub fn expand_to_string(
+        &self,
+        lookup: &(impl ExpandLookup + ?Sized),
+    ) -> Result<String, ExpandError> {
         let mut out = String::with_capacity(self.0.len() * 2);
         self.write_expanded(lookup, &mut out)?;
         Ok(out)
@@ -105,7 +108,7 @@ impl ExpandStr {
     /// [`expand_to_string`]: ExpandStr::expand_to_string
     pub fn write_expanded(
         &self,
-        lookup: &impl ExpandLookup,
+        lookup: &(impl ExpandLookup + ?Sized),
         f: &mut impl fmt::Write,
     ) -> Result<(), ExpandError> {
         let mut rest = self.0.as_str();
@@ -191,6 +194,22 @@ mod tests {
         }
         let h: Holder = toml::from_str(r#"v = "x-${y}-z""#).unwrap();
         assert_eq!(h.v.as_template(), "x-${y}-z");
+    }
+
+    #[test]
+    fn dyn_compatible() {
+        let a = make_lookup(&[("a", "A")]);
+        let b = make_lookup(&[("b", "B")]);
+
+        // &dyn ExpandLookup accepted directly.
+        let dyn_lookup: &dyn ExpandLookup = &a;
+        let s = ExpandStr::new_static("${a}");
+        assert_eq!(s.expand_to_string(dyn_lookup).unwrap(), "A");
+
+        // Heterogeneous chain via [&dyn ExpandLookup; N].
+        let chain: [&dyn ExpandLookup; 2] = [&a, &b];
+        let s = ExpandStr::new_static("${a}/${b}");
+        assert_eq!(s.expand_to_string(&chain).unwrap(), "A/B");
     }
 
     #[test]

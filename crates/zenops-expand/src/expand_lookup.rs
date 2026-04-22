@@ -7,16 +7,16 @@ pub trait ExpandLookup {
     fn write_value<'a>(
         &self,
         name: &'a str,
-        f: &mut impl fmt::Write,
+        f: &mut dyn fmt::Write,
     ) -> Result<(), ExpandLookupError<'a>>;
 }
 
 /// Try each lookup in order; return the first hit.
-impl<const SIZE: usize, T: ExpandLookup> ExpandLookup for [&T; SIZE] {
+impl<const SIZE: usize, T: ExpandLookup + ?Sized> ExpandLookup for [&T; SIZE] {
     fn write_value<'a>(
         &self,
         name: &'a str,
-        f: &mut impl fmt::Write,
+        f: &mut dyn fmt::Write,
     ) -> Result<(), ExpandLookupError<'a>> {
         for expander in self {
             match expander.write_value(name, f) {
@@ -38,7 +38,7 @@ where
     fn write_value<'a>(
         &self,
         name: &'a str,
-        f: &mut impl fmt::Write,
+        f: &mut dyn fmt::Write,
     ) -> Result<(), ExpandLookupError<'a>> {
         if let Some(value) = self.get(name) {
             f.write_str(value.as_ref())?;
@@ -57,7 +57,7 @@ where
     fn write_value<'a>(
         &self,
         name: &'a str,
-        f: &mut impl fmt::Write,
+        f: &mut dyn fmt::Write,
     ) -> Result<(), ExpandLookupError<'a>> {
         if let Some(value) = self.get(name) {
             f.write_str(value.as_ref())?;
@@ -76,7 +76,7 @@ where
     fn write_value<'a>(
         &self,
         name: &'a str,
-        f: &mut impl fmt::Write,
+        f: &mut dyn fmt::Write,
     ) -> Result<(), ExpandLookupError<'a>> {
         if let Some(value) = self.get(name) {
             f.write_str(value.as_ref())?;
