@@ -72,6 +72,37 @@ miss), or `enable = "disabled"` to skip a pkg entirely.
 Use `type = "home"` with `dir = ".something"` instead of `.config` for
 dotfiles that live directly under `~/`.
 
+## SSH allowed signers
+
+zenops can generate `~/.ssh/allowed_signers` — the file git consults when
+verifying SSH-signed commits (`git config gpg.ssh.allowedSignersFile`). Each
+entry is either a `github` lookup (zenops fetches the user's SSH *signing*
+keys from `https://api.github.com/users/<username>/ssh_signing_keys` via `curl`
+— note this is a different endpoint from the `.keys` file used for SSH
+authentication) or a fully `manual` line:
+
+```toml
+[[ssh.allowed_signers]]
+type = "github"
+username = "octocat"
+principal = "octocat@github.com"
+
+[[ssh.allowed_signers]]
+type = "manual"
+principal = "bob@example.com"
+key_type = "ssh-ed25519"
+key = "AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial"
+```
+
+The file is regenerated on every `zenops apply`, so adding or rotating entries
+in the config keeps the signers file in lockstep. `github` entries require
+`curl` on `PATH`; if fetching fails, the run aborts — switch to `manual` for
+offline stability. Pointing git at the file is a one-time step:
+
+```sh
+git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+```
+
 ## Commands
 
 - `zenops init <git-url>` — clone an existing zenops config repo into `~/.config/zenops` and validate it. `--apply` chains into `zenops apply` after a successful clone; `--branch` picks a non-default branch or tag.

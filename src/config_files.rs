@@ -254,6 +254,13 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
+                    if let Some(parent) = path.parent()
+                        && !parent.full.exists()
+                    {
+                        std::fs::create_dir_all(&parent.full)
+                            .map_err(|e| Error::CreateDirectoryError(parent.clone(), e))?;
+                        output.push_applied_action(AppliedAction::CreatedDir(parent))?;
+                    }
                     std::fs::write(&path.full, want_content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
                     output.push_applied_action(AppliedAction::CreatedFile(path))?;

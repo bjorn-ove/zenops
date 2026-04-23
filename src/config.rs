@@ -1,6 +1,7 @@
 pub(crate) mod pkg;
 mod pkg_config_files;
 mod shell;
+mod ssh;
 mod stored_relative_path;
 
 use std::{
@@ -19,6 +20,7 @@ use crate::{
     config::{
         pkg::{Shell, ShellInitAction},
         shell::StoredShellEnvironment,
+        ssh::{CurlGithubKeyFetcher, StoredSshConfig},
     },
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
@@ -32,6 +34,7 @@ use crate::{
 struct StoredConfig {
     shell: StoredShellEnvironment,
     pkg: IndexMap<SmolStr, PkgConfig>,
+    ssh: StoredSshConfig,
 }
 
 pub struct Config<'dirs> {
@@ -226,6 +229,9 @@ impl<'dirs> Config<'dirs> {
         config_files: &mut ConfigFiles<'_>,
     ) -> Result<(), Error> {
         self.stored.shell.update_config_files(self, config_files)?;
+        self.stored
+            .ssh
+            .update_config_files(config_files, &CurlGithubKeyFetcher)?;
         for (pkg_key, pkg) in &self.stored.pkg {
             if !pkg.is_installed(self.dirs.home(), &self.system_inputs) {
                 continue;

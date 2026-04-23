@@ -58,6 +58,22 @@ pub enum Error {
     },
     #[error("Init I/O error at {0:?}: {1}")]
     InitIo(PathBuf, #[source] std::io::Error),
+    #[error(
+        "curl is required to fetch GitHub SSH keys; install curl or switch the entry to type = \"manual\""
+    )]
+    CurlNotFound,
+    #[error("Failed to fetch SSH keys for GitHub user {username}: {source}")]
+    GithubKeyFetchFailed {
+        username: SmolStr,
+        #[source]
+        source: xshell::Error,
+    },
+    #[error("Failed to parse SSH signing keys response for GitHub user {username}: {source}")]
+    GithubKeyParseFailed {
+        username: SmolStr,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 impl PartialEq for Error {
@@ -122,6 +138,27 @@ impl PartialEq for Error {
                 },
             ) => l_url == r_url && l_src.to_string() == r_src.to_string(),
             (Self::InitIo(l0, l1), Self::InitIo(r0, r1)) => l0 == r0 && l1.kind() == r1.kind(),
+            (Self::CurlNotFound, Self::CurlNotFound) => true,
+            (
+                Self::GithubKeyFetchFailed {
+                    username: l_user,
+                    source: l_src,
+                },
+                Self::GithubKeyFetchFailed {
+                    username: r_user,
+                    source: r_src,
+                },
+            ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
+            (
+                Self::GithubKeyParseFailed {
+                    username: l_user,
+                    source: l_src,
+                },
+                Self::GithubKeyParseFailed {
+                    username: r_user,
+                    source: r_src,
+                },
+            ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
             _ => false,
         }
     }
