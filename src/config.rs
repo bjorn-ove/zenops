@@ -1,8 +1,10 @@
+mod git;
 pub(crate) mod pkg;
 mod pkg_config_files;
 mod shell;
 mod ssh;
 mod stored_relative_path;
+mod user;
 
 use std::{
     path::{Path, PathBuf},
@@ -18,9 +20,11 @@ pub use crate::config::pkg::PkgConfig;
 
 use crate::{
     config::{
+        git::StoredGitConfig,
         pkg::{Shell, ShellInitAction},
         shell::StoredShellEnvironment,
         ssh::{CurlGithubKeyFetcher, StoredSshConfig},
+        user::StoredUserConfig,
     },
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
@@ -35,6 +39,8 @@ struct StoredConfig {
     shell: StoredShellEnvironment,
     pkg: IndexMap<SmolStr, PkgConfig>,
     ssh: StoredSshConfig,
+    user: StoredUserConfig,
+    git: StoredGitConfig,
 }
 
 pub struct Config<'dirs> {
@@ -53,7 +59,10 @@ fn detect_brew_prefix() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn build_system_inputs(brew_prefix: Option<&Path>) -> IndexMap<SmolStr, SmolStr> {
+fn build_system_inputs(
+    brew_prefix: Option<&Path>,
+    user: &StoredUserConfig,
+) -> IndexMap<SmolStr, SmolStr> {
     let mut m = IndexMap::new();
     if let Some(p) = brew_prefix {
         m.insert(
@@ -65,6 +74,12 @@ fn build_system_inputs(brew_prefix: Option<&Path>) -> IndexMap<SmolStr, SmolStr>
         SmolStr::new_static("os"),
         SmolStr::new_static(std::env::consts::OS),
     );
+    if let Some(name) = &user.name {
+        m.insert(SmolStr::new_static("user.name"), name.clone());
+    }
+    if let Some(email) = &user.email {
+        m.insert(SmolStr::new_static("user.email"), email.clone());
+    }
     m
 }
 
@@ -140,7 +155,7 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
-        let system_inputs = build_system_inputs(detect_brew_prefix().as_deref());
+        let system_inputs = build_system_inputs(detect_brew_prefix().as_deref(), &stored.user);
 
         Ok(Self {
             dirs,
@@ -232,6 +247,11 @@ impl<'dirs> Config<'dirs> {
         self.stored
             .ssh
             .update_config_files(config_files, &CurlGithubKeyFetcher)?;
+        self.stored.git.update_config_files(
+            &self.stored.user,
+            !self.stored.ssh.allowed_signers.is_empty(),
+            config_files,
+        )?;
         for (pkg_key, pkg) in &self.stored.pkg {
             if !pkg.is_installed(self.dirs.home(), &self.system_inputs) {
                 continue;

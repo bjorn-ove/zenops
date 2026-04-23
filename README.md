@@ -72,6 +72,22 @@ miss), or `enable = "disabled"` to skip a pkg entirely.
 Use `type = "home"` with `dir = ".something"` instead of `.config` for
 dotfiles that live directly under `~/`.
 
+## User identity
+
+The `[user]` section holds your name and email — the single source of truth
+for anything that needs them (git, SSH allowed-signer principals, and any
+template string in the config):
+
+```toml
+[user]
+name = "Ada Lovelace"
+email = "ada@example.com"
+```
+
+Both fields are exposed as template variables `${user.name}` and
+`${user.email}`, usable in any config value that supports `${...}`
+expansion.
+
 ## SSH allowed signers
 
 zenops can generate `~/.ssh/allowed_signers` — the file git consults when
@@ -97,11 +113,36 @@ key = "AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial"
 The file is regenerated on every `zenops apply`, so adding or rotating entries
 in the config keeps the signers file in lockstep. `github` entries require
 `curl` on `PATH`; if fetching fails, the run aborts — switch to `manual` for
-offline stability. Pointing git at the file is a one-time step:
+offline stability. Pointing git at the file is handled automatically when
+`[git.signing]` is set to `type = "ssh"` (see below).
 
-```sh
-git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+## Git global config
+
+zenops manages `~/.gitconfig` from the `[git]` section plus `[user]`. Name,
+email, and — when configured — commit signing are written on every `zenops
+apply`.
+
+Enable commit signing with `[git.signing]`, tagged by backend. SSH-based
+signing (git 2.34+):
+
+```toml
+[git.signing]
+type = "ssh"
+key = "~/.ssh/id_ed25519-github.pub"
 ```
+
+Classic OpenPGP signing:
+
+```toml
+[git.signing]
+type = "gpg"
+key = "ABCD1234DEADBEEF"
+```
+
+Setting `[git.signing]` also sets `commit.gpgsign = true` and the matching
+`gpg.format`. With `type = "ssh"` plus any `[[ssh.allowed_signers]]` entries
+configured, `gpg.ssh.allowedSignersFile` points at the managed file
+automatically.
 
 ## Commands
 
