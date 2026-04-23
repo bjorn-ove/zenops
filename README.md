@@ -7,15 +7,25 @@ keep your shell environment, aliases, dotfile symlinks, and `$PATH` in sync
 with what you've declared. Run `zenops apply` to make the system match the
 config; run `zenops status` to see what would change without touching anything.
 
-## Install
+## Getting started
+
+If you already have a zenops config repo:
 
 ```sh
 cargo install zenops
+zenops init git@github.com:you/dotfiles.git
+zenops apply
 ```
 
-## Configure
+`zenops init` clones the repo into `~/.config/zenops/` and validates that
+it has a `config.toml`. Authentication (SSH key, HTTPS credential helper)
+uses whatever git is already configured to use. Pass `zenops init <url>
+--apply` to chain straight into `zenops apply`.
 
-Create `~/.config/zenops/config.toml`:
+## Starting from scratch
+
+If you don't have a config repo yet, create `~/.config/zenops/config.toml`
+by hand:
 
 ```toml
 [shell]
@@ -64,6 +74,7 @@ dotfiles that live directly under `~/`.
 
 ## Commands
 
+- `zenops init <git-url>` — clone an existing zenops config repo into `~/.config/zenops` and validate it. `--apply` chains into `zenops apply` after a successful clone; `--branch` picks a non-default branch or tag.
 - `zenops apply` — apply the config (write generated files, create symlinks). Pass `--pull-config` to `git pull --rebase` the config repo first.
 - `zenops status` — show what would change. `--diff` shows file diffs.
 - `zenops pkg` — list configured packages and whether their dependencies are met. `--all` includes disabled packages; `--all-hints` shows every install hint.

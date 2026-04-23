@@ -1,3 +1,7 @@
+// Shared across multiple integration-test binaries; each binary uses a
+// different subset, so per-binary dead-code warnings are expected.
+#![allow(dead_code)]
+
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -199,6 +203,49 @@ impl TestEnv {
                 .run()
                 .unwrap();
         });
+        bare
+    }
+
+    /// Create a bare repo at `<tmp>/origin.git` seeded with the given files
+    /// on `main`, without touching the test env's zenops dir. Returns the
+    /// bare repo's path; tests can pass it as a `file:///...` URL to
+    /// `Cmd::Init`.
+    pub fn seed_bare_repo(&self, files: &[(&str, &str)]) -> PathBuf {
+        let bare = self.root.path().join("origin.git");
+        let seed = self.root.path().join("seed");
+        cmd!(self.sh, "git init --bare")
+            .arg(&bare)
+            .ignore_stdout()
+            .run()
+            .unwrap();
+        std::fs::create_dir(&seed).unwrap();
+        let _dir = self.sh.push_dir(&seed);
+        cmd!(self.sh, "git init")
+            .ignore_stdout()
+            .ignore_stderr()
+            .run()
+            .unwrap();
+        cmd!(self.sh, "git config commit.gpgsign false")
+            .run()
+            .unwrap();
+        for (name, content) in files {
+            std::fs::write(seed.join(name), content).unwrap();
+            cmd!(self.sh, "git add").arg(name).run().unwrap();
+        }
+        cmd!(self.sh, "git commit -m seed")
+            .ignore_stdout()
+            .run()
+            .unwrap();
+        cmd!(self.sh, "git branch -M main").run().unwrap();
+        cmd!(self.sh, "git remote add origin")
+            .arg(&bare)
+            .run()
+            .unwrap();
+        cmd!(self.sh, "git push -u origin main")
+            .ignore_stdout()
+            .ignore_stderr()
+            .run()
+            .unwrap();
         bare
     }
 

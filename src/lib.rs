@@ -3,6 +3,7 @@ mod config;
 pub mod config_files;
 pub mod error;
 pub mod git;
+mod init;
 pub mod output;
 pub mod pkg_list;
 pub mod pkg_manager;
@@ -88,6 +89,24 @@ pub enum Cmd {
         #[command(subcommand)]
         command: GitCmd,
     },
+    /// Clone an existing zenops config repo into `~/.config/zenops` and
+    /// validate that it has a `config.toml`. Run this once on a new machine
+    /// before `zenops apply`. Authentication (SSH key, HTTPS credential
+    /// helper) uses whatever git is already configured to use.
+    Init {
+        /// Git URL to clone (SSH or HTTPS). Passed verbatim to `git clone`.
+        url: String,
+        /// Check out this branch or tag after cloning (default: remote's HEAD).
+        #[clap(long, short)]
+        branch: Option<String>,
+        /// After cloning, run `zenops apply`.
+        #[clap(long)]
+        apply: bool,
+        /// With `--apply`, apply every change without prompting (equivalent
+        /// to `zenops apply --yes`). Only meaningful together with `--apply`.
+        #[clap(long, short = 'y', requires = "apply")]
+        yes: bool,
+    },
     /// Print a shell completion script for zenops to stdout.
     ///
     /// Normally sourced automatically by the built-in `zenops` pkg; you
@@ -100,11 +119,13 @@ pub enum Cmd {
 
 impl Cmd {
     fn should_update_self(&self, _args: &Args) -> bool {
-        match *self {
-            Cmd::Apply { pull_config, .. } => pull_config,
-            Cmd::Status { .. } | Cmd::Pkg { .. } | Cmd::Repo { .. } | Cmd::Completions { .. } => {
-                false
-            }
+        match self {
+            Cmd::Apply { pull_config, .. } => *pull_config,
+            Cmd::Status { .. }
+            | Cmd::Pkg { .. }
+            | Cmd::Repo { .. }
+            | Cmd::Init { .. }
+            | Cmd::Completions { .. } => false,
         }
     }
 }
@@ -132,6 +153,17 @@ pub fn real_main(
         // real_main must not touch config because completions run at every
         // interactive shell startup.
         return Ok(());
+    }
+    if let Cmd::Init {
+        url,
+        branch,
+        apply,
+        yes,
+    } = command
+    {
+        // Init runs before a config.toml exists, so it cannot go through the
+        // normal Config::load path below.
+        return init::run(url, branch.as_deref(), *apply, *yes, dirs, args, output);
     }
     let sh = Shell::new().unwrap();
     let config = Config::load(dirs, &sh, command.should_update_self(args))?;
@@ -191,6 +223,7 @@ pub fn real_main(
         Cmd::Repo { command } => {
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
         }
+        Cmd::Init { .. } => unreachable!("handled before Config::load"),
         Cmd::Completions { .. } => unreachable!("handled before Config::load"),
     }
 

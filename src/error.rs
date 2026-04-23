@@ -42,6 +42,22 @@ pub enum Error {
     PromptRead(#[source] std::io::Error),
     #[error(transparent)]
     Output(#[from] OutputError),
+    #[error(
+        "Cannot init: {0:?} already exists and is not empty. Remove it first, or use `zenops repo pull` if it's already a zenops repo."
+    )]
+    InitDirNotEmpty(PathBuf),
+    #[error(
+        "Cloned repo at {0:?} has no config.toml at its root. Is this a zenops config repo? The clone was left in place so you can inspect it."
+    )]
+    InitNoConfigToml(PathBuf),
+    #[error("Failed to clone {url}: {source}")]
+    InitCloneFailed {
+        url: String,
+        #[source]
+        source: xshell::Error,
+    },
+    #[error("Init I/O error at {0:?}: {1}")]
+    InitIo(PathBuf, #[source] std::io::Error),
 }
 
 impl PartialEq for Error {
@@ -93,6 +109,19 @@ impl PartialEq for Error {
             (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
+            (Self::InitDirNotEmpty(l0), Self::InitDirNotEmpty(r0)) => l0 == r0,
+            (Self::InitNoConfigToml(l0), Self::InitNoConfigToml(r0)) => l0 == r0,
+            (
+                Self::InitCloneFailed {
+                    url: l_url,
+                    source: l_src,
+                },
+                Self::InitCloneFailed {
+                    url: r_url,
+                    source: r_src,
+                },
+            ) => l_url == r_url && l_src.to_string() == r_src.to_string(),
+            (Self::InitIo(l0, l1), Self::InitIo(r0, r1)) => l0 == r0 && l1.kind() == r1.kind(),
             _ => false,
         }
     }

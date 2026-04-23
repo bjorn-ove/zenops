@@ -49,6 +49,23 @@ impl<'path, 'shell> Git<'path, 'shell> {
         Self { path, sh }
     }
 
+    /// Clone `url` into `dest`, streaming git's own stdio so SSH
+    /// passphrase and HTTPS credential-helper prompts still reach the TTY.
+    /// `dest` must not exist (git refuses to clone into a populated
+    /// directory) — the init flow handles that pre-flight.
+    pub fn clone_to(url: &str, dest: &Path, branch: Option<&str>, sh: &Shell) -> Result<(), Error> {
+        let mut c = cmd!(sh, "git clone");
+        if let Some(b) = branch {
+            c = c.arg("--branch").arg(b);
+        }
+        c = c.arg(url).arg(dest);
+        c.run().map_err(|e| Error::InitCloneFailed {
+            url: url.to_string(),
+            source: e,
+        })?;
+        Ok(())
+    }
+
     pub fn is_git_repo(&self) -> Result<bool, Error> {
         let Self { path, sh } = self;
         match cmd!(sh, "git -C {path} rev-parse --is-inside-work-tree")
