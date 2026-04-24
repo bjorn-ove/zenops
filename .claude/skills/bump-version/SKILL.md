@@ -10,24 +10,28 @@ has changed since each crate's last release tag and bumps only the crates
 that need it, propagating through the internal dep graph when a breaking
 change forces dependents to re-release.
 
+## Helper script
+
+Mechanical steps — workspace discovery, per-crate last-tag resolution with
+the pre-split `v<version>` fallback, focused `git log`/`git diff`, and
+GitHub release-URL construction — are wrapped by
+[`scripts/bump-helper.sh`](../../../scripts/bump-helper.sh). Use its
+subcommands below instead of re-implementing the pipelines inline. Run it
+with no args to see the full list.
+
 ## Discovering the workspace
 
 Do **not** hardcode the crate list — the workspace grows. Derive it fresh
 each run:
 
 ```bash
-cargo metadata --format-version=1 --no-deps
+./scripts/bump-helper.sh list
 ```
 
-From the JSON, for each entry in `packages`:
-
-- `name` — the crate name (used in the tag, commit message, and changelog)
-- `version` — the crate's current version
-- `manifest_path` — its `Cargo.toml` (edit this for the version bump)
-- the crate's directory is `dirname(manifest_path)`, relative to the repo
-  root — use this for `git log`/`git diff` path filters
-- `dependencies[].name` intersected with the set of workspace package names
-  gives the **internal** edges for dep-graph propagation
+Emits one compact JSON object per crate with fields: `name`, `version`,
+`manifest_path` (repo-relative), `crate_dir` (repo-relative; `.` for the
+root crate), and `internal_deps` (array of workspace crate names this one
+depends on — this gives the dep-graph edges for step 3).
 
 The root `[workspace.dependencies]` in the top-level `Cargo.toml` pins each
 internal crate with an explicit `version = "X.Y.Z"`. Any crate that appears
@@ -38,25 +42,26 @@ there must have its pin updated whenever the crate itself is bumped.
 1. **Pick the target crate(s).**
    - If the user named one or more crates (e.g. `/bump-version <name>`),
      restrict the candidate set to those.
-   - Otherwise, for each workspace crate `C` discovered above:
-     - Find the last tag `<C.name>-v<C.version>`:
-       `git rev-parse -q --verify refs/tags/<C.name>-v<C.version>`.
-     - If missing, run `git pull --rebase` and re-check.
-     - If still missing, fall back to the pre-split workspace tag
-       `v<C.version>` — this is the one-time anchor for crates that were at
-       `0.4.2` before the per-crate split. If *that* also fails, **stop**
-       and tell the user no anchoring tag exists for `C.name`.
-     - Run `git log --oneline <tag>..HEAD -- <crate-dir>/ <root-manifests>`.
-       - `<crate-dir>` is the crate's directory (from `manifest_path`).
-       - `<root-manifests>` is `Cargo.toml Cargo.lock` for every crate,
-         since root-level changes (workspace dep pins, resolver, etc.) can
-         affect any member. For the root crate, pass the repo root itself
-         — but exclude the `crates/` subtree so its changes don't bleed in
-         (`:(exclude)crates/`).
-     - A crate is a **candidate** if that log is non-empty.
+   - Otherwise, run `./scripts/bump-helper.sh candidates`. Each row is
+     tab-separated: `name, version, last_tag, tag_source, commits_since`.
+     - `tag_source=own` — crate has its own `<name>-v<version>` tag.
+     - `tag_source=anchor` — fell back to the pre-split workspace tag
+       `v<version>`. This is the one-time anchor for crates that were at
+       `0.4.2` before the per-crate split.
+     - `tag_source=none` — neither exists. Run `git pull --rebase` once
+       and re-run the helper. If the row is still `none`, **stop** and
+       tell the user no anchoring tag exists for that crate.
+   - A crate is a **candidate** when `commits_since` is non-zero. For each
+     candidate, use `./scripts/bump-helper.sh commits <crate>` to read the
+     log before classifying. Path filters (subcrate-dir plus root
+     `Cargo.toml`/`Cargo.lock`, and the root crate excludes `crates/` so
+     subcrate churn doesn't bleed in) are applied automatically by the
+     helper.
 
 2. **Classify each candidate's bump level.**
-   - `git diff <tag>..HEAD -- <crate-dir>/'*.rs' <crate-dir>/Cargo.toml`
+   - Read the focused diff: `./scripts/bump-helper.sh diff <crate>`. It
+     shows Rust sources plus `Cargo.toml` in the crate directory since
+     the last tag — the subset that determines SemVer impact.
    - Focus on `pub` items in `<crate-dir>/src/lib.rs` and re-exports.
    - SemVer rules:
      - **Major** — breaking changes to any public API, CLI flag removals/
@@ -73,9 +78,9 @@ there must have its pin updated whenever the crate itself is bumped.
      classification.
 
 3. **Propagate through the internal dep graph (leaves-first).**
-   - Build the internal dep graph from `cargo metadata` (intersect each
-     crate's deps with the workspace package set). Topologically order it
-     so leaves come first.
+   - The `internal_deps` array on each `list` row already gives the
+     workspace-internal edges (deps intersected with workspace crate
+     names). Topologically order so leaves come first.
    - If crate `A` receives a **breaking** bump (for `0.x`, a minor bump),
      then every workspace crate `B` with an internal dep on `A` must also
      be bumped — at minimum a patch. `B` is re-releasing because its pin
@@ -193,22 +198,16 @@ there must have its pin updated whenever the crate itself is bumped.
 
    URL construction:
 
-   - Pre-fill the release title via `&title=<crate>%20v<X.Y.Z>` (space as
-     `%20`). Don't use `+`; GitHub's form decodes `+` as a literal plus
-     sign in this field.
+   - Use `./scripts/bump-helper.sh release-url <crate> <X.Y.Z>` to get the
+     URL. It parses `git remote get-url origin` (ssh and https forms),
+     strips `.git`, and URL-encodes the title. If the remote is not a
+     GitHub URL the helper exits non-zero — in that case, still print the
+     changelog block but list the raw tag name instead of a URL.
    - Don't pre-fill `&body=` from the changelog. Release notes are often
      long and contain characters that would need aggressive URL-encoding
      (newlines, backticks, code fences); URLs also have practical length
      limits. Printing the body as a fenced code block in chat is more
      reliable and easier to copy.
-   - Derive `<owner>/<repo>` from `git remote get-url origin` (handle both
-     `git@github.com:owner/repo.git` and
-     `https://github.com/owner/repo.git` forms; strip any trailing `.git`).
-     If `<crate>` contains characters that need URL-encoding (unlikely for
-     Cargo crate names, but be defensive for `+`, spaces, etc.), encode
-     them in both the `tag=` and `title=` params.
-   - If the remote is not a GitHub URL, still print each changelog block
-     but list the raw tag name instead of a URL.
 
 ## Notes
 
