@@ -323,20 +323,54 @@ impl<'dirs> Config<'dirs> {
 #[cfg(test)]
 mod readme_tests {
     use super::StoredConfig;
+    use std::path::{Path, PathBuf};
 
-    /// Every ```toml block in README.md must deserialize as a full
-    /// [`StoredConfig`]. Guards against docs silently drifting away from the
-    /// real config shape (e.g. after a breaking rename like `[[configs]]` →
-    /// `[[pkg.x.configs]]`).
+    /// Every ```toml block in README.md and under docs/ must deserialize as a
+    /// full [`StoredConfig`]. Guards against docs silently drifting away from
+    /// the real config shape (e.g. after a breaking rename like `[[configs]]`
+    /// → `[[pkg.x.configs]]`).
     #[test]
-    fn readme_toml_blocks_parse_as_stored_config() {
-        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
-            .expect("read README.md");
+    fn doc_toml_blocks_parse_as_stored_config() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<PathBuf> = vec![root.join("README.md")];
+        let docs_dir = root.join("docs");
+        if docs_dir.is_dir() {
+            for entry in std::fs::read_dir(&docs_dir).expect("read docs/") {
+                let path = entry.expect("docs/ entry").path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
 
+        let mut total_blocks = 0usize;
+        for file in &files {
+            let body = std::fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+            let blocks = extract_toml_blocks(&body);
+            for (i, block) in blocks.iter().enumerate() {
+                toml::from_str::<StoredConfig>(block).unwrap_or_else(|e| {
+                    panic!(
+                        "{} ```toml block #{i} failed to parse: {e}\n---\n{block}---",
+                        file.display()
+                    )
+                });
+            }
+            total_blocks += blocks.len();
+        }
+
+        assert!(
+            total_blocks > 0,
+            "no ```toml blocks found across README.md + docs/*.md"
+        );
+    }
+
+    fn extract_toml_blocks(body: &str) -> Vec<String> {
         let mut blocks = Vec::new();
         let mut in_toml = false;
         let mut current = String::new();
-        for line in readme.lines() {
+        for line in body.lines() {
             if in_toml {
                 if line.trim_start().starts_with("```") {
                     blocks.push(std::mem::take(&mut current));
@@ -349,12 +383,6 @@ mod readme_tests {
                 in_toml = true;
             }
         }
-        assert!(!blocks.is_empty(), "README has no ```toml blocks");
-
-        for (i, block) in blocks.iter().enumerate() {
-            toml::from_str::<StoredConfig>(block).unwrap_or_else(|e| {
-                panic!("README ```toml block #{i} failed to parse: {e}\n---\n{block}---")
-            });
-        }
+        blocks
     }
 }
