@@ -6,7 +6,7 @@ use crate::config_files::{ConfigFilePath, ConfigFileSource};
 
 use super::{Config, ConfigFiles, Error, stored_relative_path::StoredRelativePath};
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredConfigFiles {
     source: StoredRelativePath,
@@ -33,7 +33,7 @@ impl StoredConfigFiles {
     }
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, tag = "type")]
 pub(super) enum PkgConfigFiles {
     #[serde(rename = ".config")]

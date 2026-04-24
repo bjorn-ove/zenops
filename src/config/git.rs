@@ -14,7 +14,7 @@ use crate::{
 /// actually write can't drift.
 const ALLOWED_SIGNERS_CONFIG_VALUE: &str = "~/.ssh/allowed_signers";
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct StoredGitConfig {
     pub signing: Option<StoredGitSigning>,
@@ -25,7 +25,7 @@ pub(super) struct StoredGitConfig {
 /// classic OpenPGP key by ID/fingerprint. The rest of the git config
 /// (`gpg.format`, `commit.gpgsign`, `gpg.ssh.allowedSignersFile`) is inferred
 /// from the variant — setting one of these in zenops turns on commit signing.
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum StoredGitSigning {
     Ssh {

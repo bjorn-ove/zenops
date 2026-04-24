@@ -56,6 +56,19 @@ impl AsRef<SafeRelativePath> for StoredRelativePath {
     }
 }
 
+impl schemars::JsonSchema for StoredRelativePath {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "StoredRelativePath".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Relative path under the zenops config repo; normalized after parse, `..` traversal rejected.",
+        })
+    }
+}
+
 impl<'de> de::Deserialize<'de> for StoredRelativePath {
     fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

@@ -13,8 +13,12 @@ repository.workspace = true
 
 [dependencies]
 relative-path = "2.0.1"
+schemars = { workspace = true, optional = true }
 thiserror.workspace = true
 zenops-safe-relative-path-macros.workspace = true
 zenops-safe-relative-path-validator.workspace = true
 serde.workspace = true
 smol_str.workspace = true
+
+[features]
+schemars = ["dep:schemars"]

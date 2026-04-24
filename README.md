@@ -151,7 +151,31 @@ automatically.
 - `zenops status` — show what would change. `--diff` shows file diffs.
 - `zenops pkg` — list configured packages and whether their dependencies are met. `--all` includes disabled packages; `--all-hints` shows every install hint.
 - `zenops repo <git-subcommand>` — run a passthrough git command inside the zenops config repo.
+- `zenops doctor` — diagnose the local environment (config dir, git, shell, package manager, package health). Read-only; keeps running even when `config.toml` is missing or fails to parse.
+- `zenops schema` — dump a JSON Schema bundle covering both the `-o json` event stream and the `config.toml` input format.
 - `zenops completions <bash|zsh|fish|elvish|powershell>` — print a shell completion script to stdout. Normally sourced automatically via the built-in `zenops` pkg; only needed for manual setup.
+
+## Schema
+
+`zenops schema` writes a single JSON document to stdout with two schemas inside `schemas.*`:
+
+- `schemas.output_event` — every line of the NDJSON stream emitted by `-o json` (from `apply`, `status`, `pkg`, `doctor`, `init`).
+- `schemas.config` — the TOML `config.toml` structure.
+
+The bundle carries a `zenops_version` field and a `$id` that embeds the same version. The schema shape is part of the zenops crate's public API and follows the same SemVer promise as the crate version: breaking changes require a major bump, additive changes a minor bump.
+
+### Editor autocomplete for `config.toml`
+
+Point [taplo](https://taplo.tamasfe.dev/) (used by Even Better TOML in VS Code, by `taplo` LSP in Helix and Neovim) at the config schema. In `~/.config/taplo/taplo.toml`:
+
+```
+[[rule]]
+include = ["**/zenops/config.toml", "~/.config/zenops/config.toml"]
+[rule.schema]
+url = "file:///path/to/zenops-schema.json#/schemas/config"
+```
+
+Generate the schema file with `zenops schema > zenops-schema.json`.
 
 ## License
 

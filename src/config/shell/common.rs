@@ -9,7 +9,7 @@ use crate::{
     error::Error,
 };
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub(in super::super) struct StoredShellConfig {
     pub(super) environment: IndexMap<SmolStr, SmolStr>,
     pub(super) alias: IndexMap<SmolStr, SmolStr>,

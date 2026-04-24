@@ -33,9 +33,9 @@ use crate::{
     pkg_manager,
 };
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields, default)]
-struct StoredConfig {
+pub(crate) struct StoredConfig {
     shell: StoredShellEnvironment,
     pkg: IndexMap<SmolStr, PkgConfig>,
     ssh: StoredSshConfig,

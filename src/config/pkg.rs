@@ -6,7 +6,7 @@ use zenops_expand::{ExpandLookup, ExpandStr};
 
 use super::pkg_config_files::PkgConfigFiles;
 
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Shell {
     Bash,
@@ -16,7 +16,7 @@ pub(crate) enum Shell {
 /// Operating systems a pkg may opt into supporting. Extend as new platforms are
 /// added. Kept intentionally coarse; finer targeting (e.g. macOS Apple Silicon
 /// vs Intel, specific Linux distros) is deferred until a real use case arrives.
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Os {
     Linux,
@@ -33,7 +33,7 @@ impl Os {
     }
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PkgEnable {
     /// Expect the pkg to be present. Installation state still gates on
@@ -54,7 +54,7 @@ pub(crate) enum PkgEnable {
 /// A detect strategy wraps a concrete check (`kind`) with an optional OS gate.
 /// When `os` is non-empty and doesn't include the current OS, `check()`
 /// short-circuits to `false` — the strategy is treated as a miss on that host.
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub struct DetectStrategy {
     #[serde(default)]
     pub os: Vec<Os>,
@@ -65,7 +65,7 @@ pub struct DetectStrategy {
 /// Concrete detect checks. `File` and `Which` are leaves; `Any` and `All` are
 /// combinators that let a single `detect` field express arbitrary boolean
 /// logic by nesting other strategies.
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DetectKind {
     File {
@@ -172,7 +172,7 @@ pub(crate) fn which_on_path(binary: &str) -> bool {
         .any(|dir| Path::new(dir).join(binary).is_file())
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct InstallHint {
     pub brew: BrewHint,
@@ -182,13 +182,13 @@ pub struct InstallHint {
     // Keeping them required guarantees cross-manager completeness at parse time.
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BrewHint {
     pub packages: Vec<String>,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub struct ShellInitAction {
     #[serde(default)]
     pub optional: bool,
@@ -196,7 +196,7 @@ pub struct ShellInitAction {
     pub kind: ActionKind,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionKind {
     Comment {
@@ -231,7 +231,7 @@ pub enum ActionKind {
     },
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PerShellActions {
     pub bash: Vec<ShellInitAction>,
@@ -247,7 +247,7 @@ impl PerShellActions {
     }
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PkgShellConfig {
     pub env_init: PerShellActions,
@@ -255,7 +255,7 @@ pub(crate) struct PkgShellConfig {
     pub interactive_init: PerShellActions,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 pub struct PkgConfig {
     #[serde(default)]
     pub(super) enable: PkgEnable,

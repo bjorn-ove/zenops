@@ -12,6 +12,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
@@ -19,6 +20,7 @@ indexmap = { workspace = true, optional = true }
 
 [features]
 indexmap = ["dep:indexmap"]
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 toml = "1.1.2"

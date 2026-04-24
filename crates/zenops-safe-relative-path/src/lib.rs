@@ -79,6 +79,20 @@ impl ser::Serialize for SafeRelativePath {
     }
 }
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for SafeRelativePath {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SafeRelativePath".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Relative path that is statically prevented from escaping its parent via `..`.",
+        })
+    }
+}
+
 impl AsRef<RelativePath> for SafeRelativePath {
     fn as_ref(&self) -> &RelativePath {
         &self.0

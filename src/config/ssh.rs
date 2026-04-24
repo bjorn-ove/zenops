@@ -16,13 +16,13 @@ struct GithubSigningKey {
     key: String,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct StoredSshConfig {
     pub allowed_signers: Vec<AllowedSignerEntry>,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum AllowedSignerEntry {
     Github {

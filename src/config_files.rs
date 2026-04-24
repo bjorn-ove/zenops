@@ -6,6 +6,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
 use similar::{DiffOp, TextDiff};
 use zenops_safe_relative_path::SafeRelativePath;
 
-#[derive(Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "path", rename_all = "snake_case")]
 pub enum ConfigFilePath {
     Home(Arc<SafeRelativePath>),

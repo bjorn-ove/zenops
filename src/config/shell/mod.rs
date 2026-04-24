@@ -8,7 +8,7 @@ mod bash;
 mod common;
 mod zsh;
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum StoredShellEnvironment {
     #[default]

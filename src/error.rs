@@ -78,6 +78,10 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    #[error("Failed to emit schema: {0}")]
+    SchemaEmit(#[source] serde_json::Error),
+    #[error("Failed to write schema to stdout: {0}")]
+    SchemaWrite(#[source] std::io::Error),
 }
 
 impl PartialEq for Error {
@@ -166,6 +170,8 @@ impl PartialEq for Error {
                     source: r_src,
                 },
             ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
+            (Self::SchemaEmit(l), Self::SchemaEmit(r)) => l.to_string() == r.to_string(),
+            (Self::SchemaWrite(l), Self::SchemaWrite(r)) => l.kind() == r.kind(),
             _ => false,
         }
     }

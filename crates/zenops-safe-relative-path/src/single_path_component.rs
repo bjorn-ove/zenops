@@ -45,6 +45,21 @@ impl std::ops::Deref for SinglePathComponent {
     }
 }
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for SinglePathComponent {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SinglePathComponent".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A single path component — no separators, no `..` traversal.",
+            "pattern": "^[^/]+$",
+        })
+    }
+}
+
 impl<'de> de::Deserialize<'de> for SinglePathComponent {
     fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

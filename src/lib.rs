@@ -9,6 +9,7 @@ pub mod output;
 pub mod pkg_list;
 pub mod pkg_manager;
 pub mod prompt;
+pub mod schema;
 
 use std::io::IsTerminal;
 
@@ -119,6 +120,11 @@ pub enum Cmd {
     /// `config.toml` is missing or fails to parse, so it stays useful on a
     /// broken machine.
     Doctor,
+    /// Dump JSON Schema for every structured surface (command output events
+    /// and the `config.toml` input) as a single bundle to stdout. The schema
+    /// shape is versioned under the zenops crate version embedded in the
+    /// bundle.
+    Schema,
     /// Print a shell completion script for zenops to stdout.
     ///
     /// Normally sourced automatically by the built-in `zenops` pkg; you
@@ -138,6 +144,7 @@ impl Cmd {
             | Cmd::Repo { .. }
             | Cmd::Init { .. }
             | Cmd::Doctor
+            | Cmd::Schema
             | Cmd::Completions { .. } => false,
         }
     }
@@ -185,6 +192,9 @@ pub fn real_main(
         // actionable hints inside doctor::run.
         let sh = Shell::new().unwrap();
         return doctor::run(args, dirs, &sh, output);
+    }
+    if let Cmd::Schema = command {
+        return schema::run(&mut std::io::stdout().lock());
     }
     let sh = Shell::new().unwrap();
     let config = Config::load(dirs, &sh, command.should_update_self(args))?;
@@ -254,6 +264,7 @@ pub fn real_main(
         }
         Cmd::Init { .. } => unreachable!("handled before Config::load"),
         Cmd::Doctor => unreachable!("handled before Config::load"),
+        Cmd::Schema => unreachable!("handled before Config::load"),
         Cmd::Completions { .. } => unreachable!("handled before Config::load"),
     }
 

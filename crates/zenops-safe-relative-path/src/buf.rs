@@ -27,6 +27,17 @@ impl ser::Serialize for SafeRelativePathBuf {
     }
 }
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for SafeRelativePathBuf {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SafeRelativePath".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <SafeRelativePath as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
 impl<'de> de::Deserialize<'de> for SafeRelativePathBuf {
     fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct Visitor;

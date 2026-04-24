@@ -41,6 +41,20 @@ pub enum ExpandError {
 #[serde(transparent)]
 pub struct ExpandStr(SmolStr);
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for ExpandStr {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ExpandStr".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "Template string containing `${name}` placeholders, expanded at apply time.",
+        })
+    }
+}
+
 impl ExpandStr {
     /// Wrap a template string.
     pub fn new(raw: SmolStr) -> Self {

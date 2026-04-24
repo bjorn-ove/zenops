@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::{
@@ -27,7 +28,7 @@ use crate::{
 /// One row of `zenops pkg`. `AggregateInstall` and `NoPackageManagerDetected`
 /// cover the surrounding context (footer + pre-block warning) so JSON
 /// consumers see every line as a structured event.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PkgEntry {
     /// One per visible package. `name` is the display label (`pkg.name`
@@ -57,7 +58,7 @@ pub enum PkgEntry {
     NoPackageManagerDetected { supported: Vec<String> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PkgEntryState {
     Disabled,
@@ -67,7 +68,7 @@ pub enum PkgEntryState {
 
 /// Per-manager install hints. Mirrors `InstallHint` — extend in lockstep
 /// when adding a new package manager so `--all-hints` stays complete.
-#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, JsonSchema)]
 pub struct PkgInstallHints {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub brew: Vec<String>,
@@ -82,7 +83,7 @@ pub struct PkgInstallHints {
 ///   section title; `JsonOutput` skips these — JSON consumers don't need
 ///   them since each `DoctorCheck::Check` carries its own `section` and
 ///   pkg health speaks for itself via `Status::Pkg`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorCheck {
     Check {
@@ -106,7 +107,7 @@ pub enum DoctorCheck {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorSection {
     System,
@@ -118,7 +119,7 @@ pub enum DoctorSection {
     Packages,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorSeverity {
     Ok,
@@ -130,7 +131,7 @@ pub enum DoctorSeverity {
 /// Result of a successful `zenops init` (without `--apply`). When `--apply`
 /// is set, `init` clones then recurses into `Apply` and the apply event
 /// stream is the contract — no `InitSummary` is emitted in that case.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct InitSummary {
     pub clone_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,7 +143,7 @@ pub struct InitSummary {
     pub pkg_count: usize,
 }
 
-#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum SymlinkStatus {
     Ok,
@@ -159,7 +160,7 @@ pub enum SymlinkStatus {
     DstDirIsMissing,
 }
 
-#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FileStatus {
     Ok,
@@ -167,7 +168,7 @@ pub enum FileStatus {
     New,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum PkgStatus {
     Ok,
@@ -180,7 +181,7 @@ pub enum PkgStatus {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ResolvedConfigFilePath {
     pub path: ConfigFilePath,
     pub full: Arc<Path>,
@@ -206,7 +207,7 @@ impl fmt::Display for ResolvedConfigFilePath {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Status {
     Generated {
@@ -235,7 +236,7 @@ pub enum Status {
     },
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppliedAction {
     UpdatedFile(ResolvedConfigFilePath),
@@ -299,9 +300,9 @@ impl<'w> JsonOutput<'w> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case")]
-enum Event {
+pub(crate) enum Event {
     Status(Status),
     AppliedAction(AppliedAction),
     PkgEntry(PkgEntry),
