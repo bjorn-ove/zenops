@@ -15,6 +15,133 @@ use crate::{
     git::GitFileStatus,
 };
 
+// ---- Per-command event types ----------------------------------------------
+//
+// `Status` and `AppliedAction` cover the apply/status event stream — each
+// variant maps to a marker + colored row in the column-aligned block.
+// `pkg`, `doctor`, and `init` produce different output shapes (pkg-list
+// rows, labeled environment checks, single-shot init summary) that don't
+// fit that table, so they get their own event types pushed through
+// dedicated trait methods.
+
+/// One row of `zenops pkg`. `AggregateInstall` and `NoPackageManagerDetected`
+/// cover the surrounding context (footer + pre-block warning) so JSON
+/// consumers see every line as a structured event.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PkgEntry {
+    /// One per visible package. `name` is the display label (`pkg.name`
+    /// override or the map key); `key` is always the original map key so
+    /// scripts can correlate even when `name` differs.
+    Pkg {
+        name: SmolStr,
+        key: SmolStr,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        state: PkgEntryState,
+        /// The matching detect strategy when `--verbose` is on AND a strategy
+        /// matched on the current host.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        matched_detect: Option<String>,
+        install_hints: PkgInstallHints,
+    },
+    /// "To install all missing via brew: brew install foo bar" footer.
+    /// Emitted at most once per `pkg` invocation, after all `Pkg` entries.
+    AggregateInstall {
+        pkg_manager: String,
+        command: String,
+        packages: Vec<String>,
+    },
+    /// One-shot warning emitted when no supported package manager is on PATH.
+    /// `supported` lets future managers land without a serde-tag rename.
+    NoPackageManagerDetected { supported: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PkgEntryState {
+    Disabled,
+    Installed,
+    Missing,
+}
+
+/// Per-manager install hints. Mirrors `InstallHint` — extend in lockstep
+/// when adding a new package manager so `--all-hints` stays complete.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct PkgInstallHints {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub brew: Vec<String>,
+}
+
+/// One row of `zenops doctor`. Two variants:
+/// - `Check`: a labeled environment check (key/value/severity, optional
+///   actionable hint, optional multi-line detail body).
+/// - `SectionHeader`: marker for sections that have no rows of their own
+///   (currently only `Packages`, which is followed by `Status::Pkg`
+///   events from `push_pkg_health`). The terminal renderer prints a bold
+///   section title; `JsonOutput` skips these — JSON consumers don't need
+///   them since each `DoctorCheck::Check` carries its own `section` and
+///   pkg health speaks for itself via `Status::Pkg`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DoctorCheck {
+    Check {
+        section: DoctorSection,
+        /// "os:", "git:", "remote:", … the existing left-column label.
+        label: SmolStr,
+        severity: DoctorSeverity,
+        /// Right-hand value: "found on PATH", "missing", a path, a remote URL.
+        value: String,
+        /// Dim-rendered actionable phrasing on the same line as the value.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+        /// Multi-line detail body, currently only used by the parse-error
+        /// branch of `load_config_or_report`. One element per line, no
+        /// trailing newline; renderer indents each under the row.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        detail: Vec<String>,
+    },
+    SectionHeader {
+        section: DoctorSection,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorSection {
+    System,
+    Repo,
+    Config,
+    PkgManager,
+    User,
+    Shell,
+    Packages,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctorSeverity {
+    Ok,
+    Info,
+    Warn,
+    Bad,
+}
+
+/// Result of a successful `zenops init` (without `--apply`). When `--apply`
+/// is set, `init` clones then recurses into `Apply` and the apply event
+/// stream is the contract — no `InitSummary` is emitted in that case.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InitSummary {
+    pub clone_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// "bash" or "zsh" when the cloned config configures a shell, `None`
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    pub pkg_count: usize,
+}
+
 #[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum SymlinkStatus {
@@ -136,6 +263,20 @@ pub enum OutputError {
 pub trait Output {
     fn push_status(&mut self, status: Status) -> Result<(), OutputError>;
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError>;
+    /// One row of `zenops pkg`. Default no-op so test impls and renderers
+    /// that don't care about pkg listing (none today) don't have to spell
+    /// out the boilerplate.
+    fn push_pkg_entry(&mut self, _entry: PkgEntry) -> Result<(), OutputError> {
+        Ok(())
+    }
+    /// One row (or section marker) of `zenops doctor`.
+    fn push_doctor_check(&mut self, _check: DoctorCheck) -> Result<(), OutputError> {
+        Ok(())
+    }
+    /// Outcome of `zenops init` without `--apply`.
+    fn push_init_summary(&mut self, _summary: InitSummary) -> Result<(), OutputError> {
+        Ok(())
+    }
     /// Emit any buffered output. `JsonOutput` streams as it goes and has a
     /// no-op `finalize`; `TerminalRenderer` accumulates lines so it can
     /// column-align them and flushes here. Safe to call zero or one time at
@@ -163,6 +304,9 @@ impl<'w> JsonOutput<'w> {
 enum Event {
     Status(Status),
     AppliedAction(AppliedAction),
+    PkgEntry(PkgEntry),
+    DoctorCheck(DoctorCheck),
+    InitSummary(InitSummary),
 }
 
 impl Output for JsonOutput<'_> {
@@ -174,6 +318,30 @@ impl Output for JsonOutput<'_> {
 
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
         serde_json::to_writer(&mut *self.out, &Event::AppliedAction(action))?;
+        writeln!(self.out)?;
+        Ok(())
+    }
+
+    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
+        serde_json::to_writer(&mut *self.out, &Event::PkgEntry(entry))?;
+        writeln!(self.out)?;
+        Ok(())
+    }
+
+    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
+        // Bare section headers are a human-rendering construct — JSON
+        // consumers reconstruct sections from `Check { section, ... }`
+        // events directly.
+        if matches!(check, DoctorCheck::SectionHeader { .. }) {
+            return Ok(());
+        }
+        serde_json::to_writer(&mut *self.out, &Event::DoctorCheck(check))?;
+        writeln!(self.out)?;
+        Ok(())
+    }
+
+    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
+        serde_json::to_writer(&mut *self.out, &Event::InitSummary(summary))?;
         writeln!(self.out)?;
         Ok(())
     }
@@ -233,8 +401,11 @@ struct Line {
     description: Vec<Segment>,
 }
 
-/// Human-readable text renderer. Buffers all events so they can be emitted
-/// in a column-aligned block by `finalize`. Honors `color` for ANSI escapes,
+/// Human-readable text renderer. Status/applied-action events are buffered
+/// into a single column-aligned block flushed on transition to a different
+/// event category or on `finalize`. Pkg-entry events are similarly buffered
+/// (so the name column can pad to the widest visible row). Doctor checks
+/// and init summaries render eagerly. Honors `color` for ANSI escapes,
 /// `show_diffs` for whether `Status::Generated` variants emit a unified diff
 /// after the summary block, and `show_clean` for whether clean-state events
 /// (e.g. `FileStatus::Ok`, `PkgStatus::Ok`, `GitRepoClean`) get a visible
@@ -244,9 +415,28 @@ pub struct TerminalRenderer<'w> {
     styler: Styler,
     show_diffs: bool,
     show_clean: bool,
+    pending: Pending,
+    /// Status/applied-action block accumulator.
     lines: Vec<Line>,
     diffs: Vec<PendingDiff>,
+    /// Pkg block accumulator. The aggregate footer (when present) renders
+    /// after all `Pkg` rows in the same block.
+    pkg_rows: Vec<PkgRow>,
+    pkg_aggregate: Option<PkgAggregate>,
+    /// Tracks the currently-rendered doctor section so a transition triggers
+    /// a section header + blank-line separator.
+    last_doctor_section: Option<DoctorSection>,
     finalized: bool,
+}
+
+/// Which kind of block, if any, is currently buffered. Status, action, and
+/// pkg events buffer until flushed; doctor and init render inline (no
+/// buffering needed for those).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    None,
+    StatusBlock,
+    PkgBlock,
 }
 
 #[derive(Debug)]
@@ -256,6 +446,22 @@ struct PendingDiff {
     want_content: Arc<str>,
 }
 
+#[derive(Debug)]
+struct PkgRow {
+    /// Name column display label (post-`name`-override).
+    name: SmolStr,
+    description: Option<String>,
+    state: PkgEntryState,
+    matched_detect: Option<String>,
+    install_hints: PkgInstallHints,
+}
+
+#[derive(Debug)]
+struct PkgAggregate {
+    pkg_manager: String,
+    command: String,
+}
+
 impl<'w> TerminalRenderer<'w> {
     pub fn new(out: &'w mut dyn Write, color: bool, show_diffs: bool, show_clean: bool) -> Self {
         Self {
@@ -263,8 +469,12 @@ impl<'w> TerminalRenderer<'w> {
             styler: Styler::new(color),
             show_diffs,
             show_clean,
+            pending: Pending::None,
             lines: Vec::new(),
             diffs: Vec::new(),
+            pkg_rows: Vec::new(),
+            pkg_aggregate: None,
+            last_doctor_section: None,
             finalized: false,
         }
     }
@@ -574,8 +784,187 @@ fn action_to_line(action: &AppliedAction) -> Line {
     }
 }
 
+impl TerminalRenderer<'_> {
+    /// Open or stay in `kind`. If a different block is currently buffered,
+    /// flush it first. Inline event categories (doctor, init) call this
+    /// with `Pending::None` so a buffered block flushes before they render.
+    fn enter(&mut self, kind: Pending) -> Result<(), OutputError> {
+        if self.pending != kind {
+            self.flush_pending()?;
+            self.pending = kind;
+        }
+        Ok(())
+    }
+
+    fn flush_pending(&mut self) -> Result<(), OutputError> {
+        match self.pending {
+            Pending::None => {}
+            Pending::StatusBlock => self.flush_status_block()?,
+            Pending::PkgBlock => self.flush_pkg_block()?,
+        }
+        self.pending = Pending::None;
+        Ok(())
+    }
+
+    fn flush_status_block(&mut self) -> Result<(), OutputError> {
+        if self.lines.is_empty() && self.diffs.is_empty() {
+            return Ok(());
+        }
+        let path_width = self
+            .lines
+            .iter()
+            .map(|l| l.path.iter().map(|seg| seg.text.chars().count()).sum())
+            .max()
+            .unwrap_or(0);
+        let lines = std::mem::take(&mut self.lines);
+        for line in &lines {
+            self.write_line(line, path_width)?;
+        }
+        let diffs = std::mem::take(&mut self.diffs);
+        for diff in &diffs {
+            writeln!(self.out)?;
+            self.write_diff(diff)?;
+        }
+        Ok(())
+    }
+
+    fn flush_pkg_block(&mut self) -> Result<(), OutputError> {
+        let rows = std::mem::take(&mut self.pkg_rows);
+        let aggregate = self.pkg_aggregate.take();
+        if rows.is_empty() && aggregate.is_none() {
+            return Ok(());
+        }
+        let name_width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
+        let s = &self.styler;
+        let reset = s.reset();
+        // Two-space marker prefix + name column + two-space gap before
+        // description. Continuation lines (detect, hints) align under the
+        // description column.
+        let indent = " ".repeat(2 + name_width + 2);
+        for row in &rows {
+            let (status_color, marker) = match row.state {
+                PkgEntryState::Disabled => (s.dim(), "-"),
+                PkgEntryState::Installed => (s.green(), "\u{2713}"),
+                PkgEntryState::Missing => (s.red(), "\u{2717}"),
+            };
+            write!(
+                self.out,
+                "{status_color}{marker}{reset} {bold}{name:<name_width$}{reset}",
+                bold = s.bold(),
+                name = row.name,
+            )?;
+            if let Some(desc) = &row.description {
+                write!(self.out, "  {dim}{desc}{reset}", dim = s.dim())?;
+            }
+            writeln!(self.out)?;
+
+            if let Some(detect) = &row.matched_detect {
+                writeln!(
+                    self.out,
+                    "{indent}{dim}detect: {detect}{reset}",
+                    dim = s.dim(),
+                )?;
+            }
+            for hint_line in pkg_hint_lines(row) {
+                writeln!(
+                    self.out,
+                    "{indent}{hint}{hint_line}{reset}",
+                    hint = s.bold_yellow(),
+                )?;
+            }
+        }
+        if let Some(agg) = aggregate {
+            writeln!(self.out)?;
+            writeln!(
+                self.out,
+                "{hint}To install all missing via {mgr}: {cmd}{reset}",
+                hint = s.bold_yellow(),
+                mgr = agg.pkg_manager,
+                cmd = agg.command,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn render_doctor_section_header(&mut self, section: DoctorSection) -> Result<(), OutputError> {
+        if self.last_doctor_section == Some(section) {
+            return Ok(());
+        }
+        if self.last_doctor_section.is_some() {
+            writeln!(self.out)?;
+        }
+        let title = doctor_section_title(section);
+        let s = &self.styler;
+        writeln!(self.out, "{}{}{}", s.bold(), title, s.reset())?;
+        self.last_doctor_section = Some(section);
+        Ok(())
+    }
+
+    fn render_doctor_check(&mut self, check: &DoctorCheck) -> Result<(), OutputError> {
+        match check {
+            DoctorCheck::SectionHeader { section } => {
+                self.render_doctor_section_header(*section)?;
+            }
+            DoctorCheck::Check {
+                section,
+                label,
+                severity,
+                value,
+                hint,
+                detail,
+            } => {
+                self.render_doctor_section_header(*section)?;
+                let s = &self.styler;
+                let reset = s.reset();
+                let color_open = match severity {
+                    DoctorSeverity::Ok => s.green(),
+                    DoctorSeverity::Info => "",
+                    DoctorSeverity::Warn => s.yellow(),
+                    DoctorSeverity::Bad => s.red(),
+                };
+                if let Some(hint) = hint {
+                    writeln!(
+                        self.out,
+                        "  {label:<14} {color_open}{value}{reset}  {dim}{hint}{reset}",
+                        dim = s.dim(),
+                        label = label.as_str(),
+                    )?;
+                } else {
+                    writeln!(
+                        self.out,
+                        "  {label:<14} {color_open}{value}{reset}",
+                        label = label.as_str(),
+                    )?;
+                }
+                for line in detail {
+                    writeln!(self.out, "    {line}")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn render_init_summary(&mut self, summary: &InitSummary) -> Result<(), OutputError> {
+        writeln!(self.out, "Cloned into {}", summary.clone_path.display())?;
+        if let Some(remote) = &summary.remote {
+            writeln!(self.out, "  remote: {remote}")?;
+        }
+        match &summary.shell {
+            Some(shell) => writeln!(self.out, "  shell:  {shell}")?,
+            None => writeln!(self.out, "  shell:  (none configured)")?,
+        }
+        writeln!(self.out, "  pkgs:   {}", summary.pkg_count)?;
+        writeln!(
+            self.out,
+            "Next: run `zenops apply` to realize this config on your system."
+        )?;
+        Ok(())
+    }
+}
+
 impl Output for TerminalRenderer<'_> {
     fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
+        self.enter(Pending::StatusBlock)?;
         if self.show_diffs
             && let Status::Generated {
                 want_content,
@@ -597,8 +986,65 @@ impl Output for TerminalRenderer<'_> {
     }
 
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
+        self.enter(Pending::StatusBlock)?;
         self.lines.push(action_to_line(&action));
         Ok(())
+    }
+
+    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
+        match entry {
+            PkgEntry::NoPackageManagerDetected { supported } => {
+                // One-shot pre-block warning. Renders inline so the user
+                // sees it before any pkg rows; doesn't open a PkgBlock so
+                // the column-padding only considers actual rows.
+                self.enter(Pending::None)?;
+                writeln!(
+                    self.out,
+                    "note: no known package manager detected on PATH; install \
+                     guidance will be hidden. Supported managers: {}.",
+                    supported.join(", "),
+                )?;
+            }
+            PkgEntry::Pkg {
+                name,
+                key: _,
+                description,
+                state,
+                matched_detect,
+                install_hints,
+            } => {
+                self.enter(Pending::PkgBlock)?;
+                self.pkg_rows.push(PkgRow {
+                    name,
+                    description,
+                    state,
+                    matched_detect,
+                    install_hints,
+                });
+            }
+            PkgEntry::AggregateInstall {
+                pkg_manager,
+                command,
+                packages: _,
+            } => {
+                self.enter(Pending::PkgBlock)?;
+                self.pkg_aggregate = Some(PkgAggregate {
+                    pkg_manager,
+                    command,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
+        self.enter(Pending::None)?;
+        self.render_doctor_check(&check)
+    }
+
+    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
+        self.enter(Pending::None)?;
+        self.render_init_summary(&summary)
     }
 
     fn finalize(&mut self) -> Result<(), OutputError> {
@@ -606,26 +1052,36 @@ impl Output for TerminalRenderer<'_> {
             return Ok(());
         }
         self.finalized = true;
-        if self.lines.is_empty() && self.diffs.is_empty() {
-            return Ok(());
-        }
-        let path_width = self
-            .lines
-            .iter()
-            .map(|l| l.path.iter().map(|seg| seg.text.chars().count()).sum())
-            .max()
-            .unwrap_or(0);
-        let lines = std::mem::take(&mut self.lines);
-        for line in &lines {
-            self.write_line(line, path_width)?;
-        }
-        let diffs = std::mem::take(&mut self.diffs);
-        for diff in &diffs {
-            writeln!(self.out)?;
-            self.write_diff(diff)?;
-        }
-        Ok(())
+        self.flush_pending()
     }
+}
+
+fn doctor_section_title(section: DoctorSection) -> &'static str {
+    match section {
+        DoctorSection::System => "System",
+        DoctorSection::Repo => "Config repo (~/.config/zenops)",
+        DoctorSection::Config => "Config (~/.config/zenops/config.toml)",
+        DoctorSection::PkgManager => "Package manager",
+        DoctorSection::User => "User",
+        DoctorSection::Shell => "Shell",
+        DoctorSection::Packages => "Packages",
+    }
+}
+
+/// One install-hint line per populated package manager. Used by both the
+/// terminal renderer (each line gets the bold-yellow hint color) and (with
+/// future managers) any caller wanting a textual rollup.
+fn pkg_hint_lines(row: &PkgRow) -> Vec<String> {
+    if !matches!(row.state, PkgEntryState::Missing) {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    if !row.install_hints.brew.is_empty() {
+        lines.push(format!("brew: {}", row.install_hints.brew.join(" ")));
+    }
+    // Extend in lockstep with PkgInstallHints / DetectedPackageManager when
+    // adding a new manager.
+    lines
 }
 
 #[cfg(test)]
@@ -1281,6 +1737,365 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(first["event"], "status");
         assert_eq!(second["event"], "applied_action");
+    }
+
+    // ---- New event types: PkgEntry / DoctorCheck / InitSummary -----------
+
+    fn pkg_entry_pkg(name: &'static str, state: PkgEntryState) -> PkgEntry {
+        PkgEntry::Pkg {
+            name: SmolStr::new_static(name),
+            key: SmolStr::new_static(name),
+            description: None,
+            state,
+            matched_detect: None,
+            install_hints: PkgInstallHints::default(),
+        }
+    }
+
+    fn render_pkg_entries(entries: Vec<PkgEntry>, color: bool) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, color, false, false);
+            for e in entries {
+                r.push_pkg_entry(e).unwrap();
+            }
+            r.finalize().unwrap();
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn pkg_entries_pad_name_column_to_widest() {
+        let got = render_pkg_entries(
+            vec![
+                pkg_entry_pkg("py", PkgEntryState::Missing),
+                pkg_entry_pkg("starship", PkgEntryState::Installed),
+            ],
+            false,
+        );
+        let lines: Vec<&str> = got.lines().collect();
+        // "starship" (8 chars) is the widest name; "py" should pad to 8.
+        assert_eq!(lines[0], "✗ py      ", "{got:?}");
+        assert_eq!(lines[1], "✓ starship", "{got:?}");
+    }
+
+    #[test]
+    fn pkg_entry_disabled_uses_dash_marker() {
+        let got = render_pkg_entries(vec![pkg_entry_pkg("ghost", PkgEntryState::Disabled)], false);
+        assert!(got.starts_with("- ghost"), "{got:?}");
+    }
+
+    #[test]
+    fn pkg_entry_missing_with_brew_hint_renders_indented_hint_line() {
+        let got = render_pkg_entries(
+            vec![PkgEntry::Pkg {
+                name: SmolStr::new_static("foo"),
+                key: SmolStr::new_static("foo"),
+                description: None,
+                state: PkgEntryState::Missing,
+                matched_detect: None,
+                install_hints: PkgInstallHints {
+                    brew: vec!["foo-formula".into()],
+                },
+            }],
+            false,
+        );
+        assert!(got.contains("✗ foo"), "{got:?}");
+        assert!(got.contains("brew: foo-formula"), "{got:?}");
+    }
+
+    #[test]
+    fn pkg_aggregate_install_renders_blank_line_then_footer() {
+        let got = render_pkg_entries(
+            vec![
+                pkg_entry_pkg("foo", PkgEntryState::Missing),
+                PkgEntry::AggregateInstall {
+                    pkg_manager: "brew".into(),
+                    command: "brew install foo".into(),
+                    packages: vec!["foo".into()],
+                },
+            ],
+            false,
+        );
+        // Last two non-empty lines: aggregate footer follows a blank line.
+        let lines: Vec<&str> = got.lines().collect();
+        let footer_idx = lines
+            .iter()
+            .position(|l| l.contains("To install all missing"))
+            .expect("expected footer line");
+        assert_eq!(lines[footer_idx - 1], "", "{got:?}");
+        assert!(
+            lines[footer_idx].contains("via brew: brew install foo"),
+            "{got:?}",
+        );
+    }
+
+    #[test]
+    fn pkg_no_manager_warning_renders_inline_before_pkg_block() {
+        let got = render_pkg_entries(
+            vec![
+                PkgEntry::NoPackageManagerDetected {
+                    supported: vec!["brew".into()],
+                },
+                pkg_entry_pkg("foo", PkgEntryState::Missing),
+            ],
+            false,
+        );
+        let lines: Vec<&str> = got.lines().collect();
+        assert!(lines[0].contains("no known package manager"), "{got:?}");
+        assert!(lines[0].contains("Supported managers: brew"), "{got:?}");
+        assert!(lines[1].contains("foo"), "{got:?}");
+    }
+
+    fn render_doctor_checks(checks: Vec<DoctorCheck>, color: bool) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, color, false, false);
+            for c in checks {
+                r.push_doctor_check(c).unwrap();
+            }
+            r.finalize().unwrap();
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn doctor_check(
+        section: DoctorSection,
+        label: &'static str,
+        severity: DoctorSeverity,
+        value: &str,
+        hint: Option<&str>,
+    ) -> DoctorCheck {
+        DoctorCheck::Check {
+            section,
+            label: SmolStr::new_static(label),
+            severity,
+            value: value.to_string(),
+            hint: hint.map(String::from),
+            detail: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn doctor_check_groups_by_section_with_blank_separator() {
+        let got = render_doctor_checks(
+            vec![
+                DoctorCheck::SectionHeader {
+                    section: DoctorSection::System,
+                },
+                doctor_check(
+                    DoctorSection::System,
+                    "os:",
+                    DoctorSeverity::Info,
+                    "macos",
+                    None,
+                ),
+                DoctorCheck::SectionHeader {
+                    section: DoctorSection::Repo,
+                },
+                doctor_check(
+                    DoctorSection::Repo,
+                    "git repo:",
+                    DoctorSeverity::Ok,
+                    "yes",
+                    None,
+                ),
+            ],
+            false,
+        );
+        // Bold-stripped, but no color: lines are plain.
+        let want = "System\n  os:            macos\n\nConfig repo (~/.config/zenops)\n  git repo:      yes\n";
+        assert_eq!(got, want, "{got:?}");
+    }
+
+    #[test]
+    fn doctor_check_with_hint_renders_hint_after_value() {
+        let got = render_doctor_checks(
+            vec![doctor_check(
+                DoctorSection::System,
+                "git:",
+                DoctorSeverity::Bad,
+                "not found on PATH",
+                Some("install git"),
+            )],
+            false,
+        );
+        assert!(got.contains("git:"), "{got:?}");
+        assert!(got.contains("not found on PATH"), "{got:?}");
+        assert!(got.contains("install git"), "{got:?}");
+    }
+
+    #[test]
+    fn doctor_check_with_detail_indents_each_line_under_row() {
+        let got = render_doctor_checks(
+            vec![DoctorCheck::Check {
+                section: DoctorSection::Config,
+                label: SmolStr::new_static("status:"),
+                severity: DoctorSeverity::Bad,
+                value: "parse error".into(),
+                hint: None,
+                detail: vec!["/path/to/config.toml".into(), "expected `]`".into()],
+            }],
+            false,
+        );
+        assert!(got.contains("    /path/to/config.toml\n"), "{got:?}");
+        assert!(got.contains("    expected `]`\n"), "{got:?}");
+    }
+
+    #[test]
+    fn init_summary_renders_summary_with_remote_shell_and_pkg_count() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+            r.push_init_summary(InitSummary {
+                clone_path: PathBuf::from("/home/test/.config/zenops"),
+                remote: Some("git@example.com:cfg.git".into()),
+                shell: Some("bash".into()),
+                pkg_count: 12,
+            })
+            .unwrap();
+            r.finalize().unwrap();
+        }
+        let got = String::from_utf8(buf).unwrap();
+        assert!(
+            got.contains("Cloned into /home/test/.config/zenops"),
+            "{got:?}",
+        );
+        assert!(got.contains("remote: git@example.com:cfg.git"), "{got:?}");
+        assert!(got.contains("shell:  bash"), "{got:?}");
+        assert!(got.contains("pkgs:   12"), "{got:?}");
+        assert!(got.contains("Next: run `zenops apply`"), "{got:?}");
+    }
+
+    fn json_line_for_pkg_entry(entry: PkgEntry) -> serde_json::Value {
+        let mut buf: Vec<u8> = Vec::new();
+        JsonOutput::new(&mut buf).push_pkg_entry(entry).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        serde_json::from_str(s.trim_end()).unwrap()
+    }
+
+    #[test]
+    fn json_pkg_entry_pkg_tags_event_and_kind_with_state() {
+        let v = json_line_for_pkg_entry(PkgEntry::Pkg {
+            name: SmolStr::new_static("starship"),
+            key: SmolStr::new_static("starship"),
+            description: Some("cross-shell prompt".into()),
+            state: PkgEntryState::Missing,
+            matched_detect: None,
+            install_hints: PkgInstallHints {
+                brew: vec!["starship".into()],
+            },
+        });
+        assert_eq!(v["event"], "pkg_entry");
+        assert_eq!(v["kind"], "pkg");
+        assert_eq!(v["name"], "starship");
+        assert_eq!(v["key"], "starship");
+        assert_eq!(v["state"], "missing");
+        assert_eq!(v["install_hints"]["brew"][0], "starship");
+    }
+
+    #[test]
+    fn json_pkg_entry_aggregate_install_carries_command_and_packages() {
+        let v = json_line_for_pkg_entry(PkgEntry::AggregateInstall {
+            pkg_manager: "brew".into(),
+            command: "brew install foo bar".into(),
+            packages: vec!["foo".into(), "bar".into()],
+        });
+        assert_eq!(v["event"], "pkg_entry");
+        assert_eq!(v["kind"], "aggregate_install");
+        assert_eq!(v["pkg_manager"], "brew");
+        assert_eq!(v["command"], "brew install foo bar");
+        assert_eq!(v["packages"][0], "foo");
+        assert_eq!(v["packages"][1], "bar");
+    }
+
+    #[test]
+    fn json_pkg_entry_no_manager_warning_is_event() {
+        let v = json_line_for_pkg_entry(PkgEntry::NoPackageManagerDetected {
+            supported: vec!["brew".into()],
+        });
+        assert_eq!(v["event"], "pkg_entry");
+        assert_eq!(v["kind"], "no_package_manager_detected");
+        assert_eq!(v["supported"][0], "brew");
+    }
+
+    fn json_line_for_doctor_check(check: DoctorCheck) -> Option<serde_json::Value> {
+        let mut buf: Vec<u8> = Vec::new();
+        JsonOutput::new(&mut buf).push_doctor_check(check).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        if s.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_str(s.trim_end()).unwrap())
+        }
+    }
+
+    #[test]
+    fn json_doctor_check_includes_section_severity_label_value() {
+        let v = json_line_for_doctor_check(doctor_check(
+            DoctorSection::System,
+            "os:",
+            DoctorSeverity::Info,
+            "linux",
+            None,
+        ))
+        .expect("Check variant should emit JSON");
+        assert_eq!(v["event"], "doctor_check");
+        assert_eq!(v["kind"], "check");
+        assert_eq!(v["section"], "system");
+        assert_eq!(v["label"], "os:");
+        assert_eq!(v["severity"], "info");
+        assert_eq!(v["value"], "linux");
+    }
+
+    #[test]
+    fn json_doctor_check_section_header_is_skipped() {
+        let v = json_line_for_doctor_check(DoctorCheck::SectionHeader {
+            section: DoctorSection::Packages,
+        });
+        assert!(
+            v.is_none(),
+            "section header should not produce a JSON line, got: {v:?}",
+        );
+    }
+
+    #[test]
+    fn json_init_summary_includes_all_fields() {
+        let mut buf: Vec<u8> = Vec::new();
+        JsonOutput::new(&mut buf)
+            .push_init_summary(InitSummary {
+                clone_path: PathBuf::from("/home/test/.config/zenops"),
+                remote: Some("git@example.com:cfg.git".into()),
+                shell: Some("zsh".into()),
+                pkg_count: 7,
+            })
+            .unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
+        assert_eq!(v["event"], "init_summary");
+        assert_eq!(v["clone_path"], "/home/test/.config/zenops");
+        assert_eq!(v["remote"], "git@example.com:cfg.git");
+        assert_eq!(v["shell"], "zsh");
+        assert_eq!(v["pkg_count"], 7);
+    }
+
+    #[test]
+    fn terminal_renderer_flushes_status_block_before_pkg_block() {
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+            r.push_status(pkg_missing("py", None)).unwrap();
+            r.push_pkg_entry(pkg_entry_pkg("foo", PkgEntryState::Missing))
+                .unwrap();
+            r.finalize().unwrap();
+        }
+        let got = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = got.lines().collect();
+        // First line = the status row from push_status; second line = the
+        // first pkg row. The two blocks are independent — no shared
+        // column padding bleeds across.
+        assert!(lines[0].starts_with("✗  py"), "{got:?}");
+        assert!(lines[1].starts_with("✗ foo"), "{got:?}");
     }
 
     // ---- Error propagation -----------------------------------------------

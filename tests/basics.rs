@@ -2,16 +2,28 @@ use similar_asserts::assert_eq;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use zenops::{
-    Cmd, ColorChoice,
+    Cmd,
     config_files::ConfigFilePath,
     error::Error,
     git::{GitCmd, GitFileStatus},
-    output::{AppliedAction, FileStatus, PkgStatus, Status, SymlinkStatus},
+    output::{
+        AppliedAction, FileStatus, PkgEntry, PkgEntryState, PkgStatus, Status, SymlinkStatus,
+    },
     prompt::{PreApplyAnswer, parse_pre_apply_input},
 };
 use zenops_safe_relative_path::srpath;
 
 use test_env::{Entry, Output, paths};
+
+/// Helper for the pkg_list_* tests: extract the (name, state) pair from a
+/// `PkgEntry::Pkg` variant; ignore everything else.
+fn pkg_row(entry: &PkgEntry) -> Option<(&str, PkgEntryState)> {
+    if let PkgEntry::Pkg { name, state, .. } = entry {
+        Some((name.as_str(), *state))
+    } else {
+        None
+    }
+}
 
 mod test_env;
 
@@ -280,37 +292,30 @@ fn pkg_list_shows_defaults_as_missing() {
     env.init_config("");
 
     // None of the default pkgs' detect targets exist in a temp home.
-    let out = env
-        .run_pkg_list(false, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(false, false, false)
         .expect("pkg list should succeed");
 
+    let names: Vec<&str> = entries.iter().filter_map(pkg_row).map(|(n, _)| n).collect();
     assert!(
-        out.contains("cargo"),
-        "expected cargo in output, got: {out}"
+        names.contains(&"cargo"),
+        "expected cargo in entries: {names:?}"
     );
-    assert!(out.contains("sk"), "expected sk in output, got: {out}");
+    assert!(names.contains(&"sk"), "expected sk in entries: {names:?}");
     assert!(
-        out.contains("starship"),
-        "expected starship in output, got: {out}"
+        names.contains(&"starship"),
+        "expected starship in entries: {names:?}",
     );
-    // Each default pkg has a description, which should appear indented.
-    assert!(
-        out.contains("cross-shell prompt"),
-        "expected starship description, got: {out}"
-    );
-    // Plain-text output must never contain ANSI escapes.
-    assert!(
-        !out.contains('\x1b'),
-        "ColorChoice::Never output should not contain ANSI escapes, got: {out:?}"
-    );
-
-    // With color forced on, ANSI escapes must appear.
-    let colored = env
-        .run_pkg_list(false, false, false, ColorChoice::Always)
-        .expect("pkg list --color always should succeed");
-    assert!(
-        colored.contains('\x1b'),
-        "ColorChoice::Always output should contain ANSI escapes, got: {colored:?}"
+    let starship_desc = entries.iter().find_map(|e| match e {
+        PkgEntry::Pkg {
+            name, description, ..
+        } if name == "starship" => description.as_deref(),
+        _ => None,
+    });
+    assert_eq!(
+        starship_desc.unwrap_or_default(),
+        "starship — cross-shell prompt.",
+        "starship entry should carry its description verbatim",
     );
 }
 
@@ -341,8 +346,8 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
     "#,
     );
 
-    let out = env
-        .run_pkg_list(false, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(false, false, false)
         .expect("pkg list should succeed");
 
     let brew_available = std::env::var("PATH")
@@ -350,29 +355,36 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
         .split(':')
         .any(|dir| std::path::Path::new(dir).join("brew").is_file());
 
+    let aggregate = entries.iter().find_map(|e| match e {
+        PkgEntry::AggregateInstall {
+            command, packages, ..
+        } => Some((command.as_str(), packages.as_slice())),
+        _ => None,
+    });
+
     if brew_available {
-        let footer_line = out
-            .lines()
-            .find(|l| l.contains("To install all missing via brew: brew install"))
-            .unwrap_or_else(|| panic!("expected aggregate footer, got: {out}"));
+        let (command, packages) =
+            aggregate.unwrap_or_else(|| panic!("expected aggregate install entry: {entries:?}"));
         assert!(
-            footer_line.contains("alpha-formula") && footer_line.contains("bravo-formula"),
-            "footer should list both missing pkgs, got: {footer_line}"
+            packages.iter().any(|p| p == "alpha-formula")
+                && packages.iter().any(|p| p == "bravo-formula"),
+            "aggregate should list both missing pkgs, got: {packages:?}",
         );
-        // Each package appears exactly once across the whole output's footer.
-        assert_eq!(
-            footer_line.matches("alpha-formula").count(),
-            1,
-            "alpha-formula should appear once in footer, got: {footer_line}"
+        assert!(
+            command.starts_with("brew install"),
+            "aggregate command should be a brew install line, got: {command:?}",
         );
     } else {
         assert!(
-            !out.contains("via brew:"),
-            "expected no install guidance without brew on PATH, got: {out}"
+            aggregate.is_none(),
+            "expected no aggregate install without brew on PATH, got: {entries:?}",
         );
+        // Without a manager detected, the warning fires.
         assert!(
-            !out.contains("To install all missing"),
-            "expected no aggregate footer without brew on PATH, got: {out}"
+            entries
+                .iter()
+                .any(|e| matches!(e, PkgEntry::NoPackageManagerDetected { .. })),
+            "expected NoPackageManagerDetected event, got: {entries:?}",
         );
     }
 }
@@ -390,24 +402,30 @@ fn pkg_list_all_flag_surfaces_disabled_pkgs() {
     "#,
     );
 
-    let default_out = env
-        .run_pkg_list(false, false, false, ColorChoice::Never)
+    let default_entries = env
+        .run_pkg_list(false, false, false)
         .expect("pkg list should succeed");
     assert!(
-        !default_out.contains("ghost"),
-        "disabled pkg should be hidden by default, got: {default_out}"
+        !default_entries
+            .iter()
+            .any(|e| matches!(pkg_row(e), Some(("ghost", _)))),
+        "disabled pkg should be hidden by default, got: {default_entries:?}",
     );
 
-    let all_out = env
-        .run_pkg_list(true, false, false, ColorChoice::Never)
+    let all_entries = env
+        .run_pkg_list(true, false, false)
         .expect("pkg list --all should succeed");
-    let ghost_line = all_out
-        .lines()
-        .find(|l| l.contains("ghost"))
-        .unwrap_or_else(|| panic!("disabled pkg should appear with --all, got: {all_out}"));
-    assert!(
-        ghost_line.starts_with("- "),
-        "disabled pkg row should begin with the `-` marker, got: {ghost_line:?}"
+    let ghost_state = all_entries
+        .iter()
+        .find_map(|e| match pkg_row(e) {
+            Some(("ghost", state)) => Some(state),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("disabled pkg should appear with --all, got: {all_entries:?}"));
+    assert_eq!(
+        ghost_state,
+        PkgEntryState::Disabled,
+        "disabled pkg should carry PkgEntryState::Disabled",
     );
 }
 
@@ -430,12 +448,14 @@ fn pkg_list_hides_pkgs_gated_to_other_os() {
     "#
     ));
 
-    let out = env
-        .run_pkg_list(true, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(true, false, false)
         .expect("pkg list --all should succeed");
     assert!(
-        !out.contains("alien"),
-        "pkg gated to the other OS must not appear in the list, got: {out}"
+        !entries
+            .iter()
+            .any(|e| matches!(pkg_row(e), Some(("alien", _)))),
+        "pkg gated to the other OS must not appear in the list, got: {entries:?}",
     );
 }
 
@@ -458,12 +478,14 @@ fn pkg_list_hides_pkgs_gated_to_other_shell() {
     "#,
     );
 
-    let out = env
-        .run_pkg_list(true, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(true, false, false)
         .expect("pkg list --all should succeed");
     assert!(
-        !out.contains("bash-only"),
-        "pkg gated to other shell must not appear in list, got: {out}"
+        !entries
+            .iter()
+            .any(|e| matches!(pkg_row(e), Some(("bash-only", _)))),
+        "pkg gated to other shell must not appear in list, got: {entries:?}",
     );
 }
 
@@ -492,12 +514,14 @@ fn pkg_list_shell_filter_is_independent_of_shell_actions() {
     "#,
     );
 
-    let out = env
-        .run_pkg_list(false, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(false, false, false)
         .expect("pkg list should succeed");
     assert!(
-        !out.contains("dual-actions"),
-        "shell gate must hide pkg even when bash actions exist, got: {out}"
+        !entries
+            .iter()
+            .any(|e| matches!(pkg_row(e), Some(("dual-actions", _)))),
+        "shell gate must hide pkg even when bash actions exist, got: {entries:?}",
     );
 }
 
@@ -552,17 +576,19 @@ fn pkg_list_renders_name_override_instead_of_key() {
     "#,
     );
 
-    let out = env
-        .run_pkg_list(false, false, false, ColorChoice::Never)
+    let entries = env
+        .run_pkg_list(false, false, false)
         .expect("pkg list should succeed");
-    assert!(
-        out.contains("short"),
-        "display name override should appear in list, got: {out}"
-    );
-    assert!(
-        !out.contains("verbose-key-name"),
-        "map key should not leak when `name` override is set, got: {out}"
-    );
+    let entry = entries
+        .iter()
+        .find_map(|e| match e {
+            PkgEntry::Pkg { name, key, .. } if key == "verbose-key-name" => {
+                Some(name.as_str().to_string())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected pkg entry for verbose-key-name, got: {entries:?}"));
+    assert_eq!(entry, "short", "display name override should win over key");
 }
 
 #[test]
@@ -1713,6 +1739,15 @@ fn git_config_ssh_signing_without_allowed_signers_omits_gpg_ssh_block() {
     assert!(disk.contains("\tgpgsign = true\n"));
 }
 
+/// Filter `entries` down to just the `Entry::Status` variants — doctor's
+/// non-pkg sections are tested separately via `Entry::Doctor`.
+fn status_entries_only(out: &Output) -> Vec<&Entry> {
+    out.entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Status(_)))
+        .collect()
+}
+
 #[test]
 fn doctor_runs_without_config() {
     // No config.toml, zenops dir is not a git repo. Where `status` bails
@@ -1723,9 +1758,13 @@ fn doctor_runs_without_config() {
     let out = env
         .run(&Cmd::Doctor)
         .expect("doctor must not fail when config.toml is missing");
-    // The narrative text goes to stderr; no structured events are emitted
-    // because push_pkg_health is never reached without a config.
-    assert_eq!(out, Output { entries: vec![] });
+    // No Status events — push_pkg_health is never reached without a
+    // config. Doctor's narrative checks live under `Entry::Doctor`.
+    assert!(
+        status_entries_only(&out).is_empty(),
+        "expected no status events without a config, got: {:?}",
+        status_entries_only(&out),
+    );
 }
 
 #[test]
@@ -1738,7 +1777,11 @@ fn doctor_runs_with_broken_config() {
     let out = env
         .run(&Cmd::Doctor)
         .expect("doctor must not fail on a malformed config.toml");
-    assert_eq!(out, Output { entries: vec![] });
+    assert!(
+        status_entries_only(&out).is_empty(),
+        "expected no status events on a malformed config, got: {:?}",
+        status_entries_only(&out),
+    );
 }
 
 #[test]
@@ -1757,10 +1800,11 @@ fn doctor_runs_with_unknown_field_in_config() {
     let out = env
         .run(&Cmd::Doctor)
         .expect("doctor must not fail on an unknown-field ParseDb error");
-    // Single entry: the git-repo-clean signal from... wait — doctor does
-    // not call check_own_status, so no git event. And push_pkg_health is
-    // never reached because config didn't load. So: empty.
-    assert_eq!(out, Output { entries: vec![] });
+    assert!(
+        status_entries_only(&out).is_empty(),
+        "expected no status events when config fails to parse, got: {:?}",
+        status_entries_only(&out),
+    );
 }
 
 #[test]
@@ -1786,10 +1830,11 @@ fn doctor_emits_pkg_missing_for_enable_on_with_missing_detect() {
         .run(&Cmd::Doctor)
         .expect("doctor must succeed when config loads");
 
+    let status_only = status_entries_only(&out);
     // The exact set of Status::Pkg events depends on whether the host
     // running the test has brew / cargo / sk / etc. installed; but our
     // fake pkg with its guaranteed-missing detect must appear.
-    let has_expected = out.entries.iter().any(|e| {
+    let has_expected = status_only.iter().any(|e| {
         matches!(
             e,
             Entry::Status(Status::Pkg {
@@ -1800,15 +1845,151 @@ fn doctor_emits_pkg_missing_for_enable_on_with_missing_detect() {
     });
     assert!(
         has_expected,
-        "expected a Status::Pkg::Missing for zenops-doctor-test, got: {:?}",
-        out.entries
+        "expected a Status::Pkg::Missing for zenops-doctor-test, got: {status_only:?}",
     );
-    // And every entry should be a Status::Pkg (doctor never emits Git or
-    // ConfigFile events — those are status' territory).
-    for e in &out.entries {
+    // Every Status entry should be a Status::Pkg (doctor never emits Git
+    // or ConfigFile events — those are status' territory).
+    for e in &status_only {
         assert!(
             matches!(e, Entry::Status(Status::Pkg { .. })),
-            "doctor emitted unexpected event: {e:?}"
+            "doctor emitted unexpected status event: {e:?}",
         );
     }
+}
+
+#[test]
+fn doctor_emits_doctor_check_events_for_system_section() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    // The System section always includes an `os:` Info row.
+    let has_os_info = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::System,
+                label,
+                severity: DoctorSeverity::Info,
+                ..
+            }) if label == "os:"
+        )
+    });
+    assert!(
+        has_os_info,
+        "expected a system/os: info DoctorCheck, got: {:?}",
+        out.entries,
+    );
+    // And a SectionHeader event opens each section so the renderer can
+    // print its bold title.
+    let has_system_header = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::SectionHeader {
+                section: DoctorSection::System
+            })
+        )
+    });
+    assert!(
+        has_system_header,
+        "expected a System SectionHeader event, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_emits_bad_check_with_detail_for_parse_error() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    let env = test_env::TestEnv::load();
+    env.write_zenops_file(srpath!("config.toml"), "[[[ not toml", None);
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail on a malformed config.toml");
+    let parse_error = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Config,
+                label,
+                severity: DoctorSeverity::Bad,
+                value,
+                detail,
+                ..
+            }) if label == "status:" && value == "parse error" => Some(detail),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a parse-error doctor check, got: {:?}",
+                out.entries
+            )
+        });
+    assert!(
+        !parse_error.is_empty(),
+        "parse-error check should carry multi-line detail body, got: {parse_error:?}",
+    );
+}
+
+#[test]
+fn init_apply_false_emits_init_summary_event() {
+    use zenops::output::InitSummary;
+
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[(
+        "config.toml",
+        "[shell]\ntype = \"bash\"\n[shell.environment]\n[shell.alias]\n",
+    )]);
+
+    let out = env
+        .run(&Cmd::Init {
+            url: bare.to_str().unwrap().to_string(),
+            branch: None,
+            apply: false,
+            yes: false,
+        })
+        .expect("init should succeed");
+    let summaries: Vec<&InitSummary> = out
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        summaries.len(),
+        1,
+        "expected exactly one init_summary, got: {:?}",
+        out.entries,
+    );
+    assert_eq!(summaries[0].shell.as_deref(), Some("bash"));
+}
+
+#[test]
+fn init_apply_true_does_not_emit_init_summary() {
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[(
+        "config.toml",
+        "[shell]\ntype = \"bash\"\n[shell.environment]\n[shell.alias]\n",
+    )]);
+
+    let out = env
+        .run(&Cmd::Init {
+            url: bare.to_str().unwrap().to_string(),
+            branch: None,
+            apply: true,
+            yes: true,
+        })
+        .expect("init --apply --yes should succeed");
+    let has_summary = out.entries.iter().any(|e| matches!(e, Entry::Init(_)));
+    assert!(
+        !has_summary,
+        "init --apply should defer to apply's event stream and skip init_summary, got: {:?}",
+        out.entries,
+    );
 }

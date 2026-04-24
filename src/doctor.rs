@@ -4,140 +4,189 @@
 //! moments the user needs the command most. Every `Config::load` error is
 //! captured and rendered with actionable next steps instead of propagating,
 //! so `doctor` can still report the rest of the environment. The pkg-health
-//! section reuses the same `Status::Pkg` events as `zenops status`; the
-//! narrative sections are written as plain text to stderr, matching the
-//! style of `init::print_summary`.
+//! section reuses the same `Status::Pkg` events as `zenops status`; every
+//! other section emits `DoctorCheck` events through `Output`, so `-o json`
+//! gets the same structured stream as the rest of the CLI.
 
-use std::io::IsTerminal;
-
+use smol_str::SmolStr;
 use xshell::{Shell, cmd};
 
 use crate::{
     Args,
-    ansi::Styler,
     config::{Config, pkg::which_on_path},
     config_files::ConfigFileDirs,
     error::Error,
     git::Git,
-    output::Output,
+    output::{DoctorCheck, DoctorSection, DoctorSeverity, Output},
     pkg_manager,
 };
 
 pub fn run(
-    args: &Args,
+    _args: &Args,
     dirs: &ConfigFileDirs,
     sh: &Shell,
     output: &mut dyn Output,
 ) -> Result<(), Error> {
-    let color = args.color.enabled(std::io::stderr().is_terminal());
-    let styler = Styler::new(color);
-
-    system_block(&styler);
-    repo_block(dirs, sh, &styler)?;
-    let config = load_config_or_report(dirs, sh, &styler);
-    pkg_manager_block(&styler);
+    let mut em = DoctorEmitter::new(output);
+    system_block(&mut em)?;
+    repo_block(dirs, sh, &mut em)?;
+    let config = load_config_or_report(dirs, sh, &mut em)?;
+    pkg_manager_block(&mut em)?;
     if let Some(config) = config.as_ref() {
-        user_block(config, &styler);
-        shell_block(config, &styler);
-        packages_block(config, &styler, output)?;
+        user_block(config, &mut em)?;
+        shell_block(config, &mut em)?;
+        packages_block(config, &mut em)?;
     }
     Ok(())
 }
 
-fn section(styler: &Styler, title: &str) {
-    eprintln!("{}{}{}", styler.bold(), title, styler.reset());
+/// Pushes `DoctorCheck` events through an `Output` while tracking the current
+/// section so callers don't repeat themselves. The `severity == Info` helper
+/// (`info`) deliberately omits a hint to match the original `info` formatter,
+/// which only ever rendered `{label} {value}` with no trailing dim text.
+struct DoctorEmitter<'o> {
+    section: DoctorSection,
+    out: &'o mut dyn Output,
 }
 
-fn ok(styler: &Styler, label: &str, value: &str) {
-    eprintln!(
-        "  {label:<14} {}{}{}",
-        styler.green(),
-        value,
-        styler.reset()
-    );
-}
+impl<'o> DoctorEmitter<'o> {
+    fn new(out: &'o mut dyn Output) -> Self {
+        Self {
+            // Placeholder; `enter` is always called before any push.
+            section: DoctorSection::System,
+            out,
+        }
+    }
 
-fn info(label: &str, value: &str) {
-    eprintln!("  {label:<14} {value}");
-}
+    fn enter(&mut self, section: DoctorSection) -> Result<(), Error> {
+        self.section = section;
+        // Always emit a section header so the renderer can print a
+        // bold title (and JSON skips the no-op event). Sections with at
+        // least one row would also imply the header through the row's
+        // `section` field, but Packages has no `DoctorCheck` rows of its
+        // own — its content is `Status::Pkg` events from `push_pkg_health`.
+        self.out
+            .push_doctor_check(DoctorCheck::SectionHeader { section })?;
+        Ok(())
+    }
 
-fn warn(styler: &Styler, label: &str, value: &str, hint: &str) {
-    eprintln!(
-        "  {label:<14} {}{}{}  {}{}{}",
-        styler.yellow(),
-        value,
-        styler.reset(),
-        styler.dim(),
-        hint,
-        styler.reset(),
-    );
-}
+    fn push(
+        &mut self,
+        label: &str,
+        severity: DoctorSeverity,
+        value: impl Into<String>,
+        hint: Option<String>,
+        detail: Vec<String>,
+    ) -> Result<(), Error> {
+        self.out.push_doctor_check(DoctorCheck::Check {
+            section: self.section,
+            label: SmolStr::new(label),
+            severity,
+            value: value.into(),
+            hint,
+            detail,
+        })?;
+        Ok(())
+    }
 
-fn bad(styler: &Styler, label: &str, value: &str, hint: &str) {
-    eprintln!(
-        "  {label:<14} {}{}{}  {}{}{}",
-        styler.red(),
-        value,
-        styler.reset(),
-        styler.dim(),
-        hint,
-        styler.reset(),
-    );
-}
+    fn ok(&mut self, label: &str, value: impl Into<String>) -> Result<(), Error> {
+        self.push(label, DoctorSeverity::Ok, value, None, Vec::new())
+    }
 
-fn blank() {
-    eprintln!();
-}
+    fn info(&mut self, label: &str, value: impl Into<String>) -> Result<(), Error> {
+        self.push(label, DoctorSeverity::Info, value, None, Vec::new())
+    }
 
-fn system_block(styler: &Styler) {
-    section(styler, "System");
-    info("os:", std::env::consts::OS);
-    report_bin("git:", "git", styler, "required by zenops — install git");
-    report_bin(
-        "zenops:",
-        "zenops",
-        styler,
-        "not on PATH — the install may be incomplete",
-    );
-    blank();
-}
+    fn warn(
+        &mut self,
+        label: &str,
+        value: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Result<(), Error> {
+        self.push(
+            label,
+            DoctorSeverity::Warn,
+            value,
+            Some(hint.into()),
+            Vec::new(),
+        )
+    }
 
-fn report_bin(label: &str, binary: &str, styler: &Styler, missing_hint: &str) {
-    if which_on_path(binary) {
-        ok(styler, label, "found on PATH");
-    } else {
-        bad(styler, label, "not found on PATH", missing_hint);
+    fn bad(
+        &mut self,
+        label: &str,
+        value: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Result<(), Error> {
+        self.push(
+            label,
+            DoctorSeverity::Bad,
+            value,
+            Some(hint.into()),
+            Vec::new(),
+        )
+    }
+
+    fn bad_with_detail(
+        &mut self,
+        label: &str,
+        value: impl Into<String>,
+        detail: Vec<String>,
+    ) -> Result<(), Error> {
+        self.push(label, DoctorSeverity::Bad, value, None, detail)
     }
 }
 
-fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, styler: &Styler) -> Result<(), Error> {
+fn system_block(em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::System)?;
+    em.info("os:", std::env::consts::OS)?;
+    report_bin(em, "git:", "git", "required by zenops — install git")?;
+    report_bin(
+        em,
+        "zenops:",
+        "zenops",
+        "not on PATH — the install may be incomplete",
+    )?;
+    Ok(())
+}
+
+fn report_bin(
+    em: &mut DoctorEmitter,
+    label: &str,
+    binary: &str,
+    missing_hint: &str,
+) -> Result<(), Error> {
+    if which_on_path(binary) {
+        em.ok(label, "found on PATH")
+    } else {
+        em.bad(label, "not found on PATH", missing_hint)
+    }
+}
+
+fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::Repo)?;
     let zenops = dirs.zenops();
-    section(styler, "Config repo (~/.config/zenops)");
 
     if !zenops.exists() {
-        bad(
-            styler,
+        em.bad(
             "path:",
             "missing",
             "run `zenops init <url>` to clone a config repo",
-        );
-        blank();
+        )?;
         return Ok(());
     }
-    info("path:", &zenops.display().to_string());
+    em.info("path:", zenops.display().to_string())?;
 
     let git = Git::new(zenops, sh);
     if !git.is_git_repo()? {
-        warn(
-            styler,
+        em.warn(
             "git repo:",
             "no",
             "not a git repo — `zenops repo` commands will fail",
-        );
-        blank();
+        )?;
         return Ok(());
     }
-    ok(styler, "git repo:", "yes");
+    em.ok("git repo:", "yes")?;
 
     let remote = cmd!(sh, "git -C {zenops} remote get-url origin")
         .quiet()
@@ -148,13 +197,12 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, styler: &Styler) -> Result<(), 
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     match remote {
-        Some(url) => info("remote:", &url),
-        None => warn(
-            styler,
+        Some(url) => em.info("remote:", url)?,
+        None => em.warn(
             "remote:",
             "none",
             "add one with `git -C ~/.config/zenops remote add origin <url>`",
-        ),
+        )?,
     }
 
     let branch = cmd!(sh, "git -C {zenops} rev-parse --abbrev-ref HEAD")
@@ -166,141 +214,123 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, styler: &Styler) -> Result<(), 
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "HEAD");
     if let Some(b) = branch {
-        info("branch:", &b);
+        em.info("branch:", b)?;
     }
 
     if git.has_uncommitted_changes()? {
-        warn(
-            styler,
+        em.warn(
             "uncommitted:",
             "yes",
             "`zenops apply` will offer to commit; `zenops repo diff` to review",
-        );
+        )?;
     } else {
-        ok(styler, "uncommitted:", "none");
+        em.ok("uncommitted:", "none")?;
     }
-    blank();
     Ok(())
 }
 
-/// Try to load `config.toml`. On every failure mode, render a user-facing
-/// explanation with a next step and return `None` so the rest of `doctor`
-/// skips config-dependent checks. Only `Ok` keeps the function returning a
-/// loaded `Config`. This is the deliberate inversion of the usual `?`
-/// propagation: broken config is the subject of the diagnosis, not an
-/// abort condition.
+/// Try to load `config.toml`. On every failure mode, push a `DoctorCheck`
+/// explaining the failure and return `Ok(None)` so the rest of `doctor`
+/// skips config-dependent checks. Only `Ok` returns a loaded `Config`.
+/// This is the deliberate inversion of the usual `?` propagation: broken
+/// config is the subject of the diagnosis, not an abort condition.
 fn load_config_or_report<'d>(
     dirs: &'d ConfigFileDirs,
     sh: &Shell,
-    styler: &Styler,
-) -> Option<Config<'d>> {
-    section(styler, "Config (~/.config/zenops/config.toml)");
+    em: &mut DoctorEmitter,
+) -> Result<Option<Config<'d>>, Error> {
+    em.enter(DoctorSection::Config)?;
     match Config::load(dirs, sh, false) {
         Ok(config) => {
-            ok(styler, "status:", "loaded");
-            blank();
-            Some(config)
+            em.ok("status:", "loaded")?;
+            Ok(Some(config))
         }
         Err(Error::OpenDb(path, io)) if io.kind() == std::io::ErrorKind::NotFound => {
-            bad(
-                styler,
+            em.bad(
                 "status:",
                 "missing",
-                &format!(
+                format!(
                     "no config.toml at {}. Run `zenops init <url>` to clone one.",
                     path.display(),
                 ),
-            );
-            blank();
-            None
+            )?;
+            Ok(None)
         }
         Err(Error::OpenDb(path, io)) => {
-            bad(
-                styler,
+            em.bad(
                 "status:",
                 "unreadable",
-                &format!("{}: {}. Check permissions.", path.display(), io),
-            );
-            blank();
-            None
+                format!("{}: {}. Check permissions.", path.display(), io),
+            )?;
+            Ok(None)
         }
         Err(Error::ParseDb(path, toml_err)) => {
-            bad(styler, "status:", "parse error", "");
-            eprintln!("    {}", path.display());
             // The toml crate's Display already carries line/column and a
-            // caret span — indent each line so it nests under `status:`.
+            // caret span; ship those as `detail` lines so the renderer
+            // can indent them under the row.
+            let mut detail = vec![path.display().to_string()];
             for line in toml_err.to_string().lines() {
-                eprintln!("    {line}");
+                detail.push(line.to_string());
             }
             let msg = toml_err.to_string();
             if msg.contains("unknown field") {
-                eprintln!(
-                    "    {}hint: check CHANGELOG.md for recent field renames.{}",
-                    styler.dim(),
-                    styler.reset(),
-                );
+                detail.push("hint: check CHANGELOG.md for recent field renames.".to_string());
             } else if msg.contains("invalid type") || msg.contains("missing field") {
-                eprintln!(
-                    "    {}hint: see README.md for the expected shape of [shell], [[pkg.*.configs]], and friends.{}",
-                    styler.dim(),
-                    styler.reset(),
+                detail.push(
+                    "hint: see README.md for the expected shape of [shell], [[pkg.*.configs]], and friends."
+                        .to_string(),
                 );
             }
-            blank();
-            None
+            em.bad_with_detail("status:", "parse error", detail)?;
+            Ok(None)
         }
         Err(err) => {
             // UnresolvedInput / TemplateUnterminated / SafeRelativePath /
             // Shell: their `#[error]` messages are already user-targeted, so
             // don't re-wrap them.
-            bad(styler, "status:", "config failed to load", "");
-            eprintln!("    {err}");
-            blank();
-            None
+            em.bad_with_detail("status:", "config failed to load", vec![err.to_string()])?;
+            Ok(None)
         }
     }
 }
 
-fn pkg_manager_block(styler: &Styler) {
-    section(styler, "Package manager");
+fn pkg_manager_block(em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::PkgManager)?;
     match pkg_manager::detect() {
-        Some(mgr) => ok(styler, "detected:", mgr.name()),
-        None => warn(
-            styler,
+        Some(mgr) => em.ok("detected:", mgr.name())?,
+        None => em.warn(
             "detected:",
             "none",
             "install hints won't render; supported managers: brew",
-        ),
+        )?,
     }
-    blank();
+    Ok(())
 }
 
-fn user_block(config: &Config<'_>, styler: &Styler) {
-    section(styler, "User");
+fn user_block(config: &Config<'_>, em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::User)?;
     let inputs = config.system_inputs();
     match inputs.get("user.name").map(|v| v.as_str()) {
-        Some(name) => info("name:", name),
-        None => warn(
-            styler,
+        Some(name) => em.info("name:", name)?,
+        None => em.warn(
             "name:",
             "unset",
             "set [user].name in config.toml (used by the generated gitconfig)",
-        ),
+        )?,
     }
     match inputs.get("user.email").map(|v| v.as_str()) {
-        Some(email) => info("email:", email),
-        None => warn(
-            styler,
+        Some(email) => em.info("email:", email)?,
+        None => em.warn(
             "email:",
             "unset",
             "set [user].email in config.toml (used by the generated gitconfig)",
-        ),
+        )?,
     }
-    blank();
+    Ok(())
 }
 
-fn shell_block(config: &Config<'_>, styler: &Styler) {
-    section(styler, "Shell");
+fn shell_block(config: &Config<'_>, em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::Shell)?;
     let env_shell = std::env::var("SHELL").ok();
     let env_basename = env_shell
         .as_deref()
@@ -309,35 +339,33 @@ fn shell_block(config: &Config<'_>, styler: &Styler) {
         .map(str::to_string);
 
     match env_shell.as_deref() {
-        Some(full) => info("$SHELL:", full),
-        None => warn(
-            styler,
+        Some(full) => em.info("$SHELL:", full)?,
+        None => em.warn(
             "$SHELL:",
             "unset",
             "the OS should set $SHELL from /etc/passwd; check your user record",
-        ),
+        )?,
     }
 
     let configured = config.shell().map(shell_name);
     match configured {
-        Some(name) => info("config:", name),
-        None => info("config:", "(none)"),
+        Some(name) => em.info("config:", name)?,
+        None => em.info("config:", "(none)")?,
     }
 
     match (env_basename.as_deref(), configured) {
-        (Some(env), Some(cfg)) if env == cfg => ok(styler, "match:", "yes"),
-        (Some(env), Some(cfg)) => warn(
-            styler,
+        (Some(env), Some(cfg)) if env == cfg => em.ok("match:", "yes")?,
+        (Some(env), Some(cfg)) => em.warn(
             "match:",
             "no",
-            &format!(
+            format!(
                 "running {env} but config targets {cfg}. Change shell with `chsh -s $(which {cfg})` or update [shell].type",
             ),
-        ),
-        (Some(_), None) => info("match:", "n/a (no shell configured)"),
+        )?,
+        (Some(_), None) => em.info("match:", "n/a (no shell configured)")?,
         (None, _) => {}
     }
-    blank();
+    Ok(())
 }
 
 fn shell_name(shell: crate::config::pkg::Shell) -> &'static str {
@@ -347,13 +375,8 @@ fn shell_name(shell: crate::config::pkg::Shell) -> &'static str {
     }
 }
 
-fn packages_block(
-    config: &Config<'_>,
-    styler: &Styler,
-    output: &mut dyn Output,
-) -> Result<(), Error> {
-    section(styler, "Packages");
-    config.push_pkg_health(output)?;
-    blank();
+fn packages_block(config: &Config<'_>, em: &mut DoctorEmitter) -> Result<(), Error> {
+    em.enter(DoctorSection::Packages)?;
+    config.push_pkg_health(em.out)?;
     Ok(())
 }

@@ -3,8 +3,13 @@ use std::fs;
 use xshell::{Shell, cmd};
 
 use crate::{
-    Args, Cmd, config::Config, config_files::ConfigFileDirs, error::Error, git::Git,
-    output::Output, real_main,
+    Args, Cmd,
+    config::Config,
+    config_files::ConfigFileDirs,
+    error::Error,
+    git::Git,
+    output::{InitSummary, Output},
+    real_main,
 };
 
 pub fn run(
@@ -28,9 +33,10 @@ pub fn run(
         other => other,
     })?;
 
-    print_summary(dirs, &sh, &config, apply);
-
     if apply {
+        // Hand off to apply: the apply event stream is the contract here,
+        // so suppress the init summary (it would just be noise before a
+        // structured apply log).
         let apply_cmd = Cmd::Apply {
             pull_config: false,
             yes,
@@ -40,7 +46,7 @@ pub fn run(
         return real_main(args, &apply_cmd, dirs, output);
     }
 
-    Ok(())
+    emit_summary(dirs, &sh, &config, output)
 }
 
 fn preflight(dirs: &ConfigFileDirs) -> Result<(), Error> {
@@ -62,7 +68,12 @@ fn preflight(dirs: &ConfigFileDirs) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_summary(dirs: &ConfigFileDirs, sh: &Shell, config: &Config<'_>, apply: bool) {
+fn emit_summary(
+    dirs: &ConfigFileDirs,
+    sh: &Shell,
+    config: &Config<'_>,
+    output: &mut dyn Output,
+) -> Result<(), Error> {
     let dest = dirs.zenops();
     let remote = cmd!(sh, "git -C {dest} remote get-url origin")
         .quiet()
@@ -72,16 +83,16 @@ fn print_summary(dirs: &ConfigFileDirs, sh: &Shell, config: &Config<'_>, apply: 
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    eprintln!("Cloned into {}", dest.display());
-    if let Some(remote) = remote {
-        eprintln!("  remote: {remote}");
-    }
-    match config.shell() {
-        Some(shell) => eprintln!("  shell:  {shell:?}"),
-        None => eprintln!("  shell:  (none configured)"),
-    }
-    eprintln!("  pkgs:   {}", config.pkgs().len());
-    if !apply {
-        eprintln!("Next: run `zenops apply` to realize this config on your system.");
-    }
+    let shell = config.shell().map(|s| match s {
+        crate::config::pkg::Shell::Bash => "bash".to_string(),
+        crate::config::pkg::Shell::Zsh => "zsh".to_string(),
+    });
+
+    output.push_init_summary(InitSummary {
+        clone_path: dest.to_path_buf(),
+        remote,
+        shell,
+        pkg_count: config.pkgs().len(),
+    })?;
+    Ok(())
 }

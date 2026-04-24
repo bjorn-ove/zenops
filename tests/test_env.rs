@@ -12,7 +12,10 @@ use zenops::{
     Args, Cmd, ColorChoice,
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
-    output::{AppliedAction, OutputError, ResolvedConfigFilePath, Status},
+    output::{
+        AppliedAction, DoctorCheck, InitSummary, OutputError, PkgEntry, ResolvedConfigFilePath,
+        Status,
+    },
 };
 use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
@@ -297,14 +300,28 @@ impl TestEnv {
         Ok(output)
     }
 
+    /// Run `zenops pkg` and return only the `PkgEntry` events that came back.
+    /// Convenience for the pkg listing tests, which don't care about
+    /// status/git events.
     pub fn run_pkg_list(
         &self,
         all: bool,
         all_hints: bool,
         verbose: bool,
-        color: zenops::ColorChoice,
-    ) -> Result<String, Error> {
-        zenops::pkg_list::list_from_dirs(&self.dirs, all, all_hints, verbose, color)
+    ) -> Result<Vec<PkgEntry>, Error> {
+        let out = self.run(&Cmd::Pkg {
+            all,
+            all_hints,
+            verbose,
+        })?;
+        Ok(out
+            .entries
+            .into_iter()
+            .filter_map(|e| match e {
+                Entry::Pkg(p) => Some(p),
+                _ => None,
+            })
+            .collect())
     }
 
     pub fn create_symlink(
@@ -325,6 +342,9 @@ impl TestEnv {
 pub enum Entry {
     Status(Status),
     AppliedAction(AppliedAction),
+    Pkg(PkgEntry),
+    Doctor(DoctorCheck),
+    Init(InitSummary),
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -340,6 +360,21 @@ impl zenops::output::Output for Output {
 
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
         self.entries.push(Entry::AppliedAction(action));
+        Ok(())
+    }
+
+    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
+        self.entries.push(Entry::Pkg(entry));
+        Ok(())
+    }
+
+    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
+        self.entries.push(Entry::Doctor(check));
+        Ok(())
+    }
+
+    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
+        self.entries.push(Entry::Init(summary));
         Ok(())
     }
 }

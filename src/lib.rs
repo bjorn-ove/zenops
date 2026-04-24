@@ -239,19 +239,15 @@ pub fn real_main(
             all_hints,
             verbose,
         } => {
-            if pkg_manager::detect().is_none() {
-                eprintln!(
-                    "note: no known package manager detected on PATH; install \
-                     guidance will be hidden. Supported managers: brew."
-                );
-            }
-            let opts = pkg_list::Options {
-                all: *all,
-                all_hints: *all_hints,
-                verbose: *verbose,
-                color_enabled: args.color.enabled(std::io::stdout().is_terminal()),
-            };
-            print!("{}", pkg_list::render(&config, opts));
+            pkg_list::push(
+                &config,
+                pkg_list::Options {
+                    all: *all,
+                    all_hints: *all_hints,
+                    verbose: *verbose,
+                },
+                output,
+            )?;
         }
         Cmd::Repo { command } => {
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
