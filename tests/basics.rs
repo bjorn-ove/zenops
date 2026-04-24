@@ -1669,3 +1669,103 @@ fn git_config_ssh_signing_without_allowed_signers_omits_gpg_ssh_block() {
     assert!(disk.contains("\tformat = ssh\n"));
     assert!(disk.contains("\tgpgsign = true\n"));
 }
+
+#[test]
+fn doctor_runs_without_config() {
+    // No config.toml, zenops dir is not a git repo. Where `status` bails
+    // with Error::OpenDb, `doctor` must swallow the load failure and
+    // finish successfully — that's the whole point of the command.
+    let env = test_env::TestEnv::load();
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail when config.toml is missing");
+    // The narrative text goes to stderr; no structured events are emitted
+    // because push_pkg_health is never reached without a config.
+    assert_eq!(out, Output { entries: vec![] });
+}
+
+#[test]
+fn doctor_runs_with_broken_config() {
+    // Syntactically invalid TOML. Any other command returns Err(ParseDb);
+    // `doctor` must keep going and report the failure inline.
+    let env = test_env::TestEnv::load();
+    env.write_zenops_file(srpath!("config.toml"), "[[[ not toml", None);
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail on a malformed config.toml");
+    assert_eq!(out, Output { entries: vec![] });
+}
+
+#[test]
+fn doctor_runs_with_unknown_field_in_config() {
+    // `deny_unknown_fields` on StoredConfig catches typos / renamed fields.
+    // Doctor must render the error instead of propagating.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        totally_not_a_real_field = 1
+        "#,
+    );
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail on an unknown-field ParseDb error");
+    // Single entry: the git-repo-clean signal from... wait — doctor does
+    // not call check_own_status, so no git event. And push_pkg_health is
+    // never reached because config didn't load. So: empty.
+    assert_eq!(out, Output { entries: vec![] });
+}
+
+#[test]
+fn doctor_emits_pkg_missing_for_enable_on_with_missing_detect() {
+    // With a valid config that declares `enable = "on"` for a pkg whose
+    // detect strategy can't match on the test host, doctor reuses
+    // Config::push_pkg_health and emits a Status::Pkg::Missing event —
+    // same channel the `status` command uses.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.zenops-doctor-test]
+        enable = "on"
+        [pkg.zenops-doctor-test.install_hint.brew]
+        packages = ["zenops-doctor-fake"]
+        [pkg.zenops-doctor-test.detect]
+        type = "file"
+        path = "/definitely/does/not/exist/zenops-doctor-test"
+        "#,
+    );
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must succeed when config loads");
+
+    // The exact set of Status::Pkg events depends on whether the host
+    // running the test has brew / cargo / sk / etc. installed; but our
+    // fake pkg with its guaranteed-missing detect must appear.
+    let has_expected = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Status(Status::Pkg {
+                pkg,
+                status: PkgStatus::Missing { .. },
+            }) if pkg == "zenops-doctor-test"
+        )
+    });
+    assert!(
+        has_expected,
+        "expected a Status::Pkg::Missing for zenops-doctor-test, got: {:?}",
+        out.entries
+    );
+    // And every entry should be a Status::Pkg (doctor never emits Git or
+    // ConfigFile events — those are status' territory).
+    for e in &out.entries {
+        assert!(
+            matches!(e, Entry::Status(Status::Pkg { .. })),
+            "doctor emitted unexpected event: {e:?}"
+        );
+    }
+}

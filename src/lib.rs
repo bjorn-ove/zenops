@@ -1,6 +1,7 @@
 mod ansi;
 mod config;
 pub mod config_files;
+mod doctor;
 pub mod error;
 pub mod git;
 mod init;
@@ -107,6 +108,11 @@ pub enum Cmd {
         #[clap(long, short = 'y', requires = "apply")]
         yes: bool,
     },
+    /// Diagnose the local environment: config dir, git, shell, package
+    /// manager, and package health. Read-only; keeps running even when
+    /// `config.toml` is missing or fails to parse, so it stays useful on a
+    /// broken machine.
+    Doctor,
     /// Print a shell completion script for zenops to stdout.
     ///
     /// Normally sourced automatically by the built-in `zenops` pkg; you
@@ -125,6 +131,7 @@ impl Cmd {
             | Cmd::Pkg { .. }
             | Cmd::Repo { .. }
             | Cmd::Init { .. }
+            | Cmd::Doctor
             | Cmd::Completions { .. } => false,
         }
     }
@@ -164,6 +171,14 @@ pub fn real_main(
         // Init runs before a config.toml exists, so it cannot go through the
         // normal Config::load path below.
         return init::run(url, branch.as_deref(), *apply, *yes, dirs, args, output);
+    }
+    if let Cmd::Doctor = command {
+        // Doctor must survive a missing or broken config.toml — it's the
+        // command the user runs when things are wrong. Dispatch before
+        // Config::load so load failures can be caught and rendered with
+        // actionable hints inside doctor::run.
+        let sh = Shell::new().unwrap();
+        return doctor::run(args, dirs, &sh, output);
     }
     let sh = Shell::new().unwrap();
     let config = Config::load(dirs, &sh, command.should_update_self(args))?;
@@ -224,6 +239,7 @@ pub fn real_main(
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
         }
         Cmd::Init { .. } => unreachable!("handled before Config::load"),
+        Cmd::Doctor => unreachable!("handled before Config::load"),
         Cmd::Completions { .. } => unreachable!("handled before Config::load"),
     }
 
