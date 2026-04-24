@@ -38,6 +38,10 @@ pub enum Error {
         "apply requires a terminal for prompts; pass --yes to apply all changes non-interactively, or --dry-run to preview"
     )]
     ApplyNeedsYesOrTty,
+    #[error(
+        "zenops config repo at {0:?} has uncommitted changes. Commit them first, or re-run with --allow-dirty to apply anyway."
+    )]
+    DirtyRepoRequiresAllowDirty(PathBuf),
     #[error("Failed to read confirmation from stdin: {0}")]
     PromptRead(#[source] std::io::Error),
     #[error(transparent)]
@@ -123,6 +127,9 @@ impl PartialEq for Error {
                 l == r
             }
             (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
+            (Self::DirtyRepoRequiresAllowDirty(l0), Self::DirtyRepoRequiresAllowDirty(r0)) => {
+                l0 == r0
+            }
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::InitDirNotEmpty(l0), Self::InitDirNotEmpty(r0)) => l0 == r0,

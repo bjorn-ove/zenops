@@ -35,6 +35,7 @@ pub fn run(
             pull_config: false,
             yes,
             dry_run: false,
+            allow_dirty: false,
         };
         return real_main(args, &apply_cmd, dirs, output);
     }

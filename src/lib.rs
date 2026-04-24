@@ -65,6 +65,12 @@ pub enum Cmd {
         /// Show each prompt with its diff, but apply nothing.
         #[clap(long, short = 'n')]
         dry_run: bool,
+        /// Proceed even when the zenops config repo has uncommitted changes.
+        /// Required alongside `--yes` when the repo is dirty; without it,
+        /// `--yes` on a dirty repo aborts so automation surfaces divergence
+        /// instead of silently applying uncommitted state.
+        #[clap(long)]
+        allow_dirty: bool,
     },
     Status {
         /// Show a diff of what would change
@@ -189,6 +195,7 @@ pub fn real_main(
             pull_config: _,
             yes,
             dry_run,
+            allow_dirty,
         } => {
             let stderr_color = args.color.enabled(std::io::stderr().is_terminal());
             let mut prompter = build_prompter(*yes, *dry_run, stderr_color)?;
@@ -197,13 +204,24 @@ pub fn real_main(
             let git = Git::new(dirs.zenops(), &sh);
             if git.is_git_repo()? && git.has_uncommitted_changes()? {
                 config.check_own_status(&sh, output)?;
-                git.print_pre_apply_summary(stderr_color)?;
-                match prompter.confirm_pre_apply()? {
-                    PreApplyDecision::CommitAndPush { message } => {
-                        git.commit_all_and_push(&message)?;
+                // `--yes` without `--allow-dirty` aborts so CI/cron surface
+                // divergence instead of silently applying uncommitted state.
+                // `--dry-run` writes nothing, so it's always safe to continue.
+                // `--allow-dirty` in any mode bypasses the prompt entirely.
+                if *yes && !*allow_dirty {
+                    return Err(Error::DirtyRepoRequiresAllowDirty(
+                        dirs.zenops().to_path_buf(),
+                    ));
+                }
+                if !*allow_dirty {
+                    git.print_pre_apply_summary(stderr_color)?;
+                    match prompter.confirm_pre_apply()? {
+                        PreApplyDecision::CommitAndPush { message } => {
+                            git.commit_all_and_push(&message)?;
+                        }
+                        PreApplyDecision::Continue => {}
+                        PreApplyDecision::Abort => return Ok(()),
                     }
-                    PreApplyDecision::Continue => {}
-                    PreApplyDecision::Abort => return Ok(()),
                 }
             }
 

@@ -95,7 +95,7 @@ fn config_dir_git_status() {
 }
 
 #[test]
-fn apply_warns_on_uncommitted_changes_with_yes() {
+fn apply_warns_on_uncommitted_changes_with_yes_and_allow_dirty() {
     let env = test_env::TestEnv::load();
     env.init_config("");
 
@@ -103,12 +103,13 @@ fn apply_warns_on_uncommitted_changes_with_yes() {
     env.append_zenops_file(srpath!("config.toml"), "# Local tweak", None);
     env.write_zenops_file(srpath!("local-note"), "wip", None);
 
-    // --yes: pre-apply prompt is skipped, warnings still surface, apply runs.
+    // --yes --allow-dirty: pre-apply prompt is skipped, warnings still surface, apply runs.
     assert_eq!(
         env.run(&Cmd::Apply {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![
@@ -126,6 +127,26 @@ fn apply_warns_on_uncommitted_changes_with_yes() {
 }
 
 #[test]
+fn apply_yes_on_dirty_repo_errors_without_allow_dirty() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    env.append_zenops_file(srpath!("config.toml"), "# Local tweak", None);
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+            allow_dirty: false,
+        }),
+        Err(Error::DirtyRepoRequiresAllowDirty(
+            env.resolve_path(paths::ZENOPS_DIR)
+        )),
+    );
+}
+
+#[test]
 fn apply_warns_on_deleted_tracked_file() {
     let env = test_env::TestEnv::load();
     env.init_config("");
@@ -139,6 +160,7 @@ fn apply_warns_on_deleted_tracked_file() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![Entry::Status(Status::Git {
@@ -150,7 +172,7 @@ fn apply_warns_on_deleted_tracked_file() {
 }
 
 #[test]
-fn apply_clean_repo_emits_no_git_status() {
+fn apply_clean_repo_with_yes_does_not_require_allow_dirty() {
     let env = test_env::TestEnv::load();
     env.init_config("");
 
@@ -159,6 +181,7 @@ fn apply_clean_repo_emits_no_git_status() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: false,
         }),
         Ok(Output { entries: vec![] })
     );
@@ -503,6 +526,7 @@ fn apply_filters_pkg_by_supported_shells() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -695,7 +719,8 @@ fn symlinked_configs() {
         env.run(&Cmd::Apply {
             pull_config: false,
             yes: true,
-            dry_run: false
+            dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![
@@ -718,7 +743,8 @@ fn symlinked_configs() {
         env.run(&Cmd::Apply {
             pull_config: false,
             yes: true,
-            dry_run: false
+            dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![
@@ -872,6 +898,7 @@ fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         })
         .expect("apply should succeed");
 
@@ -909,6 +936,7 @@ fn apply_is_silent_for_detect_variant_miss() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         })
         .expect("apply should succeed");
 
@@ -944,6 +972,7 @@ fn apply_pkg_missing_with_no_install_hint_has_no_command() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         })
         .expect("apply should succeed");
 
@@ -978,6 +1007,7 @@ fn apply_no_pkg_missing_when_detect_is_empty() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         })
         .expect("apply should succeed");
 
@@ -1044,6 +1074,7 @@ fn apply_emits_zsh_compinit_via_line_action() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1104,6 +1135,7 @@ fn apply_emits_path_actions_inline_grouped_with_comments() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1162,6 +1194,7 @@ fn apply_emits_login_init_actions_for_bash() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1194,6 +1227,7 @@ fn apply_skips_zprofile_when_no_login_init_zsh_actions() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1243,6 +1277,7 @@ fn apply_routes_login_init_zsh_action_to_zprofile() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1299,6 +1334,7 @@ fn apply_filters_pkg_by_supported_os() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1326,6 +1362,7 @@ fn apply_injects_zenops_completions_into_generated_bash_profile() {
         pull_config: false,
         yes: true,
         dry_run: false,
+        allow_dirty: true,
     })
     .expect("apply should succeed");
 
@@ -1405,7 +1442,8 @@ fn symlink_dst_is_regular_file() {
         env.run(&Cmd::Apply {
             pull_config: false,
             yes: true,
-            dry_run: false
+            dry_run: false,
+            allow_dirty: true,
         }),
         Err(Error::RefusingToOverwriteFileWithSymlink {
             real: real.clone(),
@@ -1442,7 +1480,8 @@ fn symlink_dst_is_directory() {
         env.run(&Cmd::Apply {
             pull_config: false,
             yes: true,
-            dry_run: false
+            dry_run: false,
+            allow_dirty: true,
         }),
         Err(Error::RefusingToOverwriteDirectoryWithSymlink {
             real: real.clone(),
@@ -1461,6 +1500,7 @@ fn apply_dry_run_skips_all_changes() {
             pull_config: false,
             yes: false,
             dry_run: true,
+            allow_dirty: true,
         }),
         Ok(Output { entries: vec![] }),
     );
@@ -1517,6 +1557,7 @@ fn ssh_allowed_signers_manual_entry_roundtrips_through_apply_and_status() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![
@@ -1603,6 +1644,7 @@ fn git_config_ssh_signing_with_allowed_signers_writes_full_gitconfig() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![
@@ -1650,6 +1692,7 @@ fn git_config_ssh_signing_without_allowed_signers_omits_gpg_ssh_block() {
             pull_config: false,
             yes: true,
             dry_run: false,
+            allow_dirty: true,
         }),
         Ok(Output {
             entries: vec![Entry::AppliedAction(AppliedAction::CreatedFile(
