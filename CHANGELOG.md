@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0] - 2026-04-27
+
+### Added
+- `zenops pkg [PATTERN]...` accepts positional patterns to narrow the listing to packages whose display name or map key matches any of the substrings (case-insensitive, multi-pattern OR). The aggregate-install footer follows the visible set.
+
+### Changed
+- **Breaking:** structured and human output (`zenops status`, `zenops pkg`, `-o json`, etc.) now goes to stdout instead of stderr, matching the `find . -name hello` convention. Log messages and fatal errors continue to go to stderr. Pipelines that previously read stderr to capture output need to read stdout (or merge with `2>&1`).
+
 ## [0.9.0] - 2026-04-24
 
 ### Added
