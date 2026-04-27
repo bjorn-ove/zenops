@@ -9,6 +9,7 @@ use zenops::{
     output::{
         AppliedAction, FileStatus, PkgEntry, PkgEntryState, PkgStatus, Status, SymlinkStatus,
     },
+    pkg_list,
     prompt::{PreApplyAnswer, parse_pre_apply_input},
 };
 use zenops_safe_relative_path::srpath;
@@ -293,7 +294,7 @@ fn pkg_list_shows_defaults_as_missing() {
 
     // None of the default pkgs' detect targets exist in a temp home.
     let entries = env
-        .run_pkg_list(false, false, false)
+        .run_pkg_list(pkg_list::Options::default())
         .expect("pkg list should succeed");
 
     let names: Vec<&str> = entries.iter().filter_map(pkg_row).map(|(n, _)| n).collect();
@@ -347,7 +348,7 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
     );
 
     let entries = env
-        .run_pkg_list(false, false, false)
+        .run_pkg_list(pkg_list::Options::default())
         .expect("pkg list should succeed");
 
     let brew_available = std::env::var("PATH")
@@ -403,7 +404,7 @@ fn pkg_list_all_flag_surfaces_disabled_pkgs() {
     );
 
     let default_entries = env
-        .run_pkg_list(false, false, false)
+        .run_pkg_list(pkg_list::Options::default())
         .expect("pkg list should succeed");
     assert!(
         !default_entries
@@ -413,7 +414,10 @@ fn pkg_list_all_flag_surfaces_disabled_pkgs() {
     );
 
     let all_entries = env
-        .run_pkg_list(true, false, false)
+        .run_pkg_list(pkg_list::Options {
+            all: true,
+            ..Default::default()
+        })
         .expect("pkg list --all should succeed");
     let ghost_state = all_entries
         .iter()
@@ -426,6 +430,94 @@ fn pkg_list_all_flag_surfaces_disabled_pkgs() {
         ghost_state,
         PkgEntryState::Disabled,
         "disabled pkg should carry PkgEntryState::Disabled",
+    );
+}
+
+#[test]
+fn pkg_list_pattern_filters_by_substring() {
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.alpha]
+        enable = "detect"
+        [pkg.alpha.detect]
+        type = "file"
+        path = "~/.alpha-marker"
+        [pkg.alpha.install_hint.brew]
+        packages = []
+
+        [pkg.bravo]
+        enable = "detect"
+        [pkg.bravo.detect]
+        type = "file"
+        path = "~/.bravo-marker"
+        [pkg.bravo.install_hint.brew]
+        packages = []
+    "#,
+    );
+
+    let pkg_names = |entries: &[PkgEntry]| -> Vec<String> {
+        entries
+            .iter()
+            .filter_map(pkg_row)
+            .map(|(n, _)| n.to_string())
+            .collect()
+    };
+    let only_test_pkgs = |names: Vec<String>| -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| n == "alpha" || n == "bravo")
+            .collect()
+    };
+
+    // Single pattern → only matching pkg appears among the test pkgs.
+    let entries = env
+        .run_pkg_list(pkg_list::Options {
+            pattern: vec!["alpha".into()],
+            ..Default::default()
+        })
+        .expect("filter should succeed");
+    assert_eq!(
+        only_test_pkgs(pkg_names(&entries)),
+        vec!["alpha".to_string()],
+        "filter excludes bravo, got: {entries:?}",
+    );
+
+    // Case-insensitive.
+    let entries = env
+        .run_pkg_list(pkg_list::Options {
+            pattern: vec!["ALPHA".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(pkg_row(e), Some(("alpha", _)))),
+        "uppercase pattern should match alpha, got: {entries:?}",
+    );
+
+    // Multi-pattern OR.
+    let entries = env
+        .run_pkg_list(pkg_list::Options {
+            pattern: vec!["alpha".into(), "bravo".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let mut both = only_test_pkgs(pkg_names(&entries));
+    both.sort();
+    assert_eq!(both, vec!["alpha".to_string(), "bravo".to_string()]);
+
+    // Non-matching → no pkg rows at all (other event types may still fire).
+    let entries = env
+        .run_pkg_list(pkg_list::Options {
+            pattern: vec!["zzz-nothing".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        entries.iter().all(|e| !matches!(e, PkgEntry::Pkg { .. })),
+        "no rows should match 'zzz-nothing', got: {entries:?}",
     );
 }
 
@@ -449,7 +541,10 @@ fn pkg_list_hides_pkgs_gated_to_other_os() {
     ));
 
     let entries = env
-        .run_pkg_list(true, false, false)
+        .run_pkg_list(pkg_list::Options {
+            all: true,
+            ..Default::default()
+        })
         .expect("pkg list --all should succeed");
     assert!(
         !entries
@@ -479,7 +574,10 @@ fn pkg_list_hides_pkgs_gated_to_other_shell() {
     );
 
     let entries = env
-        .run_pkg_list(true, false, false)
+        .run_pkg_list(pkg_list::Options {
+            all: true,
+            ..Default::default()
+        })
         .expect("pkg list --all should succeed");
     assert!(
         !entries
@@ -515,7 +613,7 @@ fn pkg_list_shell_filter_is_independent_of_shell_actions() {
     );
 
     let entries = env
-        .run_pkg_list(false, false, false)
+        .run_pkg_list(pkg_list::Options::default())
         .expect("pkg list should succeed");
     assert!(
         !entries
@@ -577,7 +675,7 @@ fn pkg_list_renders_name_override_instead_of_key() {
     );
 
     let entries = env
-        .run_pkg_list(false, false, false)
+        .run_pkg_list(pkg_list::Options::default())
         .expect("pkg list should succeed");
     let entry = entries
         .iter()

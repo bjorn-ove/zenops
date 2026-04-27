@@ -85,6 +85,11 @@ pub enum Cmd {
     },
     /// List every configured package and whether its dependencies are met
     Pkg {
+        /// Only list packages whose name or key contains one of these
+        /// substrings (case-insensitive). Multiple patterns are ORed —
+        /// `zenops pkg git curl` shows both.
+        #[clap(value_name = "PATTERN")]
+        pattern: Vec<String>,
         /// Include packages with `enable = "disabled"`
         #[clap(long)]
         all: bool,
@@ -247,6 +252,7 @@ pub fn real_main(
             config_files.check_status(output)?;
         }
         Cmd::Pkg {
+            pattern,
             all,
             all_hints,
             verbose,
@@ -254,6 +260,7 @@ pub fn real_main(
             pkg_list::push(
                 &config,
                 pkg_list::Options {
+                    pattern: pattern.clone(),
                     all: *all,
                     all_hints: *all_hints,
                     verbose: *verbose,

@@ -5,8 +5,11 @@ use crate::{
     pkg_manager,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
+    /// Case-insensitive substrings; a pkg passes if any pattern matches its
+    /// display name or map key. Empty = no filter.
+    pub pattern: Vec<String>,
     /// Include pkgs whose `enable = "disabled"`.
     pub all: bool,
     /// Show every install hint on a pkg, not just the one for the detected manager.
@@ -36,6 +39,7 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
 
     let home = config.home();
     let configured_shell = config.shell();
+    let needles: Vec<String> = opts.pattern.iter().map(|p| p.to_lowercase()).collect();
     // Entries carry (display_label, key, pkg). The map key stays distinct
     // from the display label so JSON consumers can correlate even when
     // `pkg.name` overrides the key.
@@ -46,6 +50,12 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
         .filter(|(_, p)| p.supports_current_os())
         .filter(|(_, p)| p.supports_shell(configured_shell))
         .map(|(key, pkg)| (pkg.name.as_deref().unwrap_or(key.as_str()), key, pkg))
+        .filter(|(label, key, _)| {
+            needles.is_empty()
+                || needles.iter().any(|n| {
+                    label.to_lowercase().contains(n) || key.as_str().to_lowercase().contains(n)
+                })
+        })
         .collect();
     entries.sort_by_key(|(label, _, _)| *label);
 

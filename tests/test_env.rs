@@ -16,6 +16,7 @@ use zenops::{
         AppliedAction, DoctorCheck, InitSummary, OutputError, PkgEntry, ResolvedConfigFilePath,
         Status,
     },
+    pkg_list,
 };
 use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
@@ -302,14 +303,17 @@ impl TestEnv {
 
     /// Run `zenops pkg` and return only the `PkgEntry` events that came back.
     /// Convenience for the pkg listing tests, which don't care about
-    /// status/git events.
-    pub fn run_pkg_list(
-        &self,
-        all: bool,
-        all_hints: bool,
-        verbose: bool,
-    ) -> Result<Vec<PkgEntry>, Error> {
+    /// status/git events. Takes `pkg_list::Options` so new flags don't keep
+    /// growing this signature.
+    pub fn run_pkg_list(&self, opts: pkg_list::Options) -> Result<Vec<PkgEntry>, Error> {
+        let pkg_list::Options {
+            pattern,
+            all,
+            all_hints,
+            verbose,
+        } = opts;
         let out = self.run(&Cmd::Pkg {
+            pattern,
             all,
             all_hints,
             verbose,
