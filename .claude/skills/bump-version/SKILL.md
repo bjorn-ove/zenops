@@ -94,48 +94,69 @@ there must have its pin updated whenever the crate itself is bumped.
    `crate | old version | new version | reason` where reason is either a
    summary of direct changes or "propagated from <crate>".
 
-5. **Apply the bumps.**
-   - **5a. Pre-flight `git status`.** The bump commit must touch only
-     `Cargo.toml` files (root + any crate manifests being bumped) and
-     `Cargo.lock`.
+5. **Compose a user-facing changelog body per bumped crate.** Group each
+   under `### Added`, `### Changed`, `### Fixed`, `### Removed` (omit
+   empty groups). One bullet per item, user-facing, no commit hashes, no
+   author names. Skip anything a user wouldn't care about (CI, doc-only,
+   test-only, internal renames, unseen dep bumps). This body is reused
+   three times — write it once: the new `CHANGELOG.md` section (step 6c),
+   the annotated tag message (step 7), and the chat report (step 9).
+
+6. **Apply the bumps.**
+   - **6a. Pre-flight `git status`.** The bump commit must touch only
+     `Cargo.toml` files (root + any crate manifests being bumped),
+     `Cargo.lock`, and the bumped crates' `CHANGELOG.md` files.
      - If unrelated changes exist that clearly belong in their own commit,
        **stop and ask** — commit them first with their own message, stash
        them, or abandon the bump.
      - If the user already described a release-prep commit that should
        land first, commit those changes with an appropriate message, then
        proceed.
-   - **5b. Edit manifests.** For each bumped crate, edit the
+   - **6b. Edit manifests.** For each bumped crate, edit the
      `version = "X.Y.Z"` on its `[package]` block at its `manifest_path`.
      For each bumped crate that also appears in the root
      `[workspace.dependencies]`, update its pinned `version = "X.Y.Z"`
      there too, so consumers resolve to the new release.
-   - **5c. Refresh `Cargo.lock`.** Run `cargo build`.
-   - **5d. Run the pre-release gate.** Execute `./scripts/prerelease.sh`.
+   - **6c. Update `CHANGELOG.md`.** For each bumped crate, prepend a new
+     section directly under the file's header, using the body from
+     step 5:
+
+     ```markdown
+     ## [<X.Y.Z>] - <YYYY-MM-DD>
+
+     <body from step 5>
+     ```
+
+     Date is today (`date +%Y-%m-%d`). The file lives at
+     `<crate-dir>/CHANGELOG.md` (the root crate's is at the repo root).
+     If the file doesn't exist (e.g. a new subcrate's first release),
+     create it with a single `# Changelog` heading followed by a blank
+     line and the new section. No explanatory boilerplate — readers come
+     to a CHANGELOG for the changes, not for an introduction.
+
+     Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+     section conventions and [SemVer](https://semver.org/spec/v2.0.0.html);
+     the file itself does not link them.
+   - **6d. Refresh `Cargo.lock`.** Run `cargo build`.
+   - **6e. Run the pre-release gate.** Execute `./scripts/prerelease.sh`.
      This runs fmt/clippy/test/build-release/doc plus a packaging check
      for every publishable crate. If the script exits non-zero, **stop**.
      Report which step failed (the script prints a visible `==>` heading
      per step; surface the failing one). Do not commit and do not tag.
      Recovery paths to offer the user:
      - Fix forward — edit the offending code and re-run the skill from
-       step 5c.
+       step 6d.
      - Abandon the bump —
-       `git checkout -- Cargo.toml crates/*/Cargo.toml Cargo.lock`.
-   - **5e. Commit.** Commit only the manifests that changed and
-     `Cargo.lock`. Commit message:
+       `git checkout -- Cargo.toml crates/*/Cargo.toml Cargo.lock CHANGELOG.md crates/*/CHANGELOG.md`.
+   - **6f. Commit.** Commit only the manifests that changed, `Cargo.lock`,
+     and the bumped crates' `CHANGELOG.md` files. Commit message:
      - Single crate: `Bumped <crate> to v<X.Y.Z>`.
      - Multiple: `Bumped <crate-a> to v<X.Y.Z>, <crate-b> to v<X.Y.Z>`
        (list each bumped crate).
 
-6. **Compose a user-facing changelog per bumped crate.** Group each under
-   `### Added`, `### Changed`, `### Fixed`, `### Removed` (omit empty
-   groups). One bullet per item, user-facing, no commit hashes, no author
-   names. Skip anything a user wouldn't care about (CI, doc-only, test-only,
-   internal renames, unseen dep bumps). These bodies become both the tag
-   annotations and the output in step 9 — write them once, reuse.
-
 7. **Create one signed annotated tag per bumped crate** pointing at the
-   bump commit (HEAD). Use each crate's changelog as the tag message, with
-   the crate name + version as a title line:
+   bump commit (HEAD). Use each crate's changelog body (step 5) as the
+   tag message, with the crate name + version as a title line:
 
    ```bash
    git tag -s --cleanup=verbatim <crate>-v<X.Y.Z> -F - <<'EOF'
@@ -174,7 +195,7 @@ there must have its pin updated whenever the crate itself is bumped.
 
 9. **Report** the per-crate before/after versions, bump types, and
    reasoning. Then, **for every tag created**, print the crate's changelog
-   body (from step 6) as copy-pasteable markdown **immediately followed by**
+   body (from step 5) as copy-pasteable markdown **immediately followed by**
    a ready-to-click GitHub "new release" URL for that tag. GitHub's
    `releases/new` form does **not** read the annotated tag message, so the
    changelog must be presented in the chat where the user can grab it and
@@ -211,6 +232,10 @@ there must have its pin updated whenever the crate itself is bumped.
 
 ## Notes
 
+- Each crate has its own `CHANGELOG.md` next to its `Cargo.toml`
+  (`<crate-dir>/CHANGELOG.md`; the root crate's lives at the repo root).
+  Every bump prepends a new `## [X.Y.Z] - YYYY-MM-DD` section using the
+  same body that becomes the tag annotation.
 - Every workspace member has its own explicit `version` in its `[package]`
   block. There is no shared `[workspace.package] version`.
 - Tag convention is `<crate>-v<X.Y.Z>` (leading `v` on the version). Do

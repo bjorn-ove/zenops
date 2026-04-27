@@ -40,6 +40,11 @@ Subcommands:
   release-url <crate> <ver>    Print a GitHub releases/new URL pre-filled
                                with tag and title for <crate>-v<ver>.
                                Exits 1 if the origin is not a GitHub URL.
+  tag-body <tag>               Print the body of an annotated tag (the
+                               changelog sections), with the title line and
+                               SSH signature stripped.
+  tag-date <tag>               Print the tagger date of an annotated tag as
+                               YYYY-MM-DD.
 EOF
 }
 
@@ -176,6 +181,31 @@ cmd_diff() {
     fi
 }
 
+require_existing_tag() {
+    local tag="$1"
+    if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+        printf 'bump-helper: no such tag %q\n' "$tag" >&2
+        exit 1
+    fi
+}
+
+cmd_tag_body() {
+    local tag="${1:-}"
+    [[ -n "$tag" ]] || { printf 'bump-helper: `tag-body` requires <tag>\n' >&2; exit 1; }
+    require_existing_tag "$tag"
+    # %(contents:body) drops the first paragraph (title) and the trailing
+    # SSH signature block, leaving exactly the `### Added`/`### Changed`/
+    # `### Fixed`/`### Removed` sections.
+    git tag -l --format='%(contents:body)' "$tag"
+}
+
+cmd_tag_date() {
+    local tag="${1:-}"
+    [[ -n "$tag" ]] || { printf 'bump-helper: `tag-date` requires <tag>\n' >&2; exit 1; }
+    require_existing_tag "$tag"
+    git tag -l --format='%(taggerdate:short)' "$tag"
+}
+
 cmd_release_url() {
     local name="${1:-}" version="${2:-}"
     if [[ -z "$name" || -z "$version" ]]; then
@@ -209,6 +239,8 @@ case "$cmd" in
     commits)        cmd_commits "$@" ;;
     diff)           cmd_diff "$@" ;;
     release-url)    cmd_release_url "$@" ;;
+    tag-body)       cmd_tag_body "$@" ;;
+    tag-date)       cmd_tag_date "$@" ;;
     -h|--help|help) usage ;;
     "")             usage; exit 1 ;;
     *)              printf 'bump-helper: unknown subcommand %q\n' "$cmd" >&2; usage; exit 1 ;;
