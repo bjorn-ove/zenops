@@ -1,3 +1,16 @@
+//! Interactive confirmation for `zenops apply`.
+//!
+//! [`Prompter`] is the trait `apply` calls to confirm each
+//! [`PendingChange`] and to resolve the pre-apply
+//! [`PreApplyDecision`] when the zenops repo has uncommitted changes.
+//! Three impls cover the modes:
+//!
+//! - [`TerminalPrompter`] — interactive, prints a colorized diff and reads
+//!   from stdin.
+//! - [`YesPrompter`] — accepts everything, used for `--yes`.
+//! - [`DryRunPrompter`] — shows the same diff the terminal prompter would,
+//!   but always answers "no", used for `--dry-run`.
+
 use std::io::{self, BufRead, Write};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
@@ -8,33 +21,64 @@ use crate::{
     output::ResolvedConfigFilePath,
 };
 
+/// One change `apply` is about to make. Borrowed so the prompter can
+/// render it without taking ownership of large buffers (especially the
+/// generated body and the diff).
 pub enum PendingChange<'a> {
+    /// Write a brand-new generated file.
     CreateFile {
+        /// Where the file will land.
         path: &'a ResolvedConfigFilePath,
+        /// Body to write.
         content: &'a str,
     },
+    /// Apply one hunk of a multi-hunk update to an existing generated
+    /// file. Hunks are confirmed independently so the user can accept
+    /// some and reject others.
     UpdateFileHunk {
+        /// Target file.
         path: &'a ResolvedConfigFilePath,
+        /// 1-based hunk index.
         index: usize,
+        /// Total number of hunks in this file.
         total: usize,
+        /// Full text diff (carries both sides plus context).
         diff: &'a TextDiff<'a, 'a, str>,
+        /// The contiguous slice of diff ops that make up this hunk.
         ops: &'a [DiffOp],
     },
+    /// Create a symlink in an existing parent directory.
     CreateSymlink {
+        /// Symlink target (a file in the zenops repo).
         real: &'a ResolvedConfigFilePath,
+        /// Where the symlink will live.
         symlink: &'a ResolvedConfigFilePath,
     },
+    /// Create a symlink whose parent directory must also be created. A
+    /// distinct variant so the prompter can warn the user that an extra
+    /// `mkdir -p` will happen.
     CreateSymlinkWithParent {
+        /// Symlink target.
         real: &'a ResolvedConfigFilePath,
+        /// Where the symlink will live.
         symlink: &'a ResolvedConfigFilePath,
+        /// The parent directory that will be created first.
         parent: &'a ResolvedConfigFilePath,
     },
 }
 
+/// Outcome of the pre-apply prompt that fires when the zenops repo has
+/// uncommitted changes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PreApplyDecision {
-    CommitAndPush { message: String },
+    /// Stage everything, commit with `message`, push, then continue.
+    CommitAndPush {
+        /// Commit message the user typed.
+        message: String,
+    },
+    /// Apply without committing — the repo stays dirty.
     Continue,
+    /// Bail out of the apply.
     Abort,
 }
 
@@ -50,18 +94,32 @@ pub fn parse_pre_apply_input(line: &str) -> Option<PreApplyAnswer> {
     }
 }
 
+/// Parsed answer from the pre-apply prompt; lives separately from
+/// [`PreApplyDecision`] because `Commit` here doesn't yet carry the
+/// commit message — the prompter reads that in a follow-up step.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PreApplyAnswer {
+    /// User wants to commit (and supply a message next).
     Commit,
+    /// User wants to apply without committing.
     Continue,
+    /// User wants to abort the apply.
     Abort,
 }
 
+/// How `apply` consults the user before each change. Stateful (e.g.
+/// terminal locks); always borrowed mutably.
 pub trait Prompter {
+    /// Ask whether to perform a single pending change. Returning `Ok(false)`
+    /// skips this change without aborting the run.
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error>;
+    /// Ask what to do when the zenops config repo has uncommitted changes.
+    /// Called once per `apply`, before any per-change prompts.
     fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error>;
 }
 
+/// Prompter for `--yes`: accepts every change and continues past the
+/// pre-apply prompt without committing.
 pub struct YesPrompter;
 
 impl Prompter for YesPrompter {
@@ -73,11 +131,14 @@ impl Prompter for YesPrompter {
     }
 }
 
+/// Interactive prompter: renders each pending change to stdout and reads
+/// y/n (or commit/continue/abort) from stdin.
 pub struct TerminalPrompter {
     color: bool,
 }
 
 impl TerminalPrompter {
+    /// Build a prompter that uses ANSI color when `color` is true.
     pub fn new(color: bool) -> Self {
         Self { color }
     }
@@ -166,11 +227,14 @@ fn read_commit_message(out: &mut dyn Write) -> Result<String, Error> {
     }
 }
 
+/// Prompter for `--dry-run`: shows the same per-change preview as the
+/// terminal prompter but always answers "no", so nothing is written.
 pub struct DryRunPrompter {
     color: bool,
 }
 
 impl DryRunPrompter {
+    /// Build a dry-run prompter that uses ANSI color when `color` is true.
     pub fn new(color: bool) -> Self {
         Self { color }
     }

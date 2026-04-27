@@ -1,3 +1,20 @@
+//! Library root for the `zenops` binary.
+//!
+//! Exposes the clap [`Cmd`] subcommand enum, the global [`Args`], the
+//! [`ColorChoice`] resolver, and the [`real_main`] dispatcher that routes a
+//! parsed command into the right module.
+//!
+//! `Init`, `Doctor`, and `Schema` are dispatched *before* `Config::load`
+//! because they must work without — or independently of — a usable
+//! `~/.config/zenops/config.toml`. Every other command goes through
+//! `Config::load` first.
+//!
+//! See [`crate::output`] for the structured-event channel that all commands
+//! emit through; the `zenops` binary entrypoint wires up `Cli` and picks a
+//! renderer.
+
+#![deny(missing_docs)]
+
 mod ansi;
 mod config;
 pub mod config_files;
@@ -25,12 +42,18 @@ use crate::{
     prompt::{DryRunPrompter, PreApplyDecision, Prompter, TerminalPrompter, YesPrompter},
 };
 
+/// User-facing color policy for the renderer and prompter, parsed from
+/// `--color`. Resolve to a concrete on/off via [`ColorChoice::enabled`];
+/// `Auto` honours `NO_COLOR` and the target stream's TTY-ness.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum ColorChoice {
+    /// Color when the target stream is a TTY and `NO_COLOR` is unset.
     #[default]
     Auto,
+    /// Force color regardless of TTY or `NO_COLOR`.
     Always,
+    /// Never emit ANSI escapes.
     Never,
 }
 
@@ -49,6 +72,9 @@ impl ColorChoice {
     }
 }
 
+/// Globals shared across every subcommand. Currently only `--color`; lives
+/// in its own struct so subcommands can borrow it without redeclaring the
+/// flag.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// When to colorize output
@@ -56,8 +82,16 @@ pub struct Args {
     pub color: ColorChoice,
 }
 
+/// Top-level subcommand. The variants map 1:1 to user-visible commands;
+/// each is dispatched by [`real_main`] (or, for `Completions`, by `main`
+/// before `real_main` is reached).
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
+    /// Reconcile the live system with `config.toml`: prompt per change
+    /// (unless `--yes`), write generated files, create symlinks, run shell
+    /// init for any `pkg` that needs it. Honours the zenops repo's git
+    /// state — a dirty repo prompts for commit-and-push or aborts under
+    /// `--yes` without `--allow-dirty`.
     Apply {
         /// Pull the latest version of the config using git pull --rebase in the zenops config directory
         #[clap(long, short)]
@@ -75,6 +109,8 @@ pub enum Cmd {
         #[clap(long)]
         allow_dirty: bool,
     },
+    /// Read-only sibling of `Apply`: report what would change without
+    /// touching the filesystem.
     Status {
         /// Show a diff of what would change
         #[clap(long, short = 'd')]
@@ -100,7 +136,11 @@ pub enum Cmd {
         #[clap(long, short)]
         verbose: bool,
     },
+    /// Git pass-through against the zenops config repo
+    /// (`~/.config/zenops`). Lets the user run common git operations
+    /// without `cd`-ing.
     Repo {
+        /// Which git operation to dispatch in the config repo.
         #[command(subcommand)]
         command: GitCmd,
     },
@@ -169,6 +209,13 @@ fn build_prompter(yes: bool, dry_run: bool, color: bool) -> Result<Box<dyn Promp
     }
 }
 
+/// Dispatch a parsed [`Cmd`] to its module. `Init`, `Doctor`, and
+/// `Schema` are handled before `Config::load` so they remain usable on a
+/// fresh or broken machine; everything else loads the config first and
+/// then routes through `Config` / [`ConfigFiles`].
+///
+/// `Completions` is a no-op here — `main` handles it before calling in,
+/// because it needs the top-level `Cli` for clap's `CommandFactory`.
 pub fn real_main(
     args: &Args,
     command: &Cmd,

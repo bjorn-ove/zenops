@@ -1,7 +1,20 @@
+//! Tiny abstraction over the host's package manager.
+//!
+//! [`detect`] probes `PATH` and returns a [`DetectedPackageManager`] when a
+//! supported manager is available. Today only Homebrew is wired up; `apt`,
+//! `pacman`, and friends are flagged as expansion points in-source — adding
+//! one means extending the enum, [`detect`], [`DetectedPackageManager::packages_for`],
+//! [`DetectedPackageManager::install_command`], and the matching
+//! `InstallHint` field.
+
 use crate::config::pkg::{InstallHint, which_on_path};
 
+/// A package manager zenops successfully detected on the current host.
+/// Today only Homebrew; the variant enumerates expansion points for
+/// future managers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectedPackageManager {
+    /// Homebrew (macOS or Linuxbrew).
     Brew,
     // Future package managers (apt, pacman, yum, dnf, zypper, apk, pkg, …)
     // should be added here, detected in `detect`, and wired into
@@ -9,12 +22,16 @@ pub enum DetectedPackageManager {
 }
 
 impl DetectedPackageManager {
+    /// Stable lowercase identifier, suitable for shell strings, JSON
+    /// output, and serde tags (e.g. `"brew"`).
     pub fn name(self) -> &'static str {
         match self {
             Self::Brew => "brew",
         }
     }
 
+    /// Packages this manager would install for the given install hint.
+    /// Returns an empty slice when the hint has no entry for this manager.
     pub fn packages_for(self, hint: &InstallHint) -> &[String] {
         match self {
             Self::Brew => &hint.brew.packages,
@@ -29,6 +46,8 @@ impl DetectedPackageManager {
     }
 }
 
+/// Probe `PATH` for a supported package manager. Returns the first match
+/// in priority order, or `None` if nothing supported is on `PATH`.
 pub fn detect() -> Option<DetectedPackageManager> {
     if which_on_path("brew") {
         return Some(DetectedPackageManager::Brew);

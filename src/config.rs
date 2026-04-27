@@ -1,3 +1,20 @@
+//! Loading, parsing, and resolving `~/.config/zenops/config.toml`.
+//!
+//! [`Config`] is the in-memory view of a parsed config. Submodules
+//! ([`shell`], [`pkg`], [`ssh`], [`user`], [`git`], …) own the
+//! `Stored*` deserialize shapes that map onto each TOML section.
+//!
+//! Callers go through [`Config::load`], then drive the loaded config:
+//! [`Config::update_config_files`] populates the materialiser,
+//! [`Config::push_pkg_health`] emits package status events, and
+//! [`Config::check_own_status`] reports git state for the zenops repo
+//! itself.
+//!
+//! `Config::load` also builds a small map of system inputs
+//! (`brew_prefix`, `os`, `user.name`, `user.email`, …) used to
+//! [`zenops_expand`]-expand `${...}` placeholders inside generated
+//! config bodies.
+
 mod git;
 pub(crate) mod pkg;
 mod pkg_config_files;

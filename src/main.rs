@@ -1,3 +1,17 @@
+//! Binary entrypoint for `zenops`.
+//!
+//! Parses [`Cli`] with clap, picks a renderer based on `--output`
+//! (`TerminalRenderer` for human-readable column-aligned text,
+//! `JsonOutput` for newline-delimited JSON) and hands off to
+//! [`zenops::real_main`].
+//!
+//! All structured output goes to stdout; `log::*!` and the top-level fatal
+//! `eprintln!` go to stderr. `--output json` therefore stays parseable even
+//! when `RUST_LOG=debug` is set.
+//!
+//! `Completions` is dispatched here rather than in `real_main` because it
+//! needs the top-level [`Cli`] for `clap::CommandFactory::command`.
+
 use std::io::{self, IsTerminal};
 
 use clap::{CommandFactory, Parser};

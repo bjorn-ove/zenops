@@ -1,3 +1,15 @@
+//! Implementation of `zenops pkg`.
+//!
+//! Walks the configured packages, applies the visibility filters
+//! ([`Options::all`], [`Options::pattern`], plus the always-on OS / shell
+//! filters) and pushes one [`crate::output::PkgEntry::Pkg`] per visible row
+//! through the renderer. Emits a
+//! [`crate::output::PkgEntry::NoPackageManagerDetected`] preamble when no
+//! supported manager is on `PATH` and a
+//! [`crate::output::PkgEntry::AggregateInstall`] footer summarising the
+//! combined install command when at least one missing package contributes a
+//! hint.
+
 use crate::{
     config::{Config, PkgConfig},
     error::Error,
@@ -5,6 +17,8 @@ use crate::{
     pkg_manager,
 };
 
+/// Visibility filters for `zenops pkg`. OS and configured-shell filters
+/// are always on; this struct only carries the user-configurable knobs.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Case-insensitive substrings; a pkg passes if any pattern matches its

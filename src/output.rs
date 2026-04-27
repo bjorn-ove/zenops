@@ -1,3 +1,23 @@
+//! Structured-event channel for command output.
+//!
+//! Every command emits through the [`Output`] trait. The renderer chosen by
+//! `--output` decides formatting: [`TerminalRenderer`] for human-readable,
+//! column-aligned text with optional ANSI color, or [`JsonOutput`] for
+//! newline-delimited JSON. Both write to stdout.
+//!
+//! This is distinct from `log::*!`. `log::*!` is the runtime-event channel
+//! (debug breadcrumbs, gated behind `RUST_LOG`); the [`Output`] trait is the
+//! structured-output channel (the actual command result). They don't bridge.
+//! The stdout/stderr split — `Output` to stdout, `log::*!` and fatal errors
+//! to stderr — keeps `--output json` parseable even with `RUST_LOG=debug`.
+//!
+//! Each command uses a subset of the trait surface: `apply` and `status`
+//! emit [`Status`] and [`AppliedAction`]; `pkg` emits [`PkgEntry`]; `doctor`
+//! emits [`DoctorCheck`]; `init` (without `--apply`) emits [`InitSummary`].
+//! The trait is intentionally polymorphic — multiple impls (and shapes like
+//! `JsonSchema` derives on the event types) are part of the contract; don't
+//! collapse it into a concrete formatter.
+
 use similar::{ChangeTag, TextDiff};
 use smol_str::SmolStr;
 use std::{
@@ -35,34 +55,50 @@ pub enum PkgEntry {
     /// override or the map key); `key` is always the original map key so
     /// scripts can correlate even when `name` differs.
     Pkg {
+        /// Display label (`pkg.name` override, or the map key).
         name: SmolStr,
+        /// Original `[pkg.<key>]` map key, kept distinct from `name` so
+        /// scripts can correlate even when the user overrides the label.
         key: SmolStr,
+        /// Free-text description from `pkg.description`, if any.
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+        /// Computed install state on this host.
         state: PkgEntryState,
         /// The matching detect strategy when `--verbose` is on AND a strategy
         /// matched on the current host.
         #[serde(skip_serializing_if = "Option::is_none")]
         matched_detect: Option<String>,
+        /// Install commands grouped by package manager.
         install_hints: PkgInstallHints,
     },
     /// "To install all missing via brew: brew install foo bar" footer.
     /// Emitted at most once per `pkg` invocation, after all `Pkg` entries.
     AggregateInstall {
+        /// Package manager that produced the aggregate command (e.g. `"brew"`).
         pkg_manager: String,
+        /// The full ready-to-run shell command.
         command: String,
+        /// Packages aggregated into the command, in the order they appear.
         packages: Vec<String>,
     },
     /// One-shot warning emitted when no supported package manager is on PATH.
     /// `supported` lets future managers land without a serde-tag rename.
-    NoPackageManagerDetected { supported: Vec<String> },
+    NoPackageManagerDetected {
+        /// Package managers zenops knows how to detect.
+        supported: Vec<String>,
+    },
 }
 
+/// State a configured pkg is in on the current host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PkgEntryState {
+    /// `enable = "disabled"` in the config; not expected to be present.
     Disabled,
+    /// At least one detect strategy matched.
     Installed,
+    /// Expected (`enable = "on"`) but no detect strategy matched.
     Missing,
 }
 
@@ -70,6 +106,7 @@ pub enum PkgEntryState {
 /// when adding a new package manager so `--all-hints` stays complete.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, JsonSchema)]
 pub struct PkgInstallHints {
+    /// Homebrew packages this pkg installs.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub brew: Vec<String>,
 }
@@ -86,10 +123,13 @@ pub struct PkgInstallHints {
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DoctorCheck {
+    /// A labeled environment check.
     Check {
+        /// Section this row belongs to.
         section: DoctorSection,
         /// "os:", "git:", "remote:", … the existing left-column label.
         label: SmolStr,
+        /// Severity that drives the marker / colour in the human renderer.
         severity: DoctorSeverity,
         /// Right-hand value: "found on PATH", "missing", a path, a remote URL.
         value: String,
@@ -102,29 +142,47 @@ pub enum DoctorCheck {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         detail: Vec<String>,
     },
+    /// Marker for sections that have no rows of their own (currently just
+    /// `Packages`, whose rows are pushed as `Status::Pkg` events from
+    /// `push_pkg_health`). Skipped by `JsonOutput`.
     SectionHeader {
+        /// Which section is starting.
         section: DoctorSection,
     },
 }
 
+/// Logical grouping for `doctor` rows. Section transitions trigger a
+/// section header in the human renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorSection {
+    /// OS / kernel basics.
     System,
+    /// Zenops config repo state.
     Repo,
+    /// `config.toml` location and parse health.
     Config,
+    /// Detected package manager(s).
     PkgManager,
+    /// User identity (name, email, GitHub username).
     User,
+    /// Configured shell and its rc files.
     Shell,
+    /// Per-package install state — populated via `Status::Pkg`.
     Packages,
 }
 
+/// Severity badge attached to a [`DoctorCheck::Check`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorSeverity {
+    /// Healthy.
     Ok,
+    /// Informational; no action needed.
     Info,
+    /// Degraded but functional; user should look at it.
     Warn,
+    /// Broken; the user almost certainly needs to fix this.
     Bad,
 }
 
@@ -133,20 +191,26 @@ pub enum DoctorSeverity {
 /// stream is the contract — no `InitSummary` is emitted in that case.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct InitSummary {
+    /// Where the repo was cloned to (always `~/.config/zenops` today).
     pub clone_path: PathBuf,
+    /// Remote URL recorded in the cloned repo, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
     /// "bash" or "zsh" when the cloned config configures a shell, `None`
     /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+    /// Number of `[pkg.<name>]` entries in the cloned `config.toml`.
     pub pkg_count: usize,
 }
 
+/// Where a managed symlink stands relative to its desired target.
 #[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum SymlinkStatus {
+    /// Symlink exists and points to the right place.
     Ok,
+    /// Symlink exists but points somewhere other than the desired target.
     WrongLink(PathBuf),
     /// The symlink does not exist and must be created
     New,
@@ -160,39 +224,55 @@ pub enum SymlinkStatus {
     DstDirIsMissing,
 }
 
+/// Where a generated file stands relative to its desired contents.
 #[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FileStatus {
+    /// On-disk content matches the generated body byte-for-byte.
     Ok,
+    /// File exists but content differs from the generated body.
     Modified,
+    /// File does not exist yet.
     New,
 }
 
+/// Per-package install state used by `Status::Pkg`.
 #[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum PkgStatus {
+    /// Pkg is installed.
     Ok,
     /// A pkg the user expects to be present (`enable = "on"`) whose detect
     /// strategies don't match on the current host. `install_command` is the
     /// ready-to-run shell line (`"brew install python"`) when a package
     /// manager with a non-empty hint is detected, `None` otherwise.
     Missing {
+        /// Ready-to-run install command, or `None` if no usable install
+        /// hint exists for the detected package manager.
         install_command: Option<String>,
     },
 }
 
+/// A [`ConfigFilePath`] paired with its already-resolved absolute path.
+/// Cached on construction so the renderer can format paths without
+/// re-resolving.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct ResolvedConfigFilePath {
+    /// The symbolic path (root + relative tail).
     pub path: ConfigFilePath,
+    /// The resolved absolute filesystem path.
     pub full: Arc<Path>,
 }
 
 impl ResolvedConfigFilePath {
+    /// Resolve `path` against `dirs` and capture both forms.
     pub fn resolve(path: ConfigFilePath, dirs: &ConfigFileDirs) -> Self {
         let full = Arc::from(path.resolved(dirs));
         Self { path, full }
     }
 
+    /// The parent path in the same root, with `full` adjusted in lock-step.
+    /// Returns `None` if either side is already at the top.
     pub fn parent(&self) -> Option<Self> {
         Some(Self {
             path: self.path.parent()?,
@@ -207,44 +287,72 @@ impl fmt::Display for ResolvedConfigFilePath {
     }
 }
 
+/// One row of the desired-state report. Carries enough context for
+/// either the human renderer (status marker + path + colored description)
+/// or a JSON consumer to reconstruct a useful summary.
 #[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Status {
+    /// A managed file whose content is generated by zenops.
     Generated {
+        /// Body zenops wants on disk.
         want_content: Arc<str>,
+        /// Body currently on disk, if any (used to render diffs).
         cur_content: Option<String>,
+        /// Where the file lives.
         path: ResolvedConfigFilePath,
+        /// Comparison verdict.
         status: FileStatus,
     },
+    /// A managed symlink.
     Symlink {
+        /// Target the symlink should point at (a file in the zenops repo).
         real: ResolvedConfigFilePath,
+        /// Where the symlink lives.
         symlink: ResolvedConfigFilePath,
+        /// Comparison verdict.
         status: SymlinkStatus,
     },
+    /// One file's git state inside the zenops config repo. Emitted when
+    /// the repo is dirty so the user sees what's uncommitted.
     Git {
+        /// The zenops config repo (always the same value; carried so JSON
+        /// consumers can see it on every row).
         repo: ResolvedConfigFilePath,
+        /// Per-file status from `git status`.
         status: GitFileStatus,
     },
     /// Emitted when the zenops config repo has no uncommitted changes. The
     /// dirty case is covered per-file by `Git`.
     GitRepoClean {
+        /// The zenops config repo path.
         repo: ResolvedConfigFilePath,
     },
+    /// Install state for a configured pkg.
     Pkg {
+        /// Pkg key from `[pkg.<key>]`.
         pkg: SmolStr,
+        /// Computed install state on this host.
         status: PkgStatus,
     },
 }
 
+/// One change actually written to disk during `apply`.
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AppliedAction {
+    /// Existing generated file overwritten with new content.
     UpdatedFile(ResolvedConfigFilePath),
+    /// Generated file created (path didn't exist before).
     CreatedFile(ResolvedConfigFilePath),
+    /// Symlink created at `symlink` pointing at `real`.
     CreatedSymlink {
+        /// Target the symlink points at.
         real: ResolvedConfigFilePath,
+        /// Where the symlink was created.
         symlink: ResolvedConfigFilePath,
     },
+    /// Parent directory created so a managed file or symlink could land.
     CreatedDir(ResolvedConfigFilePath),
 }
 
@@ -255,14 +363,33 @@ pub enum AppliedAction {
 /// verbatim.
 #[derive(Debug, thiserror::Error)]
 pub enum OutputError {
+    /// I/O error from the backing `Write`.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Serde JSON error from `JsonOutput`.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
 
+/// The structured-output channel a command emits through. See the
+/// [module-level docs](self) for how this relates to `log::*!` and how the
+/// renderer is chosen.
+///
+/// Methods other than [`push_status`](Output::push_status) and
+/// [`push_applied_action`](Output::push_applied_action) default to no-op so
+/// test impls and renderers that don't care about a given surface can stay
+/// terse. [`finalize`](Output::finalize) is called once at the end of a
+/// command — `JsonOutput` streams as it goes and treats it as a no-op;
+/// `TerminalRenderer` accumulates rows so it can column-align them and
+/// flushes here.
 pub trait Output {
+    /// Emit one row of the per-file desired-state report (used by `apply`'s
+    /// pre-change pass and by `status`). Variants of [`Status`] cover
+    /// generated files, symlinks, the zenops config repo's git status, and
+    /// per-package install state.
     fn push_status(&mut self, status: Status) -> Result<(), OutputError>;
+    /// Emit one row per change `apply` actually wrote to disk —
+    /// created/updated file, created symlink, created directory.
     fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError>;
     /// One row of `zenops pkg`. Default no-op so test impls and renderers
     /// that don't care about pkg listing (none today) don't have to spell
@@ -295,6 +422,9 @@ pub struct JsonOutput<'w> {
 }
 
 impl<'w> JsonOutput<'w> {
+    /// Wrap a writer (typically a locked stdout). Each event is flushed as
+    /// a single line on its `push_*` call; the writer is not buffered
+    /// internally.
     pub fn new(out: &'w mut dyn Write) -> Self {
         Self { out }
     }
@@ -464,6 +594,11 @@ struct PkgAggregate {
 }
 
 impl<'w> TerminalRenderer<'w> {
+    /// Wrap a writer (typically a locked stdout). `color` toggles ANSI
+    /// escapes; `show_diffs` controls whether `Status::Generated` entries
+    /// trail their unified diff after the summary block; `show_clean`
+    /// toggles whether already-matching entries (`FileStatus::Ok`,
+    /// `PkgStatus::Ok`, `GitRepoClean`) print a row or are dropped.
     pub fn new(out: &'w mut dyn Write, color: bool, show_diffs: bool, show_clean: bool) -> Self {
         Self {
             out,

@@ -1,3 +1,21 @@
+//! The materialiser: turns the parsed `Config` into desired-state events
+//! and applied-change events.
+//!
+//! [`ConfigFiles`] accumulates two kinds of intent — generated file content
+//! and symlinks — keyed by [`ConfigFilePath`]. Each `ConfigFilePath` flavour
+//! ([`ConfigFilePath::Home`], [`ConfigFilePath::DotConfig`],
+//! [`ConfigFilePath::Zenops`]) is resolved against the matching root in
+//! [`ConfigFileDirs`] (`~`, `~/.config`, `~/.config/zenops`).
+//!
+//! [`ConfigFiles::check_status`] (used by `zenops status`) compares the
+//! desired state to disk and pushes [`crate::output::Status`] events.
+//! [`ConfigFiles::apply_changes`] (used by `zenops apply`) walks the same
+//! desired state, prompts via a [`crate::prompt::Prompter`], and pushes
+//! [`crate::output::AppliedAction`] events for changes it actually writes.
+//!
+//! All managed paths are [`zenops_safe_relative_path::SafeRelativePath`] so
+//! `..`-traversal can't escape the configured root.
+
 use std::{
     borrow::Cow,
     fmt,
@@ -17,23 +35,35 @@ use crate::{
 use similar::{DiffOp, TextDiff};
 use zenops_safe_relative_path::SafeRelativePath;
 
+/// A path relative to one of the three managed roots. The variant carries
+/// the relative tail; resolving against a [`ConfigFileDirs`] yields a real
+/// [`PathBuf`]. The relative tail is a [`SafeRelativePath`], so `..` can't
+/// escape the root.
 #[derive(Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "path", rename_all = "snake_case")]
 pub enum ConfigFilePath {
+    /// Rooted at `$HOME`.
     Home(Arc<SafeRelativePath>),
+    /// Rooted at `$HOME/.config`.
     DotConfig(Arc<SafeRelativePath>),
+    /// Rooted at `$HOME/.config/zenops` — the cloned config repo itself.
     Zenops(Arc<SafeRelativePath>),
 }
 
 impl ConfigFilePath {
+    /// Construct a [`Self::Home`] path.
     pub fn in_home(path: impl AsRef<SafeRelativePath>) -> Self {
         Self::Home(Arc::from(path.as_ref()))
     }
 
+    /// Construct a [`Self::DotConfig`] path. Underscored because no caller
+    /// needs it today; kept for symmetry with the other constructors.
     pub fn _in_dot_config(path: impl AsRef<SafeRelativePath>) -> Self {
         Self::DotConfig(Arc::from(path.as_ref()))
     }
 
+    /// Resolve to an absolute filesystem path against the matching root in
+    /// `dirs`.
     pub fn resolved(&self, dirs: &ConfigFileDirs) -> PathBuf {
         match self {
             Self::Home(path) => path.to_full_path(&dirs.home),
@@ -42,6 +72,9 @@ impl ConfigFilePath {
         }
     }
 
+    /// Render with the symbolic root (`~`, `~/.config`, `~/.config/zenops`)
+    /// for user-facing output. Use [`Self::resolved`] when you need a real
+    /// path.
     pub fn human_path(&self) -> Cow<'_, str> {
         let (base, path) = match self {
             Self::Home(path) => ("~", path),
@@ -55,6 +88,8 @@ impl ConfigFilePath {
         }
     }
 
+    /// The parent directory in the same root, or `None` if this path is
+    /// already the root.
     pub fn parent(&self) -> Option<Self> {
         match self {
             Self::Home(path) => Some(Self::Home(Arc::from(path.safe_parent()?))),
@@ -75,8 +110,13 @@ struct FileEntry {
     src: ResolvedFileSource,
 }
 
+/// How a managed file gets its contents. Either zenops generates the body
+/// itself (e.g. shell rc, gitconfig) or it points at a file inside the
+/// zenops repo and creates a symlink.
 pub enum ConfigFileSource {
+    /// Body is rendered by zenops; the materialiser writes it verbatim.
     Generated(String),
+    /// File is a symlink pointing at this in-repo path.
     SymlinkFrom(ConfigFilePath),
 }
 
@@ -100,6 +140,9 @@ enum ResolvedFileSource {
     },
 }
 
+/// The three resolved root paths every [`ConfigFilePath`] is anchored to.
+/// Built once at startup from the user's home directory and threaded
+/// through every command.
 pub struct ConfigFileDirs {
     home: PathBuf,
     config: PathBuf,
@@ -107,6 +150,9 @@ pub struct ConfigFileDirs {
 }
 
 impl ConfigFileDirs {
+    /// Build the three roots from an absolute home directory. Panics if
+    /// `home` is relative — every caller in production passes
+    /// `home::home_dir()`, which is absolute on every supported platform.
     pub fn load(home: PathBuf) -> Self {
         assert!(home.is_absolute(), "{home:?}");
         let config = home.join(".config");
@@ -118,21 +164,29 @@ impl ConfigFileDirs {
         }
     }
 
+    /// Absolute path of `$HOME`.
     pub fn home(&self) -> &Path {
         &self.home
     }
 
+    /// Absolute path of the cloned zenops config repo
+    /// (`$HOME/.config/zenops`).
     pub fn zenops(&self) -> &Path {
         &self.zenops
     }
 }
 
+/// In-memory accumulator of every managed file: the desired body or
+/// symlink target, indexed by its resolved absolute path so duplicates
+/// from different declaration paths collapse. Insertion order is preserved
+/// and drives the order of emitted [`Status`] / [`AppliedAction`] events.
 pub struct ConfigFiles<'dirs> {
     dirs: &'dirs ConfigFileDirs,
     files: IndexMap<Arc<Path>, FileEntry>,
 }
 
 impl<'dirs> ConfigFiles<'dirs> {
+    /// Empty accumulator bound to a set of resolved roots.
     pub fn new(dirs: &'dirs ConfigFileDirs) -> Self {
         Self {
             dirs,
@@ -140,6 +194,8 @@ impl<'dirs> ConfigFiles<'dirs> {
         }
     }
 
+    /// Register a file. Subsequent inserts at the same resolved absolute
+    /// path overwrite the previous entry (last-write-wins).
     pub fn add(&mut self, path: ConfigFilePath, src: ConfigFileSource) {
         self.files.insert(
             Arc::from(path.resolved(self.dirs)),
@@ -224,6 +280,9 @@ impl<'dirs> ConfigFiles<'dirs> {
         }
     }
 
+    /// Read-only pass: emit one [`Status`] per registered file describing
+    /// how the live filesystem compares to the desired state. Used by
+    /// `zenops status` and as the pre-change pass of `zenops apply`.
     pub fn check_status(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
             output.push_status(self.entry_status(path.clone(), entry))?;
@@ -231,6 +290,10 @@ impl<'dirs> ConfigFiles<'dirs> {
         Ok(())
     }
 
+    /// Apply pass: walk every registered file in insertion order, prompt
+    /// the [`Prompter`] for each pending change, and emit one
+    /// [`AppliedAction`] per change actually written. A `false` from the
+    /// prompter skips that change without aborting the rest of the run.
     pub fn apply_changes(
         &self,
         output: &mut dyn Output,

@@ -1,3 +1,14 @@
+//! Thin git wrapper used for the zenops config repo.
+//!
+//! [`Git`] is bound to a working-tree path and a shared [`xshell::Shell`].
+//! It covers the small surface zenops actually needs: `is_git_repo`,
+//! `has_uncommitted_changes`, parsing `git status --porcelain=v2` output
+//! into [`GitFileStatus`], commit-and-push, and a one-shot
+//! [`Git::clone_to`] used by `init` before any `Git` instance exists.
+//!
+//! `git`'s own stdio is streamed through so SSH-passphrase and
+//! HTTPS-credential-helper prompts still reach the user's TTY.
+
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -8,15 +19,27 @@ use zenops_safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
 
 use crate::error::Error;
 
+/// Summary of a single file's state in `git status --porcelain=v2`. The
+/// effective state is reduced from the worktree side (Y) of the XY pair,
+/// falling back to the index side (X) when Y is `.`. Anything we don't
+/// recognise — type-change, copy, unmerged, etc. — surfaces as
+/// [`Self::Other`] with the raw code so the user still sees something.
 #[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum GitFileStatus {
+    /// Tracked file modified (also covers type-change, rename, copy).
     Modified(SafeRelativePathBuf),
+    /// New file staged for commit.
     Added(SafeRelativePathBuf),
+    /// Tracked file deleted.
     Deleted(SafeRelativePathBuf),
+    /// Untracked file present in the worktree.
     Untracked(SafeRelativePathBuf),
+    /// Anything else; raw porcelain code retained for diagnostics.
     Other {
+        /// Raw XY status code from `git status --porcelain=v2`.
         code: SmolStr,
+        /// File path as reported by git.
         path: SafeRelativePathBuf,
     },
 }
@@ -40,12 +63,17 @@ fn status_from_xy(xy: &str, path: SafeRelativePathBuf) -> GitFileStatus {
     }
 }
 
+/// Handle to a git working tree. Borrows the path and the shared
+/// [`xshell::Shell`] so callers can construct one cheaply per use without
+/// duplicating environment setup.
 pub struct Git<'path, 'shell> {
     path: &'path Path,
     sh: &'shell Shell,
 }
 
 impl<'path, 'shell> Git<'path, 'shell> {
+    /// Bind to an existing working tree. The path doesn't have to be a
+    /// repo — use [`Self::is_git_repo`] to check.
     pub fn new(path: &'path Path, sh: &'shell Shell) -> Self {
         Self { path, sh }
     }
@@ -67,6 +95,8 @@ impl<'path, 'shell> Git<'path, 'shell> {
         Ok(())
     }
 
+    /// `true` if the bound path is inside a git work tree. Returns `false`
+    /// — not an error — for non-repo paths so callers can branch cleanly.
     pub fn is_git_repo(&self) -> Result<bool, Error> {
         let Self { path, sh } = self;
         match cmd!(sh, "git -C {path} rev-parse --is-inside-work-tree")
@@ -82,6 +112,10 @@ impl<'path, 'shell> Git<'path, 'shell> {
         }
     }
 
+    /// Per-file status from `git status --porcelain=v2`. Renames surface
+    /// at the new path; ignored files (`!`) are skipped; unmerged entries
+    /// fold into [`GitFileStatus::Other`] without distinguishing the
+    /// conflict state.
     pub fn status(&self) -> Result<Vec<GitFileStatus>, Error> {
         let Self { path, sh } = self;
         let mut ret = Vec::new();
@@ -200,32 +234,53 @@ impl<'path, 'shell> Git<'path, 'shell> {
     }
 }
 
+/// Subset of git operations exposed via `zenops repo <cmd>`. Each variant
+/// runs the corresponding `git` invocation inside the zenops config repo
+/// and inherits stdio so output matches what the user would see from a
+/// regular git command.
 #[derive(clap::Subcommand, Debug)]
 pub enum GitCmd {
+    /// `git status [-- <files>...]` in the zenops repo.
     Status {
+        /// Optional path filter passed after `--`.
         files: Vec<SafeRelativePathBuf>,
     },
+    /// `git diff [-- <files>...]` in the zenops repo.
     Diff {
+        /// Optional path filter passed after `--`.
         files: Vec<SafeRelativePathBuf>,
     },
+    /// `git add [-- <files>...]` in the zenops repo.
     Add {
+        /// Files to stage.
         files: Vec<SafeRelativePathBuf>,
     },
+    /// `git pull` in the zenops repo. `--rebase` accepts the same values
+    /// as upstream git (`true`, `false`, `merges`, `interactive`); a bare
+    /// `--rebase` (no value) maps to `--rebase` with no argument.
     Pull {
+        /// Optional `--rebase[=value]`. `None` runs a plain pull.
         #[arg(short, long, num_args = 0..=1, require_equals = true, default_missing_value = "", value_parser=["", "false", "true", "merges", "interactive"])]
         rebase: Option<String>,
     },
+    /// `git commit` in the zenops repo.
     Commit {
+        /// Pass `-a` to stage all tracked, modified files first.
         #[clap(long, short)]
         all: bool,
 
+        /// Commit message; if omitted git opens the editor as usual.
         #[clap(long, short)]
         message: Option<String>,
     },
+    /// `git push` in the zenops repo.
     Push {},
 }
 
 impl GitCmd {
+    /// Run the chosen git operation against `repo_dir`, inheriting stdio
+    /// so output and prompts (e.g. credential helper) reach the user
+    /// directly.
     pub fn passthru_dispatch_in(
         &self,
         repo_dir: impl AsRef<Path>,

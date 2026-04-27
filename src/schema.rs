@@ -13,8 +13,13 @@ use serde_json::json;
 
 use crate::{config::StoredConfig, error::Error, output::Event};
 
+/// Crate version embedded in every emitted schema bundle. Read at compile
+/// time so `cargo install`'d binaries report the version they were built
+/// from.
 pub const ZENOPS_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Serialise the schema bundle (output events + config input) as
+/// pretty-printed JSON to `stdout`. One trailing newline.
 pub fn run(stdout: &mut dyn Write) -> Result<(), Error> {
     let bundle = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

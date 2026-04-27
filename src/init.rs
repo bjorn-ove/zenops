@@ -1,3 +1,15 @@
+//! Implementation of `zenops init <url>`.
+//!
+//! Runs *before* a `config.toml` exists, so it can't go through the normal
+//! [`Config::load`] path in [`crate::real_main`] — it pre-flights the target
+//! directory, calls [`Git::clone_to`], then either loads the freshly-cloned
+//! config and emits an [`InitSummary`], or hands off to `Apply` when
+//! `--apply` is set.
+//!
+//! Pre-flight rules: `~/.config/zenops` may exist and be empty, or not exist
+//! at all. A populated directory aborts with [`Error::InitDirNotEmpty`] so
+//! the user inspects whatever is already there.
+
 use std::fs;
 
 use xshell::{Shell, cmd};
