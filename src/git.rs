@@ -180,9 +180,10 @@ impl<'path, 'shell> Git<'path, 'shell> {
         Ok(())
     }
 
-    /// Render `git status -s` + `git diff HEAD` to stderr so the user can
-    /// review what they're about to (optionally) commit. Untracked files
-    /// appear in the status summary but their contents are not shown.
+    /// Render `git status -s` + `git diff HEAD` to the inherited stdout so
+    /// the user can review what they're about to (optionally) commit.
+    /// Untracked files appear in the status summary but their contents are
+    /// not shown.
     pub fn print_pre_apply_summary(&self, color: bool) -> Result<(), Error> {
         let Self { path, sh } = self;
         // `git status` ignores `--color`; drive it via `-c color.status=…`.

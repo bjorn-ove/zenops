@@ -36,8 +36,10 @@ pub enum ColorChoice {
 
 impl ColorChoice {
     /// Resolve to a concrete on/off decision. Pass `stream_is_terminal`
-    /// for the stream colors will actually be emitted to (stderr for
-    /// the terminal renderer and the prompter, stdout for `pkg_list`).
+    /// for the stream colors will actually be emitted to. Everything
+    /// `Output`-driven (the renderer and the prompter) writes to stdout;
+    /// only `log::*!` and the top-level fatal-error `eprintln!` go to
+    /// stderr, so callers almost always pass `stdout().is_terminal()`.
     pub fn enabled(self, stream_is_terminal: bool) -> bool {
         match self {
             Self::Always => true,
@@ -207,8 +209,8 @@ pub fn real_main(
             dry_run,
             allow_dirty,
         } => {
-            let stderr_color = args.color.enabled(std::io::stderr().is_terminal());
-            let mut prompter = build_prompter(*yes, *dry_run, stderr_color)?;
+            let stdout_color = args.color.enabled(std::io::stdout().is_terminal());
+            let mut prompter = build_prompter(*yes, *dry_run, stdout_color)?;
             config.push_pkg_health(output)?;
 
             let git = Git::new(dirs.zenops(), &sh);
@@ -224,7 +226,7 @@ pub fn real_main(
                     ));
                 }
                 if !*allow_dirty {
-                    git.print_pre_apply_summary(stderr_color)?;
+                    git.print_pre_apply_summary(stdout_color)?;
                     match prompter.confirm_pre_apply()? {
                         PreApplyDecision::CommitAndPush { message } => {
                             git.commit_all_and_push(&message)?;

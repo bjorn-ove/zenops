@@ -85,8 +85,8 @@ impl TerminalPrompter {
 
 impl Prompter for TerminalPrompter {
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error> {
-        let stderr = io::stderr();
-        let mut out = stderr.lock();
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
         render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
         loop {
             write!(out, "[Y/n] ").map_err(Error::PromptRead)?;
@@ -112,8 +112,8 @@ impl Prompter for TerminalPrompter {
     }
 
     fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
-        let stderr = io::stderr();
-        let mut out = stderr.lock();
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
         loop {
             write!(out, "[c]ommit & push / [Y]continue / [n]abort: ").map_err(Error::PromptRead)?;
             out.flush().map_err(Error::PromptRead)?;
@@ -178,8 +178,8 @@ impl DryRunPrompter {
 
 impl Prompter for DryRunPrompter {
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error> {
-        let stderr = io::stderr();
-        let mut out = stderr.lock();
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
         render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
         writeln!(out, "[Y/n] (dry-run: skipping)").map_err(Error::PromptRead)?;
         Ok(false)

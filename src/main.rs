@@ -20,9 +20,9 @@ pub struct Cli {
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum OutputMode {
-    /// Human-readable text to stderr, with optional ANSI color.
+    /// Human-readable text to stdout, with optional ANSI color.
     Human,
-    /// Newline-delimited JSON to stderr, one event per line.
+    /// Newline-delimited JSON to stdout, one event per line.
     Json,
 }
 
@@ -44,13 +44,13 @@ fn main() {
     // in `git.rs`). Zero-config beyond that.
     env_logger::init();
 
-    let stderr = io::stderr();
-    let stderr_is_terminal = stderr.is_terminal();
-    let color = args.color.enabled(stderr_is_terminal);
+    let stdout = io::stdout();
+    let stdout_is_terminal = stdout.is_terminal();
+    let color = args.color.enabled(stdout_is_terminal);
     let show_diffs = matches!(command, zenops::Cmd::Status { diff: true, .. });
     let show_clean = matches!(command, zenops::Cmd::Status { all: true, .. });
 
-    let mut lock = stderr.lock();
+    let mut lock = stdout.lock();
     let mut renderer: Box<dyn zenops::output::Output> = match output {
         OutputMode::Human => Box::new(zenops::output::TerminalRenderer::new(
             &mut lock, color, show_diffs, show_clean,

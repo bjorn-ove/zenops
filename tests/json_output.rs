@@ -1,5 +1,5 @@
 //! End-to-end `--output json` tests: spawn the real binary and verify the
-//! NDJSON event stream on stderr per command. The `event` discriminator is
+//! NDJSON event stream on stdout per command. The `event` discriminator is
 //! the public contract scripts depend on, so each test focuses on
 //! "every line parses as JSON" + "the expected `event` types appear in the
 //! expected order" — fine-grained shape testing lives in `output::tests`.
@@ -16,11 +16,10 @@ type = "bash"
 "#;
 
 /// Run `zenops -o json <args>` with `HOME=<temp home>` and return only the
-/// stderr lines that parse as JSON. Non-JSON lines (xshell command echoes,
-/// `git clone` progress messages, the `print_pre_apply_summary` raw `git
-/// status -s` / `git diff HEAD` dumps, etc.) are intentionally tolerated:
-/// `-o json` promises a structured stream of *zenops* events, not that no
-/// child process ever writes to stderr.
+/// stdout lines that parse as JSON. Non-JSON lines (the inherited git output
+/// from `print_pre_apply_summary`, etc.) are intentionally tolerated: `-o
+/// json` promises a structured stream of *zenops* events, not that no child
+/// process ever writes to stdout.
 fn run_json(home: &Path, args: &[&str]) -> Vec<serde_json::Value> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_zenops"));
     cmd.env("HOME", home).env_remove("NO_COLOR");
@@ -35,15 +34,15 @@ fn run_json(home: &Path, args: &[&str]) -> Vec<serde_json::Value> {
         output.status,
         String::from_utf8_lossy(&output.stderr),
     );
-    String::from_utf8(output.stderr)
-        .expect("stderr is utf-8")
+    String::from_utf8(output.stdout)
+        .expect("stdout is utf-8")
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
 }
 
 #[test]
-fn doctor_emits_doctor_check_ndjson_to_stderr() {
+fn doctor_emits_doctor_check_ndjson_to_stdout() {
     // Doctor runs even without a config repo, so this needs no setup
     // beyond pointing HOME at an empty dir.
     let env = test_env::TestEnv::load();
@@ -67,7 +66,7 @@ fn doctor_emits_doctor_check_ndjson_to_stderr() {
 }
 
 #[test]
-fn pkg_emits_pkg_entry_ndjson_to_stderr() {
+fn pkg_emits_pkg_entry_ndjson_to_stdout() {
     let env = test_env::TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     let home = env.resolve_path(test_env::paths::HOME_DIR);
@@ -88,7 +87,7 @@ fn pkg_emits_pkg_entry_ndjson_to_stderr() {
 }
 
 #[test]
-fn status_emits_status_ndjson_to_stderr() {
+fn status_emits_status_ndjson_to_stdout() {
     let env = test_env::TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     let home = env.resolve_path(test_env::paths::HOME_DIR);
@@ -104,7 +103,7 @@ fn status_emits_status_ndjson_to_stderr() {
 }
 
 #[test]
-fn init_emits_init_summary_ndjson_to_stderr() {
+fn init_emits_init_summary_ndjson_to_stdout() {
     let env = test_env::TestEnv::load();
     let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
     // `zenops init` requires the destination dir to be missing or empty.
@@ -129,7 +128,7 @@ fn init_emits_init_summary_ndjson_to_stderr() {
 }
 
 #[test]
-fn apply_emits_applied_action_ndjson_to_stderr() {
+fn apply_emits_applied_action_ndjson_to_stdout() {
     let env = test_env::TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     let home = env.resolve_path(test_env::paths::HOME_DIR);
