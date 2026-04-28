@@ -92,6 +92,10 @@ pub enum Error {
     /// I/O error reading a yes/no answer from stdin.
     #[error("Failed to read confirmation from stdin: {0}")]
     PromptRead(#[source] std::io::Error),
+    /// User pressed Ctrl-C at an interactive prompt. Distinct from a
+    /// closed stdin or Ctrl-D so callers can abort the whole run.
+    #[error("Interrupted")]
+    PromptInterrupted,
     /// An [`Output`](crate::output::Output) implementation failed to write
     /// (rendering or JSON serialization error).
     #[error(transparent)]
@@ -233,6 +237,7 @@ impl PartialEq for Error {
                 l0 == r0
             }
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
+            (Self::PromptInterrupted, Self::PromptInterrupted) => true,
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::InitDirNotEmpty(l0), Self::InitDirNotEmpty(r0)) => l0 == r0,
             (Self::InitDirExists(l0), Self::InitDirExists(r0)) => l0 == r0,

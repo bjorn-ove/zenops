@@ -19,7 +19,7 @@
 
 use std::{
     fs,
-    io::{self, BufRead, IsTerminal, Write},
+    io::{self, IsTerminal},
 };
 
 use xshell::{Shell, cmd};
@@ -30,6 +30,7 @@ use crate::{
     config_files::ConfigFileDirs,
     error::Error,
     git::Git,
+    line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
     output::{BootstrapSummary, InitSummary, Output},
     real_main,
 };
@@ -100,26 +101,11 @@ fn run_bootstrap(
     let detected_name = detect_git_config(sh, "user.name");
     let detected_email = detect_git_config(sh, "user.email");
 
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let stdout = io::stdout();
-    let mut prompt_out = stdout.lock();
+    let mut prompter = RustylinePrompter::new().map_err(Error::PromptRead)?;
 
-    let shell = prompt_shell(&mut input, &mut prompt_out, detected_shell)?;
-    let name = prompt_with_default(
-        &mut input,
-        &mut prompt_out,
-        "Name",
-        detected_name.as_deref(),
-    )?;
-    let email = prompt_with_default(
-        &mut input,
-        &mut prompt_out,
-        "Email",
-        detected_email.as_deref(),
-    )?;
-
-    drop(prompt_out);
+    let shell = prompt_shell(&mut prompter, detected_shell)?;
+    let name = prompt_with_default(&mut prompter, "Name", detected_name.as_deref())?;
+    let email = prompt_with_default(&mut prompter, "Email", detected_email.as_deref())?;
 
     let zenops_dir = dirs.zenops();
     fs::create_dir_all(zenops_dir).map_err(|e| Error::InitIo(zenops_dir.to_path_buf(), e))?;
@@ -270,55 +256,52 @@ fn detect_git_config(sh: &Shell, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn read_trimmed_line(input: &mut dyn BufRead) -> Result<Option<String>, Error> {
-    let mut line = String::new();
-    let n = input.read_line(&mut line).map_err(Error::PromptRead)?;
-    if n == 0 {
+fn read_trimmed_line(
+    prompter: &mut dyn LinePrompter,
+    prompt: &str,
+) -> Result<Option<String>, Error> {
+    match prompter.read_line(prompt).map_err(Error::PromptRead)? {
         // EOF — treat as blank input so the caller falls back to its
         // default; the TTY check at entry should normally prevent us
         // from getting here at all.
-        return Ok(None);
-    }
-    let trimmed = line.trim().to_string();
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed))
+        LineOutcome::Eof => Ok(None),
+        LineOutcome::Interrupted => Err(Error::PromptInterrupted),
+        LineOutcome::Line(line) => {
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed))
+            }
+        }
     }
 }
 
 fn prompt_with_default(
-    input: &mut dyn BufRead,
-    out: &mut dyn Write,
+    prompter: &mut dyn LinePrompter,
     label: &str,
     default: Option<&str>,
 ) -> Result<Option<String>, Error> {
-    match default {
-        Some(d) => write!(out, "{label} [{d}]: ").map_err(Error::PromptRead)?,
-        None => write!(out, "{label}: ").map_err(Error::PromptRead)?,
-    }
-    out.flush().map_err(Error::PromptRead)?;
-
-    match read_trimmed_line(input)? {
+    let prompt = match default {
+        Some(d) => format!("{label} [{d}]: "),
+        None => format!("{label}: "),
+    };
+    match read_trimmed_line(prompter, &prompt)? {
         Some(answer) => Ok(Some(answer)),
         None => Ok(default.map(str::to_string)),
     }
 }
 
 fn prompt_shell(
-    input: &mut dyn BufRead,
-    out: &mut dyn Write,
+    prompter: &mut dyn LinePrompter,
     default: Option<BootstrapShell>,
 ) -> Result<Option<BootstrapShell>, Error> {
     loop {
-        match default {
-            Some(d) => write!(out, "Shell (bash/zsh/none) [{d}]: "),
-            None => write!(out, "Shell (bash/zsh/none) [none]: "),
-        }
-        .map_err(Error::PromptRead)?;
-        out.flush().map_err(Error::PromptRead)?;
-
-        let answer = read_trimmed_line(input)?;
+        let prompt = match default {
+            Some(d) => format!("Shell (bash/zsh/none) [{d}]: "),
+            None => "Shell (bash/zsh/none) [none]: ".to_string(),
+        };
+        let answer = read_trimmed_line(prompter, &prompt)?;
         let normalized = answer.as_deref().map(str::to_ascii_lowercase);
 
         match normalized.as_deref() {
@@ -327,7 +310,9 @@ fn prompt_shell(
             Some("zsh") => return Ok(Some(BootstrapShell::Zsh)),
             Some("none") => return Ok(None),
             Some(_) => {
-                writeln!(out, "Please answer bash, zsh, or none.").map_err(Error::PromptRead)?;
+                prompter
+                    .writeln("Please answer bash, zsh, or none.")
+                    .map_err(Error::PromptRead)?;
             }
         }
     }
@@ -451,63 +436,65 @@ mod tests {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
     }
 
+    use crate::line_prompter::BufReadPrompter;
+
     #[test]
     fn prompt_with_default_blank_line_uses_default() {
         let input = b"\n";
-        let mut output = Vec::new();
-        let answer =
-            prompt_with_default(&mut &input[..], &mut output, "Name", Some("Alice")).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_with_default(&mut prompter, "Name", Some("Alice")).unwrap();
         assert_eq!(answer, Some("Alice".to_string()));
     }
 
     #[test]
     fn prompt_with_default_explicit_input_overrides() {
         let input = b"Bob\n";
-        let mut output = Vec::new();
-        let answer =
-            prompt_with_default(&mut &input[..], &mut output, "Name", Some("Alice")).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_with_default(&mut prompter, "Name", Some("Alice")).unwrap();
         assert_eq!(answer, Some("Bob".to_string()));
     }
 
     #[test]
     fn prompt_with_default_no_default_blank_returns_none() {
         let input = b"\n";
-        let mut output = Vec::new();
-        let answer = prompt_with_default(&mut &input[..], &mut output, "Email", None).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_with_default(&mut prompter, "Email", None).unwrap();
         assert_eq!(answer, None);
     }
 
     #[test]
     fn prompt_shell_accepts_named_choice() {
         let input = b"bash\n";
-        let mut output = Vec::new();
-        let answer = prompt_shell(&mut &input[..], &mut output, None).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_shell(&mut prompter, None).unwrap();
         assert_eq!(answer, Some(BootstrapShell::Bash));
     }
 
     #[test]
     fn prompt_shell_blank_uses_default() {
         let input = b"\n";
-        let mut output = Vec::new();
-        let answer = prompt_shell(&mut &input[..], &mut output, Some(BootstrapShell::Zsh)).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_shell(&mut prompter, Some(BootstrapShell::Zsh)).unwrap();
         assert_eq!(answer, Some(BootstrapShell::Zsh));
     }
 
     #[test]
     fn prompt_shell_none_keyword_clears_default() {
         let input = b"none\n";
-        let mut output = Vec::new();
-        let answer =
-            prompt_shell(&mut &input[..], &mut output, Some(BootstrapShell::Bash)).unwrap();
+        let mut prompter = BufReadPrompter::new(&input[..], Vec::<u8>::new());
+        let answer = prompt_shell(&mut prompter, Some(BootstrapShell::Bash)).unwrap();
         assert_eq!(answer, None);
     }
 
     #[test]
     fn prompt_shell_rejects_invalid_then_accepts() {
         let input = b"fish\nzsh\n";
-        let mut output = Vec::new();
-        let answer = prompt_shell(&mut &input[..], &mut output, None).unwrap();
-        assert_eq!(answer, Some(BootstrapShell::Zsh));
+        let mut output = Vec::<u8>::new();
+        {
+            let mut prompter = BufReadPrompter::new(&input[..], &mut output);
+            let answer = prompt_shell(&mut prompter, None).unwrap();
+            assert_eq!(answer, Some(BootstrapShell::Zsh));
+        }
         let written = String::from_utf8(output).unwrap();
         assert!(written.contains("Please answer bash, zsh, or none."));
     }

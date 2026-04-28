@@ -22,6 +22,7 @@ mod doctor;
 pub mod error;
 pub mod git;
 mod init;
+pub mod line_prompter;
 pub mod output;
 pub mod pkg_list;
 pub mod pkg_manager;
@@ -210,7 +211,7 @@ fn build_prompter(yes: bool, dry_run: bool, color: bool) -> Result<Box<dyn Promp
     } else if yes {
         Ok(Box::new(YesPrompter))
     } else if std::io::stdin().is_terminal() {
-        Ok(Box::new(TerminalPrompter::new(color)))
+        Ok(Box::new(TerminalPrompter::new(color)?))
     } else {
         Err(Error::ApplyNeedsYesOrTty)
     }

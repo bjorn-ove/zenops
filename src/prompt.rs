@@ -6,18 +6,19 @@
 //! Three impls cover the modes:
 //!
 //! - [`TerminalPrompter`] — interactive, prints a colorized diff and reads
-//!   from stdin.
+//!   answers through [`crate::line_prompter::RustylinePrompter`].
 //! - [`YesPrompter`] — accepts everything, used for `--yes`.
 //! - [`DryRunPrompter`] — shows the same diff the terminal prompter would,
 //!   but always answers "no", used for `--dry-run`.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
 
 use crate::{
     ansi::{color_code, color_reset},
     error::Error,
+    line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
     output::ResolvedConfigFilePath,
 };
 
@@ -132,95 +133,95 @@ impl Prompter for YesPrompter {
 }
 
 /// Interactive prompter: renders each pending change to stdout and reads
-/// y/n (or commit/continue/abort) from stdin.
+/// y/n (or commit/continue/abort) through rustyline so the user gets
+/// Home/End, arrow keys, and proper UTF-8 line editing.
 pub struct TerminalPrompter {
     color: bool,
+    line: RustylinePrompter,
 }
 
 impl TerminalPrompter {
-    /// Build a prompter that uses ANSI color when `color` is true.
-    pub fn new(color: bool) -> Self {
-        Self { color }
+    /// Build a prompter that uses ANSI color when `color` is true. Fails
+    /// if rustyline can't open the controlling terminal.
+    pub fn new(color: bool) -> Result<Self, Error> {
+        let line = RustylinePrompter::new().map_err(Error::PromptRead)?;
+        Ok(Self { color, line })
     }
 }
 
 impl Prompter for TerminalPrompter {
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error> {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
+        {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
+        }
         loop {
-            write!(out, "[Y/n] ").map_err(Error::PromptRead)?;
-            out.flush().map_err(Error::PromptRead)?;
-
-            let mut line = String::new();
-            let n = io::stdin()
-                .lock()
-                .read_line(&mut line)
-                .map_err(Error::PromptRead)?;
-            if n == 0 {
-                writeln!(out).map_err(Error::PromptRead)?;
-                return Ok(false);
-            }
+            let line = match self.line.read_line("[Y/n] ").map_err(Error::PromptRead)? {
+                LineOutcome::Line(s) => s,
+                LineOutcome::Eof => return Ok(false),
+                LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+            };
             match line.trim().to_ascii_lowercase().as_str() {
                 "" | "y" | "yes" => return Ok(true),
                 "n" | "no" => return Ok(false),
                 _ => {
-                    writeln!(out, "Please answer y or n.").map_err(Error::PromptRead)?;
+                    self.line
+                        .writeln("Please answer y or n.")
+                        .map_err(Error::PromptRead)?;
                 }
             }
         }
     }
 
     fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
         loop {
-            write!(out, "[c]ommit & push / [Y]continue / [n]abort: ").map_err(Error::PromptRead)?;
-            out.flush().map_err(Error::PromptRead)?;
-
-            let mut line = String::new();
-            let n = io::stdin()
-                .lock()
-                .read_line(&mut line)
-                .map_err(Error::PromptRead)?;
-            if n == 0 {
-                writeln!(out).map_err(Error::PromptRead)?;
-                return Ok(PreApplyDecision::Abort);
-            }
+            let line = match self
+                .line
+                .read_line("[c]ommit & push / [Y]continue / [n]abort: ")
+                .map_err(Error::PromptRead)?
+            {
+                LineOutcome::Line(s) => s,
+                LineOutcome::Eof => return Ok(PreApplyDecision::Abort),
+                LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+            };
             match parse_pre_apply_input(&line) {
                 Some(PreApplyAnswer::Commit) => {
-                    let message = read_commit_message(&mut out)?;
+                    let message = read_commit_message(&mut self.line)?;
                     return Ok(PreApplyDecision::CommitAndPush { message });
                 }
                 Some(PreApplyAnswer::Continue) => return Ok(PreApplyDecision::Continue),
                 Some(PreApplyAnswer::Abort) => return Ok(PreApplyDecision::Abort),
                 None => {
-                    writeln!(out, "Please answer c, y, or n.").map_err(Error::PromptRead)?;
+                    self.line
+                        .writeln("Please answer c, y, or n.")
+                        .map_err(Error::PromptRead)?;
                 }
             }
         }
     }
 }
 
-fn read_commit_message(out: &mut dyn Write) -> Result<String, Error> {
+fn read_commit_message(prompter: &mut dyn LinePrompter) -> Result<String, Error> {
     loop {
-        write!(out, "Commit message: ").map_err(Error::PromptRead)?;
-        out.flush().map_err(Error::PromptRead)?;
-        let mut line = String::new();
-        let n = io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .map_err(Error::PromptRead)?;
-        if n == 0 {
-            return Err(Error::PromptRead(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "no commit message provided",
-            )));
-        }
+        let line = match prompter
+            .read_line("Commit message: ")
+            .map_err(Error::PromptRead)?
+        {
+            LineOutcome::Line(s) => s,
+            LineOutcome::Eof => {
+                return Err(Error::PromptRead(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "no commit message provided",
+                )));
+            }
+            LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+        };
         let trimmed = line.trim().to_string();
         if trimmed.is_empty() {
-            writeln!(out, "Commit message cannot be empty.").map_err(Error::PromptRead)?;
+            prompter
+                .writeln("Commit message cannot be empty.")
+                .map_err(Error::PromptRead)?;
             continue;
         }
         return Ok(trimmed);
