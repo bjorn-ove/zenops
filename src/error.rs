@@ -102,6 +102,34 @@ pub enum Error {
         "Cannot init: {0:?} already exists and is not empty. Remove it first, or use `zenops repo pull` if it's already a zenops repo."
     )]
     InitDirNotEmpty(PathBuf),
+    /// `zenops init` (bootstrap form, no URL) found the target directory
+    /// already exists. Bootstrap refuses to touch any existing path so it
+    /// can never clobber a previous setup.
+    #[error(
+        "Cannot init: {0:?} already exists. Bootstrap refuses to touch an existing path; remove it first, or pass a URL to clone into it."
+    )]
+    InitDirExists(PathBuf),
+    /// `zenops init` bootstrap target already contains a `.git` directory.
+    /// Reported instead of [`Self::InitDirExists`] when the existing
+    /// directory looks like a git repo.
+    #[error(
+        "Cannot init: {0:?} already contains a .git directory. Looks like a zenops repo already exists; remove it first or skip init."
+    )]
+    InitGitDirExists(PathBuf),
+    /// `git init` itself failed during `zenops init` bootstrap.
+    #[error("Failed to initialize git repo: {source}")]
+    InitGitInitFailed {
+        /// Underlying xshell failure.
+        #[source]
+        source: xshell::Error,
+    },
+    /// `zenops init` (bootstrap form, no URL) was invoked without a TTY.
+    /// Prompts can't run reliably without one, so we refuse rather than
+    /// silently accept defaults from a closed stdin.
+    #[error(
+        "init bootstrap requires a terminal for prompts; clone with a URL instead, or run from a TTY"
+    )]
+    InitNeedsTty,
     /// `zenops init` cloned successfully but the repo lacks a `config.toml`
     /// at its root, so it isn't a zenops config repo. The clone is left in
     /// place for inspection.
@@ -207,6 +235,13 @@ impl PartialEq for Error {
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::InitDirNotEmpty(l0), Self::InitDirNotEmpty(r0)) => l0 == r0,
+            (Self::InitDirExists(l0), Self::InitDirExists(r0)) => l0 == r0,
+            (Self::InitGitDirExists(l0), Self::InitGitDirExists(r0)) => l0 == r0,
+            (
+                Self::InitGitInitFailed { source: l_src },
+                Self::InitGitInitFailed { source: r_src },
+            ) => l_src.to_string() == r_src.to_string(),
+            (Self::InitNeedsTty, Self::InitNeedsTty) => true,
             (Self::InitNoConfigToml(l0), Self::InitNoConfigToml(r0)) => l0 == r0,
             (
                 Self::InitCloneFailed {

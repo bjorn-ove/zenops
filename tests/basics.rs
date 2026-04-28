@@ -2045,7 +2045,7 @@ fn init_apply_false_emits_init_summary_event() {
 
     let out = env
         .run(&Cmd::Init {
-            url: bare.to_str().unwrap().to_string(),
+            url: Some(bare.to_str().unwrap().to_string()),
             branch: None,
             apply: false,
             yes: false,
@@ -2078,7 +2078,7 @@ fn init_apply_true_does_not_emit_init_summary() {
 
     let out = env
         .run(&Cmd::Init {
-            url: bare.to_str().unwrap().to_string(),
+            url: Some(bare.to_str().unwrap().to_string()),
             branch: None,
             apply: true,
             yes: true,

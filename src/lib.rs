@@ -144,15 +144,22 @@ pub enum Cmd {
         #[command(subcommand)]
         command: GitCmd,
     },
-    /// Clone an existing zenops config repo into `~/.config/zenops` and
-    /// validate that it has a `config.toml`. Run this once on a new machine
-    /// before `zenops apply`. Authentication (SSH key, HTTPS credential
+    /// Set up `~/.config/zenops`. With a URL, clones an existing zenops
+    /// config repo and validates it has a `config.toml`. Without a URL,
+    /// bootstraps a brand-new repo on disk by interactively prompting for
+    /// shell, name, and email, writing a minimal `config.toml`, and making
+    /// the initial commit. The bootstrap form refuses to run if
+    /// `~/.config/zenops` already exists (even empty); the clone form
+    /// allows an empty target. Authentication (SSH key, HTTPS credential
     /// helper) uses whatever git is already configured to use.
     Init {
         /// Git URL to clone (SSH or HTTPS). Passed verbatim to `git clone`.
-        url: String,
+        /// Omit to bootstrap a fresh repo at `~/.config/zenops` instead of
+        /// cloning.
+        url: Option<String>,
         /// Check out this branch or tag after cloning (default: remote's HEAD).
-        #[clap(long, short)]
+        /// Only valid with a URL.
+        #[clap(long, short, requires = "url")]
         branch: Option<String>,
         /// After cloning, run `zenops apply`.
         #[clap(long)]
@@ -237,7 +244,15 @@ pub fn real_main(
     {
         // Init runs before a config.toml exists, so it cannot go through the
         // normal Config::load path below.
-        return init::run(url, branch.as_deref(), *apply, *yes, dirs, args, output);
+        return init::run(
+            url.as_deref(),
+            branch.as_deref(),
+            *apply,
+            *yes,
+            dirs,
+            args,
+            output,
+        );
     }
     if let Cmd::Doctor = command {
         // Doctor must survive a missing or broken config.toml — it's the

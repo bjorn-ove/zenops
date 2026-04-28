@@ -14,7 +14,16 @@ type = "bash"
 
 fn init_cmd(url: &str) -> Cmd {
     Cmd::Init {
-        url: url.to_string(),
+        url: Some(url.to_string()),
+        branch: None,
+        apply: false,
+        yes: false,
+    }
+}
+
+fn bootstrap_cmd() -> Cmd {
+    Cmd::Init {
+        url: None,
         branch: None,
         apply: false,
         yes: false,
@@ -89,12 +98,52 @@ fn init_rejects_repo_without_config_toml() {
 }
 
 #[test]
+fn init_bootstrap_refuses_existing_empty_dir() {
+    // TestEnv::load pre-creates an empty ~/.config/zenops; bootstrap is
+    // strict and refuses any existing directory.
+    let env = test_env::TestEnv::load();
+
+    let result = env.run(&bootstrap_cmd());
+    assert_eq!(
+        result,
+        Err(Error::InitDirExists(env.resolve_path(paths::ZENOPS_DIR))),
+    );
+}
+
+#[test]
+fn init_bootstrap_refuses_existing_git_dir() {
+    let env = test_env::TestEnv::load();
+    // Drop a `.git` directory inside the pre-created zenops dir so the
+    // preflight surfaces the more specific InitGitDirExists.
+    env.create_dir(zenops_safe_relative_path::srpath!(
+        "home/bob/.config/zenops/.git"
+    ));
+
+    let result = env.run(&bootstrap_cmd());
+    assert_eq!(
+        result,
+        Err(Error::InitGitDirExists(env.resolve_path(paths::ZENOPS_DIR))),
+    );
+}
+
+#[test]
+fn init_bootstrap_needs_tty_when_dir_is_clear() {
+    // Cargo test always runs with a non-TTY stdin, so once the directory
+    // is out of the way bootstrap should refuse with InitNeedsTty.
+    let env = test_env::TestEnv::load();
+    env.delete_dir_all(paths::ZENOPS_DIR);
+
+    let result = env.run(&bootstrap_cmd());
+    assert_eq!(result, Err(Error::InitNeedsTty));
+}
+
+#[test]
 fn init_with_apply_yes_runs_apply() {
     let env = test_env::TestEnv::load();
     let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
 
     env.run(&Cmd::Init {
-        url: bare.to_str().unwrap().to_string(),
+        url: Some(bare.to_str().unwrap().to_string()),
         branch: None,
         apply: true,
         yes: true,

@@ -186,9 +186,10 @@ pub enum DoctorSeverity {
     Bad,
 }
 
-/// Result of a successful `zenops init` (without `--apply`). When `--apply`
-/// is set, `init` clones then recurses into `Apply` and the apply event
-/// stream is the contract — no `InitSummary` is emitted in that case.
+/// Result of a successful `zenops init` clone (with a URL, no `--apply`).
+/// When `--apply` is set, `init` clones then recurses into `Apply` and the
+/// apply event stream is the contract — no `InitSummary` is emitted in
+/// that case. Bootstrap (no URL) emits [`BootstrapSummary`] instead.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct InitSummary {
     /// Where the repo was cloned to (always `~/.config/zenops` today).
@@ -202,6 +203,25 @@ pub struct InitSummary {
     pub shell: Option<String>,
     /// Number of `[pkg.<name>]` entries in the cloned `config.toml`.
     pub pkg_count: usize,
+}
+
+/// Result of a successful `zenops init` bootstrap (no URL). Reports the
+/// fresh repo path plus whatever identity the user chose at the prompts;
+/// each identity field is `None` when the user accepted the empty default.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct BootstrapSummary {
+    /// Where the new repo was created (always `~/.config/zenops` today).
+    pub repo_path: PathBuf,
+    /// "bash" or "zsh" when the user picked one at the shell prompt;
+    /// `None` if they declined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    /// Name written to `[user]` in the fresh `config.toml`, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Email written to `[user]` in the fresh `config.toml`, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 /// Where a managed symlink stands relative to its desired target.
@@ -401,8 +421,12 @@ pub trait Output {
     fn push_doctor_check(&mut self, _check: DoctorCheck) -> Result<(), OutputError> {
         Ok(())
     }
-    /// Outcome of `zenops init` without `--apply`.
+    /// Outcome of `zenops init <url>` without `--apply`.
     fn push_init_summary(&mut self, _summary: InitSummary) -> Result<(), OutputError> {
+        Ok(())
+    }
+    /// Outcome of `zenops init` bootstrap (no URL).
+    fn push_bootstrap_summary(&mut self, _summary: BootstrapSummary) -> Result<(), OutputError> {
         Ok(())
     }
     /// Emit any buffered output. `JsonOutput` streams as it goes and has a
@@ -438,6 +462,7 @@ pub(crate) enum Event {
     PkgEntry(PkgEntry),
     DoctorCheck(DoctorCheck),
     InitSummary(InitSummary),
+    BootstrapSummary(BootstrapSummary),
 }
 
 impl Output for JsonOutput<'_> {
@@ -473,6 +498,12 @@ impl Output for JsonOutput<'_> {
 
     fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
         serde_json::to_writer(&mut *self.out, &Event::InitSummary(summary))?;
+        writeln!(self.out)?;
+        Ok(())
+    }
+
+    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
+        serde_json::to_writer(&mut *self.out, &Event::BootstrapSummary(summary))?;
         writeln!(self.out)?;
         Ok(())
     }
@@ -1096,6 +1127,28 @@ impl TerminalRenderer<'_> {
         )?;
         Ok(())
     }
+
+    fn render_bootstrap_summary(&mut self, summary: &BootstrapSummary) -> Result<(), OutputError> {
+        writeln!(
+            self.out,
+            "Initialized fresh zenops repo at {}",
+            summary.repo_path.display()
+        )?;
+        match &summary.shell {
+            Some(shell) => writeln!(self.out, "  shell:  {shell}")?,
+            None => writeln!(self.out, "  shell:  (none configured)")?,
+        }
+        match &summary.name {
+            Some(name) => writeln!(self.out, "  name:   {name}")?,
+            None => writeln!(self.out, "  name:   (not set)")?,
+        }
+        match &summary.email {
+            Some(email) => writeln!(self.out, "  email:  {email}")?,
+            None => writeln!(self.out, "  email:  (not set)")?,
+        }
+        writeln!(self.out, "Next: edit config.toml, then run `zenops apply`.")?;
+        Ok(())
+    }
 }
 
 impl Output for TerminalRenderer<'_> {
@@ -1181,6 +1234,11 @@ impl Output for TerminalRenderer<'_> {
     fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
         self.enter(Pending::None)?;
         self.render_init_summary(&summary)
+    }
+
+    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
+        self.enter(Pending::None)?;
+        self.render_bootstrap_summary(&summary)
     }
 
     fn finalize(&mut self) -> Result<(), OutputError> {

@@ -13,8 +13,8 @@ use zenops::{
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
     output::{
-        AppliedAction, DoctorCheck, InitSummary, OutputError, PkgEntry, ResolvedConfigFilePath,
-        Status,
+        AppliedAction, BootstrapSummary, DoctorCheck, InitSummary, OutputError, PkgEntry,
+        ResolvedConfigFilePath, Status,
     },
     pkg_list,
 };
@@ -349,6 +349,7 @@ pub enum Entry {
     Pkg(PkgEntry),
     Doctor(DoctorCheck),
     Init(InitSummary),
+    Bootstrap(BootstrapSummary),
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -379,6 +380,11 @@ impl zenops::output::Output for Output {
 
     fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
         self.entries.push(Entry::Init(summary));
+        Ok(())
+    }
+
+    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
+        self.entries.push(Entry::Bootstrap(summary));
         Ok(())
     }
 }

@@ -95,6 +95,32 @@ impl<'path, 'shell> Git<'path, 'shell> {
         Ok(())
     }
 
+    /// `git init` at `dest`. `dest` must already exist. Used by the
+    /// bootstrap form of `zenops init`; clone uses [`Self::clone_to`]
+    /// instead. Quiet by design — bootstrap drives its own user-facing
+    /// summary through the `Output` channel.
+    pub fn init_repo(dest: &Path, sh: &Shell) -> Result<(), Error> {
+        cmd!(sh, "git -C {dest} init")
+            .quiet()
+            .ignore_stdout()
+            .run()
+            .map_err(|e| Error::InitGitInitFailed { source: e })?;
+        Ok(())
+    }
+
+    /// Stage everything currently in `dest` and make a single commit.
+    /// Bootstrap's first commit; differs from
+    /// [`Self::commit_all_and_push`] in that it does not push (no remote
+    /// configured yet).
+    pub fn initial_commit(dest: &Path, sh: &Shell, message: &str) -> Result<(), Error> {
+        cmd!(sh, "git -C {dest} add -A").quiet().run()?;
+        cmd!(sh, "git -C {dest} commit -m {message}")
+            .quiet()
+            .ignore_stdout()
+            .run()?;
+        Ok(())
+    }
+
     /// `true` if the bound path is inside a git work tree. Returns `false`
     /// — not an error — for non-repo paths so callers can branch cleanly.
     pub fn is_git_repo(&self) -> Result<bool, Error> {
