@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0] - 2026-04-28
+
+### Added
+- New `zenops init` bootstrap form (no URL): prompts for shell, name, and email, writes a minimal `config.toml` at `~/.config/zenops`, runs `git init`, and makes the initial commit. Refuses to run if `~/.config/zenops` already exists. Companion to the existing `zenops init <url>` clone form.
+- New `BootstrapSummary` JSON event reporting the fresh repo's path and the chosen identity.
+- New public `line_prompter` module exposing `LinePrompter`, `RustylinePrompter`, and `BufReadPrompter` for callers wiring up their own line-edited prompts.
+
+### Changed
+- Interactive prompts (apply confirmation, commit message, init bootstrap) now read through rustyline, giving Home/End, arrow keys, history, and proper UTF-8 line editing.
+- **Breaking (library):** `Cmd::Init { url }` is now `Option<String>`. Pass `None` to select the bootstrap form; `--branch` is rejected without a URL.
+- **Breaking (library):** `TerminalPrompter::new` now returns `Result<Self, Error>` because rustyline can fail to open the controlling terminal.
+
 ## [0.10.0] - 2026-04-27
 
 ### Added
