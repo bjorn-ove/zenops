@@ -196,6 +196,23 @@ pub enum Cmd {
     },
 }
 
+/// Shared prelude for the config-loading subcommands (Apply/Status/Pkg):
+/// open a shared [`Shell`] and parse `~/.config/zenops/config.toml`. `Init`,
+/// `Doctor`, and `Schema` skip this because they're expected to work on a
+/// fresh or broken machine.
+struct CommandContext<'dirs> {
+    sh: Shell,
+    config: Config<'dirs>,
+}
+
+impl<'dirs> CommandContext<'dirs> {
+    fn load(dirs: &'dirs ConfigFileDirs, pull_config: bool) -> Result<Self, Error> {
+        let sh = Shell::new().unwrap();
+        let config = Config::load(dirs, &sh, pull_config)?;
+        Ok(Self { sh, config })
+    }
+}
+
 fn build_prompter(
     yes: bool,
     dry_run: bool,
@@ -259,17 +276,16 @@ pub fn real_main(
             dry_run,
             allow_dirty,
         } => {
-            let sh = Shell::new().unwrap();
-            let config = Config::load(dirs, &sh, *pull_config)?;
+            let ctx = CommandContext::load(dirs, *pull_config)?;
             let mut config_files = ConfigFiles::new(dirs);
             let stdout_color = args.color.enabled(std::io::stdout().is_terminal());
             let mut prompter =
                 build_prompter(*yes, *dry_run, stdout_color, args.stdin_is_terminal)?;
-            config.push_pkg_health(output)?;
+            ctx.config.push_pkg_health(output)?;
 
-            let git = Git::new(dirs.zenops(), &sh);
+            let git = Git::new(dirs.zenops(), &ctx.sh);
             if git.is_git_repo()? && git.has_uncommitted_changes()? {
-                config.check_own_status(&sh, output)?;
+                ctx.config.check_own_status(&ctx.sh, output)?;
                 // `--yes` without `--allow-dirty` aborts so CI/cron surface
                 // divergence instead of silently applying uncommitted state.
                 // `--dry-run` writes nothing, so it's always safe to continue.
@@ -291,17 +307,16 @@ pub fn real_main(
                 }
             }
 
-            config.update_config_files(&sh, &mut config_files)?;
+            ctx.config.update_config_files(&ctx.sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
             Ok(())
         }
         Cmd::Status { diff: _, all: _ } => {
-            let sh = Shell::new().unwrap();
-            let config = Config::load(dirs, &sh, false)?;
+            let ctx = CommandContext::load(dirs, false)?;
             let mut config_files = ConfigFiles::new(dirs);
-            config.push_pkg_health(output)?;
-            config.check_own_status(&sh, output)?;
-            config.update_config_files(&sh, &mut config_files)?;
+            ctx.config.push_pkg_health(output)?;
+            ctx.config.check_own_status(&ctx.sh, output)?;
+            ctx.config.update_config_files(&ctx.sh, &mut config_files)?;
             config_files.check_status(output)?;
             Ok(())
         }
@@ -311,10 +326,9 @@ pub fn real_main(
             all_hints,
             verbose,
         } => {
-            let sh = Shell::new().unwrap();
-            let config = Config::load(dirs, &sh, false)?;
+            let ctx = CommandContext::load(dirs, false)?;
             pkg_list::push(
-                &config,
+                &ctx.config,
                 pkg_list::Options {
                     pattern: pattern.clone(),
                     all: *all,
