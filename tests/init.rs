@@ -1,7 +1,7 @@
 use similar_asserts::assert_eq;
 use zenops::{Cmd, error::Error};
 
-use test_env::paths;
+use test_env::{Entry, paths};
 
 mod test_env;
 
@@ -158,5 +158,58 @@ fn init_with_apply_yes_runs_apply() {
     assert!(
         profile.exists(),
         ".zenops_bash_profile should exist after init --apply, got missing at {profile:?}"
+    );
+}
+
+#[test]
+fn init_apply_false_emits_init_summary_event() {
+    use zenops::output::InitSummary;
+
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
+
+    let out = env
+        .run(&Cmd::Init {
+            url: Some(bare.to_str().unwrap().to_string()),
+            branch: None,
+            apply: false,
+            yes: false,
+        })
+        .expect("init should succeed");
+    let summaries: Vec<&InitSummary> = out
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        summaries.len(),
+        1,
+        "expected exactly one init_summary, got: {:?}",
+        out.entries,
+    );
+    assert_eq!(summaries[0].shell.as_deref(), Some("bash"));
+}
+
+#[test]
+fn init_apply_true_does_not_emit_init_summary() {
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
+
+    let out = env
+        .run(&Cmd::Init {
+            url: Some(bare.to_str().unwrap().to_string()),
+            branch: None,
+            apply: true,
+            yes: true,
+        })
+        .expect("init --apply --yes should succeed");
+    let has_summary = out.entries.iter().any(|e| matches!(e, Entry::Init(_)));
+    assert!(
+        !has_summary,
+        "init --apply should defer to apply's event stream and skip init_summary, got: {:?}",
+        out.entries,
     );
 }
