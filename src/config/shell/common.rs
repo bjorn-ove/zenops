@@ -420,10 +420,7 @@ mod tests {
             },
         };
         let pkg_name = SmolStr::new_static("pkg");
-        let actions = vec![
-            (&pkg_name, &pkg, &line),
-            (&pkg_name, &pkg, &skipped),
-        ];
+        let actions = vec![(&pkg_name, &pkg, &line), (&pkg_name, &pkg, &skipped)];
 
         let mut buf = String::new();
         write_pkg_inits(&mut buf, &actions, &inputs).unwrap();

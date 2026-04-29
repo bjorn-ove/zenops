@@ -484,10 +484,8 @@ fn apply_updates_generated_file_when_disk_content_differs() {
     );
 
     // Disk no longer contains the stale marker — content was actually rewritten.
-    let disk = std::fs::read_to_string(env.resolve_path(srpath!(
-        "home/bob/.zenops_bash_profile"
-    )))
-    .unwrap();
+    let disk = std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.zenops_bash_profile")))
+        .unwrap();
     assert!(
         !disk.contains("STALE"),
         "expected stale content to be replaced, got:\n{disk}"
@@ -534,10 +532,8 @@ fn apply_dry_run_does_not_rewrite_modified_files() {
     );
 
     // Disk content unchanged.
-    let disk = std::fs::read_to_string(env.resolve_path(srpath!(
-        "home/bob/.zenops_bash_profile"
-    )))
-    .unwrap();
+    let disk = std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.zenops_bash_profile")))
+        .unwrap();
     assert_eq!(disk, stale, "dry-run must leave the file untouched");
 }
 
