@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use similar::{ChangeTag, DiffOp, TextDiff};
 
 use crate::{
-    ansi::{color_code, color_reset},
+    ansi::Styler,
     error::Error,
     line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
     output::ResolvedConfigFilePath,
@@ -307,8 +307,9 @@ fn render_change(out: &mut dyn Write, change: &PendingChange<'_>, color: bool) -
 }
 
 fn render_new_file(out: &mut dyn Write, content: &str, color: bool) -> io::Result<()> {
-    let open = color_code(color, "\x1b[32m");
-    let close = color_reset(color);
+    let s = Styler::new(color);
+    let close = s.reset();
+    let open = s.green();
     for line in content.lines() {
         writeln!(out, "{open}+{line}{close}")?;
     }
@@ -331,11 +332,12 @@ fn render_single_hunk(
     let new_start = first.new_range().start;
     let new_len = last.new_range().end - new_start;
 
-    let header_open = color_code(color, "\x1b[36m");
-    let header_close = color_reset(color);
+    let s = Styler::new(color);
+    let close = s.reset();
+    let header_open = s.cyan();
     writeln!(
         out,
-        "{header_open}@@ -{},{} +{},{} @@{header_close}",
+        "{header_open}@@ -{},{} +{},{} @@{close}",
         old_start + 1,
         old_len,
         new_start + 1,
@@ -343,10 +345,10 @@ fn render_single_hunk(
     )?;
     for op in ops {
         for change in diff.iter_changes(op) {
-            let (prefix, open, close) = match change.tag() {
-                ChangeTag::Delete => ("-", color_code(color, "\x1b[31m"), color_reset(color)),
-                ChangeTag::Insert => ("+", color_code(color, "\x1b[32m"), color_reset(color)),
-                ChangeTag::Equal => (" ", color_code(color, "\x1b[2m"), color_reset(color)),
+            let (prefix, open) = match change.tag() {
+                ChangeTag::Delete => ("-", s.red()),
+                ChangeTag::Insert => ("+", s.green()),
+                ChangeTag::Equal => (" ", s.dim()),
             };
             write!(out, "{open}{prefix}{change}{close}")?;
             if change.missing_newline() {
@@ -502,18 +504,6 @@ mod tests {
             got.contains("\\ No newline at end of file"),
             "missing-newline marker not emitted: {got:?}",
         );
-    }
-
-    #[test]
-    fn color_helpers_return_empty_when_disabled() {
-        assert_eq!(color_code(false, "\x1b[36m"), "");
-        assert_eq!(color_reset(false), "");
-    }
-
-    #[test]
-    fn color_helpers_return_codes_when_enabled() {
-        assert_eq!(color_code(true, "\x1b[36m"), "\x1b[36m");
-        assert_eq!(color_reset(true), "\x1b[0m");
     }
 
     #[test]
