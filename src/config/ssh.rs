@@ -121,6 +121,7 @@ impl StoredSshConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_files::ConfigFileDirs;
     use std::cell::RefCell;
 
     struct StubFetcher {
@@ -216,6 +217,20 @@ mod tests {
                  octocat@example.com ssh-ed25519 AAAAKEY1 octocat@github\n",
             ),
         );
+    }
+
+    #[test]
+    fn update_config_files_is_a_noop_when_allowed_signers_empty() {
+        // Empty config => update_config_files returns Ok without consulting
+        // the fetcher and without panicking. This is the early-return branch
+        // that the integration tests (which always configure at least one
+        // entry) don't reach.
+        let cfg = StoredSshConfig::default();
+        let dirs = ConfigFileDirs::load(std::path::PathBuf::from("/tmp/zenops-test-home"));
+        let mut config_files = ConfigFiles::new(&dirs);
+
+        cfg.update_config_files(&mut config_files, &PanicFetcher)
+            .expect("empty config should be a no-op");
     }
 
     #[test]

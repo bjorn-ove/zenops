@@ -435,6 +435,113 @@ fn apply_filters_pkg_by_supported_os() {
 }
 
 #[test]
+fn apply_updates_generated_file_when_disk_content_differs() {
+    use zenops::output::AppliedAction;
+
+    // The Modified branch of `apply_changes`: an existing on-disk file
+    // already lives at the managed path with stale content. With `yes=true`
+    // every diff hunk gets approved and the file is rewritten to match the
+    // generated body.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+    let stale = "# stale content from a previous apply\nexport STALE=1\n";
+    env.write_file(srpath!("home/bob/.zenops_bash_profile"), stale);
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+            allow_dirty: true,
+        })
+        .expect("apply must succeed");
+
+    // Exactly one UpdatedFile event for the bash profile.
+    let updates: Vec<_> = out
+        .entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::AppliedAction(AppliedAction::UpdatedFile(p)) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        updates.len(),
+        1,
+        "expected exactly one UpdatedFile event, got: {:?}",
+        out.entries,
+    );
+    assert_eq!(
+        updates[0].path,
+        ConfigFilePath::in_home(srpath!(".zenops_bash_profile")),
+    );
+
+    // Disk no longer contains the stale marker — content was actually rewritten.
+    let disk = std::fs::read_to_string(env.resolve_path(srpath!(
+        "home/bob/.zenops_bash_profile"
+    )))
+    .unwrap();
+    assert!(
+        !disk.contains("STALE"),
+        "expected stale content to be replaced, got:\n{disk}"
+    );
+}
+
+#[test]
+fn apply_dry_run_does_not_rewrite_modified_files() {
+    use zenops::output::AppliedAction;
+
+    // `dry_run=true` routes through DryRunPrompter, which rejects every
+    // hunk. The "all hunks rejected → continue" branch in apply_changes
+    // means no UpdatedFile event is emitted and the disk file stays
+    // untouched.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+    let stale = "# stale content from a previous apply\nexport STALE=1\n";
+    env.write_file(srpath!("home/bob/.zenops_bash_profile"), stale);
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: false,
+            dry_run: true,
+            allow_dirty: true,
+        })
+        .expect("dry-run apply must succeed");
+
+    let any_update = out
+        .entries
+        .iter()
+        .any(|e| matches!(e, Entry::AppliedAction(AppliedAction::UpdatedFile(_))));
+    assert!(
+        !any_update,
+        "dry-run apply must not emit UpdatedFile, got: {:?}",
+        out.entries,
+    );
+
+    // Disk content unchanged.
+    let disk = std::fs::read_to_string(env.resolve_path(srpath!(
+        "home/bob/.zenops_bash_profile"
+    )))
+    .unwrap();
+    assert_eq!(disk, stale, "dry-run must leave the file untouched");
+}
+
+#[test]
 fn entry_status_propagates_unreadable_generated_file() {
     // A managed shell config wants to land at ~/.zenops_bash_profile, but a
     // directory occupies that path. read_to_string fails with IsADirectory;

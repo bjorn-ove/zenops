@@ -169,6 +169,247 @@ fn doctor_emits_doctor_check_events_for_system_section() {
 }
 
 #[test]
+fn doctor_reports_missing_zenops_dir_as_bad() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // No zenops dir at all → repo_block must emit a Bad "path: missing"
+    // row pointing to `zenops init <url>`.
+    let env = test_env::TestEnv::load();
+    env.delete_dir_all(test_env::paths::ZENOPS_DIR);
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_missing = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                severity: DoctorSeverity::Bad,
+                value,
+                ..
+            }) if label == "path:" && value == "missing"
+        )
+    });
+    assert!(
+        has_missing,
+        "expected a Bad path:missing repo check, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_reports_no_remote_warn_when_repo_has_no_origin() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // init_config sets up a git repo but does NOT add an `origin` remote.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_no_remote = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                severity: DoctorSeverity::Warn,
+                value,
+                ..
+            }) if label == "remote:" && value == "none"
+        )
+    });
+    assert!(
+        has_no_remote,
+        "expected a Warn remote:none row, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_reports_remote_info_when_origin_configured() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    let env = test_env::TestEnv::load();
+    env.init_config_with_remote("");
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_remote_info = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                severity: DoctorSeverity::Info,
+                value,
+                ..
+            }) if label == "remote:" && value.contains("remote.git")
+        )
+    });
+    assert!(
+        has_remote_info,
+        "expected an Info remote: row with the bare repo path, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_reports_uncommitted_changes_as_warn() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+    use zenops_safe_relative_path::srpath;
+
+    // Clean repo first, then dirty it without committing.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    env.write_zenops_file(srpath!("untracked"), "stale\n", None);
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_uncommitted_warn = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                severity: DoctorSeverity::Warn,
+                value,
+                ..
+            }) if label == "uncommitted:" && value == "yes"
+        )
+    });
+    assert!(
+        has_uncommitted_warn,
+        "expected a Warn uncommitted:yes row, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_user_block_warns_on_unset_name_and_email() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // No `[user]` section in config → both name: and email: should be Warn.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_user_name_warn = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::User,
+                label,
+                severity: DoctorSeverity::Warn,
+                value,
+                ..
+            }) if label == "name:" && value == "unset"
+        )
+    });
+    let has_user_email_warn = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::User,
+                label,
+                severity: DoctorSeverity::Warn,
+                value,
+                ..
+            }) if label == "email:" && value == "unset"
+        )
+    });
+    assert!(
+        has_user_name_warn && has_user_email_warn,
+        "expected Warn user:name/email unset rows, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_user_block_emits_info_when_name_and_email_set() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [user]
+        name = "Ada Lovelace"
+        email = "ada@example.com"
+        "#,
+    );
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_name_info = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::User,
+                label,
+                severity: DoctorSeverity::Info,
+                value,
+                ..
+            }) if label == "name:" && value == "Ada Lovelace"
+        )
+    });
+    let has_email_info = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::User,
+                label,
+                severity: DoctorSeverity::Info,
+                value,
+                ..
+            }) if label == "email:" && value == "ada@example.com"
+        )
+    });
+    assert!(
+        has_name_info && has_email_info,
+        "expected Info user:name/email rows, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_emits_section_headers_for_every_section() {
+    use zenops::output::{DoctorCheck, DoctorSection};
+
+    // Sanity check that each section opens with a SectionHeader event so
+    // the renderer always has a title to print, including Packages (which
+    // has no DoctorCheck rows of its own — content comes via Status::Pkg).
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [user]
+        name = "Ada"
+        email = "ada@example.com"
+        "#,
+    );
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let header = |want: DoctorSection| {
+        out.entries.iter().any(|e| {
+            matches!(
+                e,
+                Entry::Doctor(DoctorCheck::SectionHeader { section }) if *section == want,
+            )
+        })
+    };
+    for section in [
+        DoctorSection::System,
+        DoctorSection::Repo,
+        DoctorSection::Config,
+        DoctorSection::PkgManager,
+        DoctorSection::User,
+        DoctorSection::Shell,
+        DoctorSection::Packages,
+    ] {
+        assert!(
+            header(section),
+            "missing SectionHeader for {section:?}, got: {:?}",
+            out.entries,
+        );
+    }
+}
+
+#[test]
 fn doctor_emits_bad_check_with_detail_for_parse_error() {
     use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
 

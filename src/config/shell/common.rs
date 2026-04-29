@@ -188,3 +188,315 @@ pub(super) fn write_aliases(buf: &mut String, alias: &IndexMap<SmolStr, SmolStr>
         buf.push('\n');
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zenops_expand::ExpandStr;
+
+    fn lookup() -> IndexMap<SmolStr, SmolStr> {
+        let mut m = IndexMap::new();
+        m.insert(SmolStr::new_static("name"), SmolStr::new_static("octocat"));
+        m.insert(
+            SmolStr::new_static("path"),
+            SmolStr::new_static("~/.cargo/bin"),
+        );
+        m
+    }
+
+    fn render(kind: ActionKind, optional: bool) -> Result<(bool, String), ExpandError> {
+        let action = ShellInitAction { optional, kind };
+        let mut buf = String::new();
+        let wrote = write_action(&mut buf, &action, &lookup())?;
+        Ok((wrote, buf))
+    }
+
+    #[test]
+    fn write_action_comment_emits_hash_prefix() {
+        let (wrote, body) = render(
+            ActionKind::Comment {
+                text: ExpandStr::new_static("hi ${name}"),
+            },
+            false,
+        )
+        .unwrap();
+        assert!(wrote);
+        assert_eq!(body, "# hi octocat");
+    }
+
+    #[test]
+    fn write_action_source_translates_tilde_to_home_var() {
+        let (_, body) = render(
+            ActionKind::Source {
+                path: ExpandStr::new_static("${path}/env"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#". "$HOME/.cargo/bin/env""#);
+    }
+
+    #[test]
+    fn write_action_eval_output_joins_command_parts() {
+        let (_, body) = render(
+            ActionKind::EvalOutput {
+                command: vec![
+                    ExpandStr::new_static("starship"),
+                    ExpandStr::new_static("init"),
+                    ExpandStr::new_static("${name}"),
+                ],
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#"eval "$(starship init octocat)""#);
+    }
+
+    #[test]
+    fn write_action_source_output_uses_process_substitution() {
+        let (_, body) = render(
+            ActionKind::SourceOutput {
+                command: vec![
+                    ExpandStr::new_static("zoxide"),
+                    ExpandStr::new_static("init"),
+                    ExpandStr::new_static("zsh"),
+                ],
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, "source <(zoxide init zsh)");
+    }
+
+    #[test]
+    fn write_action_export_quotes_value() {
+        let (_, body) = render(
+            ActionKind::Export {
+                name: ExpandStr::new_static("EDITOR"),
+                value: ExpandStr::new_static("vim"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#"export EDITOR="vim""#);
+    }
+
+    #[test]
+    fn write_action_line_writes_raw_template() {
+        let (_, body) = render(
+            ActionKind::Line {
+                line: ExpandStr::new_static("setopt no_beep"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, "setopt no_beep");
+    }
+
+    #[test]
+    fn write_action_path_prepend_renders_export_with_home_var() {
+        let (_, body) = render(
+            ActionKind::PathPrepend {
+                value: ExpandStr::new_static("${path}"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#"export PATH="$HOME/.cargo/bin:$PATH""#);
+    }
+
+    #[test]
+    fn write_action_path_append_renders_export_with_home_var() {
+        let (_, body) = render(
+            ActionKind::PathAppend {
+                value: ExpandStr::new_static("${path}"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#"export PATH="$PATH:$HOME/.cargo/bin""#);
+    }
+
+    #[test]
+    fn write_action_path_prepend_passes_absolute_through_unchanged() {
+        let (_, body) = render(
+            ActionKind::PathPrepend {
+                value: ExpandStr::new_static("/usr/local/bin"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(body, r#"export PATH="/usr/local/bin:$PATH""#);
+    }
+
+    #[test]
+    fn write_action_optional_unresolved_skips_silently() {
+        let action = ShellInitAction {
+            optional: true,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("missing ${nope}"),
+            },
+        };
+        let mut buf = String::from("PRESERVE");
+        let wrote = write_action(&mut buf, &action, &lookup()).unwrap();
+        assert!(!wrote);
+        assert_eq!(
+            buf, "PRESERVE",
+            "buffer must be truncated back to original length on optional skip",
+        );
+    }
+
+    #[test]
+    fn write_action_required_unresolved_truncates_and_propagates() {
+        let action = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("missing ${nope}"),
+            },
+        };
+        let mut buf = String::from("PRESERVE");
+        let err = write_action(&mut buf, &action, &lookup()).unwrap_err();
+        assert!(matches!(err, ExpandError::Unresolved(_)));
+        assert_eq!(buf, "PRESERVE");
+    }
+
+    #[test]
+    fn write_pkg_inits_inserts_blank_line_between_groups() {
+        let inputs: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        let pkg = PkgConfig::default();
+        let header = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Comment {
+                text: ExpandStr::new_static("group A"),
+            },
+        };
+        let line_a = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("alpha"),
+            },
+        };
+        let header_b = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Comment {
+                text: ExpandStr::new_static("group B"),
+            },
+        };
+        let line_b = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("beta"),
+            },
+        };
+        let pkg_name = SmolStr::new_static("pkg");
+        let actions = vec![
+            (&pkg_name, &pkg, &header),
+            (&pkg_name, &pkg, &line_a),
+            (&pkg_name, &pkg, &header_b),
+            (&pkg_name, &pkg, &line_b),
+        ];
+
+        let mut buf = String::new();
+        write_pkg_inits(&mut buf, &actions, &inputs).unwrap();
+        // Blank line goes after the non-comment that precedes a comment, and
+        // a trailing blank line after the very last non-comment.
+        assert_eq!(buf, "# group A\nalpha\n\n# group B\nbeta\n\n");
+    }
+
+    #[test]
+    fn write_pkg_inits_skips_optional_unresolved_actions_without_emitting_blank() {
+        let inputs: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        let pkg = PkgConfig::default();
+        let line = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("alpha"),
+            },
+        };
+        let skipped = ShellInitAction {
+            optional: true,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("missing ${nope}"),
+            },
+        };
+        let pkg_name = SmolStr::new_static("pkg");
+        let actions = vec![
+            (&pkg_name, &pkg, &line),
+            (&pkg_name, &pkg, &skipped),
+        ];
+
+        let mut buf = String::new();
+        write_pkg_inits(&mut buf, &actions, &inputs).unwrap();
+        assert_eq!(buf, "alpha\n\n");
+    }
+
+    #[test]
+    fn write_pkg_inits_required_unresolved_returns_unresolved_input() {
+        let inputs: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        let pkg = PkgConfig::default();
+        let line = ShellInitAction {
+            optional: false,
+            kind: ActionKind::Line {
+                line: ExpandStr::new_static("missing ${nope}"),
+            },
+        };
+        let pkg_name = SmolStr::new_static("mypkg");
+        let actions = vec![(&pkg_name, &pkg, &line)];
+
+        let mut buf = String::new();
+        let err = write_pkg_inits(&mut buf, &actions, &inputs).unwrap_err();
+        match err {
+            Error::UnresolvedInput { pkg, input } => {
+                assert_eq!(pkg, "mypkg");
+                assert_eq!(input, "nope");
+            }
+            other => panic!("expected UnresolvedInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_environment_emits_blank_line_after_non_empty_block() {
+        let mut env: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        env.insert(SmolStr::new_static("FOO"), SmolStr::new_static("bar"));
+        let mut buf = String::new();
+        write_environment(&mut buf, &env);
+        assert_eq!(buf, "export FOO=bar\n\n");
+    }
+
+    #[test]
+    fn write_environment_empty_writes_nothing() {
+        let env: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        let mut buf = String::from("KEEP");
+        write_environment(&mut buf, &env);
+        assert_eq!(buf, "KEEP");
+    }
+
+    #[test]
+    fn write_aliases_emits_blank_line_after_non_empty_block() {
+        let mut alias: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        alias.insert(SmolStr::new_static("ll"), SmolStr::new_static("\"ls -l\""));
+        let mut buf = String::new();
+        write_aliases(&mut buf, &alias);
+        assert_eq!(buf, "alias ll=\"ls -l\"\n\n");
+    }
+
+    #[test]
+    fn write_aliases_empty_writes_nothing() {
+        let alias: IndexMap<SmolStr, SmolStr> = IndexMap::new();
+        let mut buf = String::from("KEEP");
+        write_aliases(&mut buf, &alias);
+        assert_eq!(buf, "KEEP");
+    }
+
+    #[test]
+    fn home_tilde_to_var_replaces_tilde_prefix() {
+        assert_eq!(home_tilde_to_var("~/foo"), "$HOME/foo");
+    }
+
+    #[test]
+    fn home_tilde_to_var_passes_other_paths_through() {
+        assert_eq!(home_tilde_to_var("/etc/foo"), "/etc/foo");
+        assert_eq!(home_tilde_to_var("relative/foo"), "relative/foo");
+        assert_eq!(home_tilde_to_var(""), "");
+    }
+}

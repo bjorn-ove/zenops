@@ -195,6 +195,136 @@ fn init_apply_false_emits_init_summary_event() {
 }
 
 #[test]
+fn init_apply_false_emits_init_summary_with_remote_url() {
+    // The seeded bare repo's path is set as `origin` by Git::clone_to. The
+    // summary's `remote` field must reflect that — exercises the Some(url)
+    // branch in emit_clone_summary.
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
+
+    let out = env
+        .run(&init_cmd(bare.to_str().unwrap()))
+        .expect("init should succeed");
+    let summary = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected one InitSummary, got: {:?}", out.entries));
+    assert_eq!(
+        summary.remote.as_deref(),
+        Some(bare.to_str().unwrap()),
+        "expected remote URL to match the bare repo path",
+    );
+}
+
+#[test]
+fn init_clone_summary_handles_zsh_shell() {
+    use zenops::output::InitSummary;
+
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[(
+        "config.toml",
+        r#"
+[shell]
+type = "zsh"
+[shell.environment]
+[shell.alias]
+"#,
+    )]);
+
+    let out = env
+        .run(&init_cmd(bare.to_str().unwrap()))
+        .expect("init should succeed");
+    let summary: &InitSummary = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected one InitSummary, got: {:?}", out.entries));
+    assert_eq!(summary.shell.as_deref(), Some("zsh"));
+}
+
+#[test]
+fn init_clone_summary_omits_shell_when_not_configured() {
+    use zenops::output::InitSummary;
+
+    // No `[shell]` section → emit_clone_summary's `config.shell().map(...)`
+    // is None.
+    let env = test_env::TestEnv::load();
+    let bare = env.seed_bare_repo(&[("config.toml", "")]);
+
+    let out = env
+        .run(&init_cmd(bare.to_str().unwrap()))
+        .expect("init should succeed");
+    let summary: &InitSummary = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected one InitSummary, got: {:?}", out.entries));
+    assert_eq!(summary.shell, None);
+}
+
+#[test]
+fn init_clone_summary_pkg_count_includes_user_packages() {
+    use zenops::output::InitSummary;
+
+    // pkg_count reflects user-defined entries plus zenops' built-in pkgs;
+    // adding three user pkgs shifts the count by +3 vs the empty-config
+    // baseline.
+    let env = test_env::TestEnv::load();
+    let baseline_bare = env.seed_bare_repo(&[("config.toml", "")]);
+    let baseline_out = env
+        .run(&init_cmd(baseline_bare.to_str().unwrap()))
+        .expect("baseline init should succeed");
+    let baseline = baseline_out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Init(s) => Some(s.pkg_count),
+            _ => None,
+        })
+        .unwrap();
+
+    let env2 = test_env::TestEnv::load();
+    let extended_bare = env2.seed_bare_repo(&[(
+        "config.toml",
+        r#"
+[pkg.alpha]
+[pkg.alpha.install_hint.brew]
+packages = ["alpha"]
+
+[pkg.beta]
+[pkg.beta.install_hint.brew]
+packages = ["beta"]
+
+[pkg.gamma]
+[pkg.gamma.install_hint.brew]
+packages = ["gamma"]
+"#,
+    )]);
+    let out: zenops::output::InitSummary = env2
+        .run(&init_cmd(extended_bare.to_str().unwrap()))
+        .expect("init should succeed")
+        .entries
+        .into_iter()
+        .find_map(|e| match e {
+            Entry::Init(s) => Some(s),
+            _ => None,
+        })
+        .unwrap();
+    let _: InitSummary = out;
+    assert_eq!(out.pkg_count, baseline + 3);
+}
+
+#[test]
 fn init_apply_true_does_not_emit_init_summary() {
     let env = test_env::TestEnv::load();
     let bare = env.seed_bare_repo(&[("config.toml", MINIMAL_CONFIG)]);
