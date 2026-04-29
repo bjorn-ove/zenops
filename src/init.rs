@@ -17,10 +17,7 @@
 //! Both forms run *before* a `config.toml` exists, so they can't go through
 //! the normal [`Config::load`] path in [`crate::real_main`].
 
-use std::{
-    fs,
-    io::{self, IsTerminal},
-};
+use std::fs;
 
 use xshell::{Shell, cmd};
 
@@ -93,7 +90,7 @@ fn run_bootstrap(
     output: &mut dyn Output,
 ) -> Result<(), Error> {
     preflight_bootstrap(dirs)?;
-    if !io::stdin().is_terminal() {
+    if !args.stdin_is_terminal {
         return Err(Error::InitNeedsTty);
     }
 

@@ -128,8 +128,9 @@ fn init_bootstrap_refuses_existing_git_dir() {
 
 #[test]
 fn init_bootstrap_needs_tty_when_dir_is_clear() {
-    // Cargo test always runs with a non-TTY stdin, so once the directory
-    // is out of the way bootstrap should refuse with InitNeedsTty.
+    // TestEnv pins `Args::stdin_is_terminal` to false regardless of how
+    // `cargo test` was launched, so once the directory is out of the way
+    // bootstrap must refuse with InitNeedsTty.
     let env = test_env::TestEnv::load();
     env.delete_dir_all(paths::ZENOPS_DIR);
 

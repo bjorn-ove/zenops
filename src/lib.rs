@@ -73,14 +73,20 @@ impl ColorChoice {
     }
 }
 
-/// Globals shared across every subcommand. Currently only `--color`; lives
-/// in its own struct so subcommands can borrow it without redeclaring the
-/// flag.
+/// Globals shared across every subcommand. Lives in its own struct so
+/// subcommands can borrow it without redeclaring the flag.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// When to colorize output
     #[clap(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
+    /// Whether stdin is attached to a TTY. Captured once in `main` and
+    /// threaded through so subcommands don't reach back to global process
+    /// state — tests construct `Args` with `stdin_is_terminal: false` and
+    /// the bootstrap / interactive-apply paths see a non-TTY regardless of
+    /// how `cargo test` was launched.
+    #[clap(skip)]
+    pub stdin_is_terminal: bool,
 }
 
 /// Top-level subcommand. The variants map 1:1 to user-visible commands;
@@ -190,12 +196,17 @@ pub enum Cmd {
     },
 }
 
-fn build_prompter(yes: bool, dry_run: bool, color: bool) -> Result<Box<dyn Prompter>, Error> {
+fn build_prompter(
+    yes: bool,
+    dry_run: bool,
+    color: bool,
+    stdin_is_terminal: bool,
+) -> Result<Box<dyn Prompter>, Error> {
     if dry_run {
         Ok(Box::new(DryRunPrompter::new(color)))
     } else if yes {
         Ok(Box::new(YesPrompter))
-    } else if std::io::stdin().is_terminal() {
+    } else if stdin_is_terminal {
         Ok(Box::new(TerminalPrompter::new(color)?))
     } else {
         Err(Error::ApplyNeedsYesOrTty)
@@ -252,7 +263,8 @@ pub fn real_main(
             let config = Config::load(dirs, &sh, *pull_config)?;
             let mut config_files = ConfigFiles::new(dirs);
             let stdout_color = args.color.enabled(std::io::stdout().is_terminal());
-            let mut prompter = build_prompter(*yes, *dry_run, stdout_color)?;
+            let mut prompter =
+                build_prompter(*yes, *dry_run, stdout_color, args.stdin_is_terminal)?;
             config.push_pkg_health(output)?;
 
             let git = Git::new(dirs.zenops(), &sh);

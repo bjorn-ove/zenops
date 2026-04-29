@@ -42,10 +42,11 @@ pub enum OutputMode {
 
 fn main() {
     let Cli {
-        args,
+        mut args,
         output,
         command,
     } = Cli::parse();
+    args.stdin_is_terminal = io::stdin().is_terminal();
 
     if let zenops::Cmd::Completions { shell } = &command {
         let mut cmd = Cli::command();

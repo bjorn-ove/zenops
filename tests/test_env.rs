@@ -49,6 +49,7 @@ impl TestEnv {
             dirs,
             default_args: Args {
                 color: ColorChoice::Never,
+                stdin_is_terminal: false,
             },
             sh,
         }
