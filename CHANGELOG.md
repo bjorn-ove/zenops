@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.0] - 2026-04-29
+
+### Changed
+- **Breaking (library):** Collapsed the `Output` trait to a single `push(Event)` method. Per-event push methods are gone; renderers now match on the new `Event` enum. The event types (`Status`, `AppliedAction`, `PkgEntry`, `DoctorCheck`, `InitSummary`, `BootstrapSummary`, etc.) re-export from a new `output::event` module.
+- Internal `todo!()` and `unreachable!()` panics in the config-files and git paths are now typed `Error` variants, so previously-panicking edge cases (FIFOs/sockets at managed paths, missing parents, broken symlinks) surface as actionable error messages.
+
+### Added
+- New `Error` variants: `FailedToReadConfig`, `SymlinkProbeFailed`, `CreateSymlinkFailed`, `SymlinkRealPathMissing`, `RefusingToOverwriteOtherWithSymlink` — covering the previously-panicking filesystem edge cases.
+- `Args` gained a `stdin_is_terminal` field (captured once in `main`) so subcommands receive the TTY signal instead of probing global process state.
+
+### Fixed
+- `git status` porcelain v2 parser miscounted some entries; rewritten with full coverage.
+
 ## [0.11.0] - 2026-04-28
 
 ### Added
