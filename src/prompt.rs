@@ -169,10 +169,8 @@ impl Prompter for TerminalPrompter {
             render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
         }
         loop {
-            let line = match self.line.read_line("[Y/n] ").map_err(Error::PromptRead)? {
-                LineOutcome::Line(s) => s,
-                LineOutcome::Eof => return Ok(false),
-                LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+            let Some(line) = ask_line(&mut self.line, "[Y/n] ")? else {
+                return Ok(false);
             };
             match line.trim().to_ascii_lowercase().as_str() {
                 "" | "y" | "yes" => return Ok(true),
@@ -188,14 +186,10 @@ impl Prompter for TerminalPrompter {
 
     fn confirm_pre_apply(&mut self) -> Result<PreApplyDecision, Error> {
         loop {
-            let line = match self
-                .line
-                .read_line("[c]ommit & push / [Y]continue / [n]abort: ")
-                .map_err(Error::PromptRead)?
-            {
-                LineOutcome::Line(s) => s,
-                LineOutcome::Eof => return Ok(PreApplyDecision::Abort),
-                LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+            let Some(line) =
+                ask_line(&mut self.line, "[c]ommit & push / [Y]continue / [n]abort: ")?
+            else {
+                return Ok(PreApplyDecision::Abort);
             };
             match parse_pre_apply_input(&line) {
                 Some(PreApplyAnswer::Commit) => {
@@ -214,20 +208,25 @@ impl Prompter for TerminalPrompter {
     }
 }
 
+/// Read one line from `prompter`, mapping `Eof` to `Ok(None)` and
+/// `Interrupted` to `Err(Error::PromptInterrupted)`. Centralizes the
+/// "outer plumbing" of the read-loop in `confirm`, `confirm_pre_apply`,
+/// and `read_commit_message`; each caller keeps its own retry policy.
+fn ask_line(prompter: &mut dyn LinePrompter, prompt: &str) -> Result<Option<String>, Error> {
+    match prompter.read_line(prompt).map_err(Error::PromptRead)? {
+        LineOutcome::Line(s) => Ok(Some(s)),
+        LineOutcome::Eof => Ok(None),
+        LineOutcome::Interrupted => Err(Error::PromptInterrupted),
+    }
+}
+
 fn read_commit_message(prompter: &mut dyn LinePrompter) -> Result<String, Error> {
     loop {
-        let line = match prompter
-            .read_line("Commit message: ")
-            .map_err(Error::PromptRead)?
-        {
-            LineOutcome::Line(s) => s,
-            LineOutcome::Eof => {
-                return Err(Error::PromptRead(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "no commit message provided",
-                )));
-            }
-            LineOutcome::Interrupted => return Err(Error::PromptInterrupted),
+        let Some(line) = ask_line(prompter, "Commit message: ")? else {
+            return Err(Error::PromptRead(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "no commit message provided",
+            )));
         };
         let trimmed = line.trim().to_string();
         if trimmed.is_empty() {
