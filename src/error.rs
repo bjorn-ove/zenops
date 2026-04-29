@@ -370,3 +370,411 @@ impl From<zenops_safe_relative_path::error::Error> for Error {
         Self::SafeRelativePath(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use similar_asserts::assert_eq;
+    use xshell::{Shell, cmd};
+    use zenops_safe_relative_path::srpath;
+
+    use crate::config_files::ConfigFilePath;
+    use crate::output::ResolvedConfigFilePath;
+
+    use super::*;
+
+    fn rcfp(rel: &'static str) -> ResolvedConfigFilePath {
+        let path = ConfigFilePath::Home(Arc::from(
+            zenops_safe_relative_path::SafeRelativePath::from_relative_path(rel).unwrap(),
+        ));
+        let full = Arc::from(Path::new("/tmp").join(rel).as_path());
+        ResolvedConfigFilePath { path, full }
+    }
+
+    fn io(kind: io::ErrorKind) -> io::Error {
+        io::Error::from(kind)
+    }
+
+    fn xshell_err() -> xshell::Error {
+        // Re-running the same failing command produces equal `to_string()`,
+        // which is what `PartialEq` compares for `Self::Shell(_)`.
+        let sh = Shell::new().unwrap();
+        cmd!(sh, "false").quiet().run().unwrap_err()
+    }
+
+    fn json_err() -> serde_json::Error {
+        serde_json::from_str::<serde_json::Value>("{").unwrap_err()
+    }
+
+    #[test]
+    fn open_db_eq_compares_path_and_io_kind() {
+        let a = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
+        let b = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
+        let c = Error::OpenDb(PathBuf::from("/y"), io(io::ErrorKind::NotFound));
+        let d = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::PermissionDenied));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn parse_db_eq_compares_path_and_inner_error() {
+        let toml_err = toml::from_str::<toml::Value>("not = valid = toml").unwrap_err();
+        let toml_err2 = toml::from_str::<toml::Value>("not = valid = toml").unwrap_err();
+        let a = Error::ParseDb(PathBuf::from("/x"), toml_err);
+        let b = Error::ParseDb(PathBuf::from("/x"), toml_err2);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn shell_eq_compares_display_string() {
+        let a = Error::Shell(xshell_err());
+        let b = Error::Shell(xshell_err());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn failed_to_write_config_eq_and_ne() {
+        let a = Error::FailedToWriteConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let b = Error::FailedToWriteConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let c = Error::FailedToWriteConfig(rcfp("b"), io(io::ErrorKind::PermissionDenied));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn failed_to_read_config_eq_and_ne() {
+        let a = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let b = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let c = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::NotFound));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn symlink_probe_failed_eq_and_ne() {
+        let a = Error::SymlinkProbeFailed(PathBuf::from("/x"), io(io::ErrorKind::Other));
+        let b = Error::SymlinkProbeFailed(PathBuf::from("/x"), io(io::ErrorKind::Other));
+        let c = Error::SymlinkProbeFailed(PathBuf::from("/y"), io(io::ErrorKind::Other));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn create_symlink_failed_eq_and_ne() {
+        let mk = |real, symlink, kind| Error::CreateSymlinkFailed {
+            real: rcfp(real),
+            symlink: rcfp(symlink),
+            source: io(kind),
+        };
+        assert_eq!(
+            mk("r", "s", io::ErrorKind::AlreadyExists),
+            mk("r", "s", io::ErrorKind::AlreadyExists)
+        );
+        assert_ne!(
+            mk("r", "s", io::ErrorKind::AlreadyExists),
+            mk("other", "s", io::ErrorKind::AlreadyExists)
+        );
+        assert_ne!(
+            mk("r", "s", io::ErrorKind::AlreadyExists),
+            mk("r", "s", io::ErrorKind::NotFound)
+        );
+    }
+
+    #[test]
+    fn symlink_real_path_missing_eq_and_ne() {
+        let a = Error::SymlinkRealPathMissing {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let b = Error::SymlinkRealPathMissing {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let c = Error::SymlinkRealPathMissing {
+            real: rcfp("r"),
+            symlink: rcfp("other"),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn refusing_to_overwrite_other_eq_and_ne() {
+        let a = Error::RefusingToOverwriteOtherWithSymlink(rcfp("a"));
+        let b = Error::RefusingToOverwriteOtherWithSymlink(rcfp("a"));
+        let c = Error::RefusingToOverwriteOtherWithSymlink(rcfp("b"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn safe_relative_path_eq_delegates_to_inner() {
+        let traversal_err =
+            zenops_safe_relative_path::SafeRelativePath::from_relative_path("..").unwrap_err();
+        let traversal_err2 =
+            zenops_safe_relative_path::SafeRelativePath::from_relative_path("..").unwrap_err();
+        let a = Error::SafeRelativePath(traversal_err);
+        let b = Error::SafeRelativePath(traversal_err2);
+        let c = Error::SafeRelativePath(
+            zenops_safe_relative_path::error::Error::NotASinglePathComponent("a/b".to_string()),
+        );
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn refusing_to_overwrite_file_eq_and_ne() {
+        let a = Error::RefusingToOverwriteFileWithSymlink {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let b = Error::RefusingToOverwriteFileWithSymlink {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let c = Error::RefusingToOverwriteFileWithSymlink {
+            real: rcfp("r"),
+            symlink: rcfp("t"),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn refusing_to_overwrite_directory_eq_and_ne() {
+        let a = Error::RefusingToOverwriteDirectoryWithSymlink {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let b = Error::RefusingToOverwriteDirectoryWithSymlink {
+            real: rcfp("r"),
+            symlink: rcfp("s"),
+        };
+        let c = Error::RefusingToOverwriteDirectoryWithSymlink {
+            real: rcfp("other"),
+            symlink: rcfp("s"),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn create_directory_error_eq_and_ne() {
+        let a = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let b = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::PermissionDenied));
+        let c = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::NotFound));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn unresolved_input_eq_and_ne() {
+        let a = Error::UnresolvedInput {
+            pkg: SmolStr::new_static("p"),
+            input: SmolStr::new_static("i"),
+        };
+        let b = Error::UnresolvedInput {
+            pkg: SmolStr::new_static("p"),
+            input: SmolStr::new_static("i"),
+        };
+        let c = Error::UnresolvedInput {
+            pkg: SmolStr::new_static("p"),
+            input: SmolStr::new_static("other"),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn template_unterminated_eq_and_ne() {
+        let a = Error::TemplateUnterminated {
+            pkg: SmolStr::new_static("p"),
+        };
+        let b = Error::TemplateUnterminated {
+            pkg: SmolStr::new_static("p"),
+        };
+        let c = Error::TemplateUnterminated {
+            pkg: SmolStr::new_static("q"),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn unit_variants_compare_equal_to_themselves() {
+        assert_eq!(Error::ApplyNeedsYesOrTty, Error::ApplyNeedsYesOrTty);
+        assert_eq!(Error::PromptInterrupted, Error::PromptInterrupted);
+        assert_eq!(Error::InitNeedsTty, Error::InitNeedsTty);
+        assert_eq!(Error::CurlNotFound, Error::CurlNotFound);
+    }
+
+    #[test]
+    fn dirty_repo_requires_allow_dirty_eq_and_ne() {
+        let a = Error::DirtyRepoRequiresAllowDirty(PathBuf::from("/x"));
+        let b = Error::DirtyRepoRequiresAllowDirty(PathBuf::from("/x"));
+        let c = Error::DirtyRepoRequiresAllowDirty(PathBuf::from("/y"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn prompt_read_eq_compares_io_kind() {
+        let a = Error::PromptRead(io(io::ErrorKind::UnexpectedEof));
+        let b = Error::PromptRead(io(io::ErrorKind::UnexpectedEof));
+        let c = Error::PromptRead(io(io::ErrorKind::Other));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn output_eq_compares_display_string() {
+        let a = Error::Output(OutputError::Io(io(io::ErrorKind::BrokenPipe)));
+        let b = Error::Output(OutputError::Io(io(io::ErrorKind::BrokenPipe)));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn init_dir_variants_eq_and_ne() {
+        assert_eq!(
+            Error::InitDirNotEmpty(PathBuf::from("/a")),
+            Error::InitDirNotEmpty(PathBuf::from("/a"))
+        );
+        assert_ne!(
+            Error::InitDirNotEmpty(PathBuf::from("/a")),
+            Error::InitDirNotEmpty(PathBuf::from("/b"))
+        );
+        assert_eq!(
+            Error::InitDirExists(PathBuf::from("/a")),
+            Error::InitDirExists(PathBuf::from("/a"))
+        );
+        assert_ne!(
+            Error::InitDirExists(PathBuf::from("/a")),
+            Error::InitDirExists(PathBuf::from("/b"))
+        );
+        assert_eq!(
+            Error::InitGitDirExists(PathBuf::from("/a")),
+            Error::InitGitDirExists(PathBuf::from("/a"))
+        );
+        assert_eq!(
+            Error::InitNoConfigToml(PathBuf::from("/a")),
+            Error::InitNoConfigToml(PathBuf::from("/a"))
+        );
+    }
+
+    #[test]
+    fn init_git_init_failed_eq_compares_display_string() {
+        let a = Error::InitGitInitFailed {
+            source: xshell_err(),
+        };
+        let b = Error::InitGitInitFailed {
+            source: xshell_err(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn init_clone_failed_eq_compares_url_and_display() {
+        let a = Error::InitCloneFailed {
+            url: "https://example/x".to_string(),
+            source: xshell_err(),
+        };
+        let b = Error::InitCloneFailed {
+            url: "https://example/x".to_string(),
+            source: xshell_err(),
+        };
+        let c = Error::InitCloneFailed {
+            url: "https://example/y".to_string(),
+            source: xshell_err(),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn init_io_eq_and_ne() {
+        let a = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::Other));
+        let b = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::Other));
+        let c = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn github_key_fetch_failed_eq_and_ne() {
+        let a = Error::GithubKeyFetchFailed {
+            username: SmolStr::new_static("u"),
+            source: xshell_err(),
+        };
+        let b = Error::GithubKeyFetchFailed {
+            username: SmolStr::new_static("u"),
+            source: xshell_err(),
+        };
+        let c = Error::GithubKeyFetchFailed {
+            username: SmolStr::new_static("v"),
+            source: xshell_err(),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn github_key_parse_failed_eq_and_ne() {
+        let a = Error::GithubKeyParseFailed {
+            username: SmolStr::new_static("u"),
+            source: json_err(),
+        };
+        let b = Error::GithubKeyParseFailed {
+            username: SmolStr::new_static("u"),
+            source: json_err(),
+        };
+        let c = Error::GithubKeyParseFailed {
+            username: SmolStr::new_static("v"),
+            source: json_err(),
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn schema_emit_eq_compares_display_string() {
+        let a = Error::SchemaEmit(json_err());
+        let b = Error::SchemaEmit(json_err());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn schema_write_eq_compares_io_kind() {
+        let a = Error::SchemaWrite(io(io::ErrorKind::BrokenPipe));
+        let b = Error::SchemaWrite(io(io::ErrorKind::BrokenPipe));
+        let c = Error::SchemaWrite(io(io::ErrorKind::Other));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn cross_variant_compare_returns_false() {
+        assert_ne!(Error::ApplyNeedsYesOrTty, Error::PromptInterrupted);
+        assert_ne!(
+            Error::CurlNotFound,
+            Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound))
+        );
+        let _ = srpath!("dummy"); // keep srpath import in use
+    }
+
+    #[test]
+    fn from_xshell_error_wraps_in_shell_variant() {
+        let e: Error = xshell_err().into();
+        assert!(matches!(e, Error::Shell(_)));
+    }
+
+    #[test]
+    fn from_safe_relative_path_error_wraps() {
+        let inner = zenops_safe_relative_path::error::Error::NotASinglePathComponent("a/b".into());
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::SafeRelativePath(_)));
+    }
+}

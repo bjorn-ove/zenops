@@ -44,6 +44,57 @@ fn repo_push_uploads_local_commits_to_bare_remote() {
 }
 
 #[test]
+fn repo_status_runs_against_dirty_repo() {
+    // `Cmd::Repo(Status)` shells out to `git status`, which inherits stdio.
+    // We can't capture that stdout from inside the process, so the
+    // assertion is that dispatch reaches `git status` and exits cleanly
+    // (i.e. the dispatch arm runs, the command builds, and git agrees
+    // with the working tree). This exercises the otherwise-uncovered
+    // `GitCmd::Status` branch.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    env.append_zenops_file(srpath!("config.toml"), "\n# touched", None);
+
+    env.run(&Cmd::Repo {
+        command: GitCmd::Status { files: Vec::new() },
+    })
+    .expect("repo status should succeed even when the repo is dirty");
+}
+
+#[test]
+fn repo_diff_runs_against_dirty_repo() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    env.append_zenops_file(srpath!("config.toml"), "\n# touched", None);
+
+    env.run(&Cmd::Repo {
+        command: GitCmd::Diff { files: Vec::new() },
+    })
+    .expect("repo diff should succeed");
+}
+
+#[test]
+fn repo_add_stages_specific_file() {
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    env.write_zenops_file(srpath!("staged.txt"), "stuff\n", None);
+
+    env.run(&Cmd::Repo {
+        command: GitCmd::Add {
+            files: vec![srpath!("staged.txt").to_safe_relative_path_buf()],
+        },
+    })
+    .expect("repo add should succeed");
+
+    let zenops = env.resolve_path(paths::ZENOPS_DIR);
+    let staged = env.git_out(&zenops, &["diff", "--cached", "--name-only"]);
+    assert!(
+        staged.lines().any(|l| l == "staged.txt"),
+        "staged.txt should appear in the index, got: {staged:?}",
+    );
+}
+
+#[test]
 fn repo_pull_rebase_fast_forwards_remote_commits() {
     let env = test_env::TestEnv::load();
     let bare = env.init_config_with_remote("");

@@ -515,4 +515,173 @@ mod tests {
         assert_eq!(color_code(true, "\x1b[36m"), "\x1b[36m");
         assert_eq!(color_reset(true), "\x1b[0m");
     }
+
+    #[test]
+    fn render_change_replace_wrong_symlink_includes_current_target() {
+        let real = home_path("src.txt");
+        let symlink = home_path("dst.txt");
+        let current = Path::new("/somewhere/else");
+        assert_eq!(
+            render_to_string(
+                PendingChange::ReplaceWrongSymlink {
+                    real: &real,
+                    symlink: &symlink,
+                    current_target: current,
+                },
+                false,
+            ),
+            "Replace symlink ~/dst.txt: currently -> /somewhere/else -> ~/src.txt?\n",
+        );
+    }
+
+    #[test]
+    fn render_change_update_file_hunk_writes_header_and_diff() {
+        let p = home_path("alpha.toml");
+        let diff = TextDiff::from_lines("a\nb\nc\n", "a\nB\nc\n");
+        let groups = diff.grouped_ops(3);
+        assert_eq!(groups.len(), 1);
+
+        let mut buf: Vec<u8> = Vec::new();
+        render_change(
+            &mut buf,
+            &PendingChange::UpdateFileHunk {
+                path: &p,
+                index: 1,
+                total: 1,
+                diff: &diff,
+                ops: &groups[0],
+            },
+            false,
+        )
+        .unwrap();
+        let got = String::from_utf8(buf).unwrap();
+
+        assert!(
+            got.starts_with("Update ~/alpha.toml — hunk 1/1?\n"),
+            "header wrong: {got:?}",
+        );
+        assert!(got.contains("@@ -1,3 +1,3 @@"));
+        assert!(got.contains("-b\n"));
+        assert!(got.contains("+B\n"));
+    }
+
+    #[test]
+    fn parse_pre_apply_input_recognizes_commit() {
+        assert_eq!(parse_pre_apply_input("c"), Some(PreApplyAnswer::Commit));
+        assert_eq!(
+            parse_pre_apply_input("commit"),
+            Some(PreApplyAnswer::Commit)
+        );
+        assert_eq!(
+            parse_pre_apply_input("  COMMIT \n"),
+            Some(PreApplyAnswer::Commit),
+        );
+    }
+
+    #[test]
+    fn parse_pre_apply_input_recognizes_continue() {
+        assert_eq!(parse_pre_apply_input(""), Some(PreApplyAnswer::Continue));
+        assert_eq!(parse_pre_apply_input("y"), Some(PreApplyAnswer::Continue));
+        assert_eq!(parse_pre_apply_input("yes"), Some(PreApplyAnswer::Continue));
+        assert_eq!(
+            parse_pre_apply_input(" YES "),
+            Some(PreApplyAnswer::Continue),
+        );
+    }
+
+    #[test]
+    fn parse_pre_apply_input_recognizes_abort() {
+        assert_eq!(parse_pre_apply_input("n"), Some(PreApplyAnswer::Abort));
+        assert_eq!(parse_pre_apply_input("no"), Some(PreApplyAnswer::Abort));
+        assert_eq!(parse_pre_apply_input("abort"), Some(PreApplyAnswer::Abort),);
+    }
+
+    #[test]
+    fn parse_pre_apply_input_returns_none_for_garbage() {
+        assert_eq!(parse_pre_apply_input("maybe"), None);
+        assert_eq!(parse_pre_apply_input("?"), None);
+    }
+
+    struct ScriptedPrompter {
+        scripted: std::collections::VecDeque<LineOutcome>,
+        warnings: Vec<String>,
+    }
+
+    impl ScriptedPrompter {
+        fn new(outcomes: Vec<LineOutcome>) -> Self {
+            Self {
+                scripted: outcomes.into(),
+                warnings: Vec::new(),
+            }
+        }
+    }
+
+    impl LinePrompter for ScriptedPrompter {
+        fn read_line(&mut self, _prompt: &str) -> io::Result<LineOutcome> {
+            Ok(self
+                .scripted
+                .pop_front()
+                .expect("ScriptedPrompter ran out of outcomes"))
+        }
+
+        fn writeln(&mut self, msg: &str) -> io::Result<()> {
+            self.warnings.push(msg.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn read_commit_message_returns_trimmed_line_on_happy_path() {
+        let mut p = ScriptedPrompter::new(vec![LineOutcome::Line("  hello world  ".into())]);
+        let got = read_commit_message(&mut p).unwrap();
+        assert_eq!(got, "hello world");
+        assert!(p.warnings.is_empty());
+    }
+
+    #[test]
+    fn read_commit_message_retries_on_empty_then_accepts_real_message() {
+        let mut p = ScriptedPrompter::new(vec![
+            LineOutcome::Line("".into()),
+            LineOutcome::Line("   ".into()),
+            LineOutcome::Line("real message".into()),
+        ]);
+        let got = read_commit_message(&mut p).unwrap();
+        assert_eq!(got, "real message");
+        assert_eq!(p.warnings.len(), 2);
+        assert!(p.warnings[0].contains("cannot be empty"));
+    }
+
+    #[test]
+    fn read_commit_message_eof_returns_unexpected_eof_error() {
+        let mut p = ScriptedPrompter::new(vec![LineOutcome::Eof]);
+        let err = read_commit_message(&mut p).unwrap_err();
+        match err {
+            Error::PromptRead(io_err) => {
+                assert_eq!(io_err.kind(), io::ErrorKind::UnexpectedEof);
+            }
+            other => panic!("expected PromptRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_commit_message_interrupted_returns_prompt_interrupted() {
+        let mut p = ScriptedPrompter::new(vec![LineOutcome::Interrupted]);
+        let err = read_commit_message(&mut p).unwrap_err();
+        assert_eq!(err, Error::PromptInterrupted);
+    }
+
+    #[test]
+    fn yes_prompter_accepts_every_change_and_continues() {
+        let mut p = YesPrompter;
+        let real = home_path("src.txt");
+        let symlink = home_path("dst.txt");
+        assert!(
+            p.confirm(PendingChange::CreateSymlink {
+                real: &real,
+                symlink: &symlink,
+            })
+            .unwrap()
+        );
+        assert_eq!(p.confirm_pre_apply().unwrap(), PreApplyDecision::Continue);
+    }
 }
