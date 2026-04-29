@@ -13,7 +13,7 @@ use zenops::{
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
     output::{
-        AppliedAction, BootstrapSummary, DoctorCheck, InitSummary, OutputError, PkgEntry,
+        AppliedAction, BootstrapSummary, DoctorCheck, Event, InitSummary, OutputError, PkgEntry,
         ResolvedConfigFilePath, Status,
     },
     pkg_list,
@@ -405,33 +405,15 @@ pub struct Output {
 }
 
 impl zenops::output::Output for Output {
-    fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
-        self.entries.push(Entry::Status(status));
-        Ok(())
-    }
-
-    fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
-        self.entries.push(Entry::AppliedAction(action));
-        Ok(())
-    }
-
-    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
-        self.entries.push(Entry::Pkg(entry));
-        Ok(())
-    }
-
-    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
-        self.entries.push(Entry::Doctor(check));
-        Ok(())
-    }
-
-    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
-        self.entries.push(Entry::Init(summary));
-        Ok(())
-    }
-
-    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
-        self.entries.push(Entry::Bootstrap(summary));
+    fn push(&mut self, event: Event) -> Result<(), OutputError> {
+        self.entries.push(match event {
+            Event::Status(status) => Entry::Status(status),
+            Event::AppliedAction(action) => Entry::AppliedAction(action),
+            Event::PkgEntry(entry) => Entry::Pkg(entry),
+            Event::DoctorCheck(check) => Entry::Doctor(check),
+            Event::InitSummary(summary) => Entry::Init(summary),
+            Event::BootstrapSummary(summary) => Entry::Bootstrap(summary),
+        });
         Ok(())
     }
 }

@@ -17,7 +17,7 @@ use crate::{
     config_files::ConfigFileDirs,
     error::Error,
     git::Git,
-    output::{DoctorCheck, DoctorSection, DoctorSeverity, Output},
+    output::{DoctorCheck, DoctorSection, DoctorSeverity, Event, Output},
     pkg_manager,
 };
 
@@ -66,7 +66,7 @@ impl<'o> DoctorEmitter<'o> {
         // `section` field, but Packages has no `DoctorCheck` rows of its
         // own — its content is `Status::Pkg` events from `push_pkg_health`.
         self.out
-            .push_doctor_check(DoctorCheck::SectionHeader { section })?;
+            .push(Event::DoctorCheck(DoctorCheck::SectionHeader { section }))?;
         Ok(())
     }
 
@@ -78,14 +78,14 @@ impl<'o> DoctorEmitter<'o> {
         hint: Option<String>,
         detail: Vec<String>,
     ) -> Result<(), Error> {
-        self.out.push_doctor_check(DoctorCheck::Check {
+        self.out.push(Event::DoctorCheck(DoctorCheck::Check {
             section: self.section,
             label: SmolStr::new(label),
             severity,
             value: value.into(),
             hint,
             detail,
-        })?;
+        }))?;
         Ok(())
     }
 

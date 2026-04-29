@@ -28,7 +28,7 @@ use crate::{
     error::Error,
     git::Git,
     line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
-    output::{BootstrapSummary, InitSummary, Output},
+    output::{BootstrapSummary, Event, InitSummary, Output},
     real_main,
 };
 
@@ -120,12 +120,12 @@ fn run_bootstrap(
         return apply_handoff(yes, dirs, args, output);
     }
 
-    output.push_bootstrap_summary(BootstrapSummary {
+    output.push(Event::BootstrapSummary(BootstrapSummary {
         repo_path: zenops_dir.to_path_buf(),
         shell: shell.map(|s| s.to_string()),
         name,
         email,
-    })?;
+    }))?;
     Ok(())
 }
 
@@ -199,12 +199,12 @@ fn emit_clone_summary(
         crate::config::pkg::Shell::Zsh => "zsh".to_string(),
     });
 
-    output.push_init_summary(InitSummary {
+    output.push(Event::InitSummary(InitSummary {
         clone_path: dest.to_path_buf(),
         remote,
         shell,
         pkg_count: config.pkgs().len(),
-    })?;
+    }))?;
     Ok(())
 }
 

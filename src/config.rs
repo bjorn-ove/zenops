@@ -46,7 +46,7 @@ use crate::{
     config_files::{ConfigFileDirs, ConfigFilePath, ConfigFiles},
     error::Error,
     git::Git,
-    output::{Output, PkgStatus, ResolvedConfigFilePath, Status},
+    output::{Event, Output, PkgStatus, ResolvedConfigFilePath, Status},
     pkg_manager,
 };
 
@@ -289,15 +289,15 @@ impl<'dirs> Config<'dirs> {
         if git.is_git_repo()? {
             let statuses = git.status()?;
             if statuses.is_empty() {
-                output.push_status(Status::GitRepoClean {
+                output.push(Event::Status(Status::GitRepoClean {
                     repo: self.zenops_repo.clone(),
-                })?;
+                }))?;
             } else {
                 for status in statuses {
-                    output.push_status(Status::Git {
+                    output.push(Event::Status(Status::Git {
                         repo: self.zenops_repo.clone(),
                         status,
-                    })?;
+                    }))?;
                 }
             }
         }
@@ -322,15 +322,15 @@ impl<'dirs> Config<'dirs> {
                     let pkgs = m.packages_for(&pkg.install_hint);
                     (!pkgs.is_empty()).then(|| m.install_command(pkgs))
                 });
-                output.push_status(Status::Pkg {
+                output.push(Event::Status(Status::Pkg {
                     pkg: label,
                     status: PkgStatus::Missing { install_command },
-                })?;
+                }))?;
             } else if pkg.enable_on_and_detect_matches(self.dirs.home(), &self.system_inputs) {
-                output.push_status(Status::Pkg {
+                output.push(Event::Status(Status::Pkg {
                     pkg: label,
                     status: PkgStatus::Ok,
-                })?;
+                }))?;
             }
         }
         Ok(())

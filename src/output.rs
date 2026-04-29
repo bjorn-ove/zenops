@@ -412,40 +412,18 @@ pub enum OutputError {
 /// [module-level docs](self) for how this relates to `log::*!` and how the
 /// renderer is chosen.
 ///
-/// Methods other than [`push_status`](Output::push_status) and
-/// [`push_applied_action`](Output::push_applied_action) default to no-op so
-/// test impls and renderers that don't care about a given surface can stay
-/// terse. [`finalize`](Output::finalize) is called once at the end of a
-/// command — `JsonOutput` streams as it goes and treats it as a no-op;
-/// `TerminalRenderer` accumulates rows so it can column-align them and
-/// flushes here.
+/// One method, [`push`](Output::push), takes any [`Event`] variant; the
+/// renderer match-dispatches internally. [`finalize`](Output::finalize) is
+/// called once at the end of a command — `JsonOutput` streams as it goes
+/// and treats it as a no-op; `TerminalRenderer` accumulates rows so it can
+/// column-align them and flushes here.
 pub trait Output {
-    /// Emit one row of the per-file desired-state report (used by `apply`'s
-    /// pre-change pass and by `status`). Variants of [`Status`] cover
-    /// generated files, symlinks, the zenops config repo's git status, and
-    /// per-package install state.
-    fn push_status(&mut self, status: Status) -> Result<(), OutputError>;
-    /// Emit one row per change `apply` actually wrote to disk —
-    /// created/updated file, created symlink, created directory.
-    fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError>;
-    /// One row of `zenops pkg`. Default no-op so test impls and renderers
-    /// that don't care about pkg listing (none today) don't have to spell
-    /// out the boilerplate.
-    fn push_pkg_entry(&mut self, _entry: PkgEntry) -> Result<(), OutputError> {
-        Ok(())
-    }
-    /// One row (or section marker) of `zenops doctor`.
-    fn push_doctor_check(&mut self, _check: DoctorCheck) -> Result<(), OutputError> {
-        Ok(())
-    }
-    /// Outcome of `zenops init <url>` without `--apply`.
-    fn push_init_summary(&mut self, _summary: InitSummary) -> Result<(), OutputError> {
-        Ok(())
-    }
-    /// Outcome of `zenops init` bootstrap (no URL).
-    fn push_bootstrap_summary(&mut self, _summary: BootstrapSummary) -> Result<(), OutputError> {
-        Ok(())
-    }
+    /// Emit one structured event. Variants of [`Event`] cover every
+    /// command's output surface: the per-file `Status` / `AppliedAction`
+    /// stream from `apply` and `status`, `PkgEntry` from `pkg`,
+    /// `DoctorCheck` from `doctor`, and the one-shot `InitSummary` /
+    /// `BootstrapSummary` from `init`.
+    fn push(&mut self, event: Event) -> Result<(), OutputError>;
     /// Emit any buffered output. `JsonOutput` streams as it goes and has a
     /// no-op `finalize`; `TerminalRenderer` accumulates lines so it can
     /// column-align them and flushes here. Safe to call zero or one time at
@@ -471,56 +449,36 @@ impl<'w> JsonOutput<'w> {
     }
 }
 
+/// One structured output event. The renderer match-dispatches; the JSON
+/// renderer serialises this directly with the `event` tag (e.g. `{"event":
+/// "status", ...}`).
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub(crate) enum Event {
+pub enum Event {
+    /// One row of the per-file desired-state report (used by `apply`'s
+    /// pre-change pass and by `status`).
     Status(Status),
+    /// One row per change `apply` actually wrote to disk.
     AppliedAction(AppliedAction),
+    /// One row of `zenops pkg`.
     PkgEntry(PkgEntry),
+    /// One row (or section marker) of `zenops doctor`.
     DoctorCheck(DoctorCheck),
+    /// Outcome of `zenops init <url>` without `--apply`.
     InitSummary(InitSummary),
+    /// Outcome of `zenops init` bootstrap (no URL).
     BootstrapSummary(BootstrapSummary),
 }
 
 impl Output for JsonOutput<'_> {
-    fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
-        serde_json::to_writer(&mut *self.out, &Event::Status(status))?;
-        writeln!(self.out)?;
-        Ok(())
-    }
-
-    fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
-        serde_json::to_writer(&mut *self.out, &Event::AppliedAction(action))?;
-        writeln!(self.out)?;
-        Ok(())
-    }
-
-    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
-        serde_json::to_writer(&mut *self.out, &Event::PkgEntry(entry))?;
-        writeln!(self.out)?;
-        Ok(())
-    }
-
-    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
+    fn push(&mut self, event: Event) -> Result<(), OutputError> {
         // Bare section headers are a human-rendering construct — JSON
         // consumers reconstruct sections from `Check { section, ... }`
         // events directly.
-        if matches!(check, DoctorCheck::SectionHeader { .. }) {
+        if matches!(event, Event::DoctorCheck(DoctorCheck::SectionHeader { .. })) {
             return Ok(());
         }
-        serde_json::to_writer(&mut *self.out, &Event::DoctorCheck(check))?;
-        writeln!(self.out)?;
-        Ok(())
-    }
-
-    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
-        serde_json::to_writer(&mut *self.out, &Event::InitSummary(summary))?;
-        writeln!(self.out)?;
-        Ok(())
-    }
-
-    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
-        serde_json::to_writer(&mut *self.out, &Event::BootstrapSummary(summary))?;
+        serde_json::to_writer(&mut *self.out, &event)?;
         writeln!(self.out)?;
         Ok(())
     }
@@ -1188,93 +1146,93 @@ impl TerminalRenderer<'_> {
 }
 
 impl Output for TerminalRenderer<'_> {
-    fn push_status(&mut self, status: Status) -> Result<(), OutputError> {
-        self.enter(Pending::StatusBlock)?;
-        if self.show_diffs
-            && let Status::Generated {
-                want_content,
-                cur_content,
-                path,
-                status: FileStatus::Modified | FileStatus::New,
-            } = &status
-        {
-            self.diffs.push(PendingDiff {
-                path: path.clone(),
-                cur_content: cur_content.clone(),
-                want_content: Arc::clone(want_content),
-            });
-        }
-        if let Some(line) = status_to_line(&status, self.show_clean) {
-            self.lines.push(line);
-        }
-        Ok(())
-    }
-
-    fn push_applied_action(&mut self, action: AppliedAction) -> Result<(), OutputError> {
-        self.enter(Pending::StatusBlock)?;
-        self.lines.push(action_to_line(&action));
-        Ok(())
-    }
-
-    fn push_pkg_entry(&mut self, entry: PkgEntry) -> Result<(), OutputError> {
-        match entry {
-            PkgEntry::NoPackageManagerDetected { supported } => {
-                // One-shot pre-block warning. Renders inline so the user
-                // sees it before any pkg rows; doesn't open a PkgBlock so
-                // the column-padding only considers actual rows.
+    fn push(&mut self, event: Event) -> Result<(), OutputError> {
+        match event {
+            Event::Status(status) => {
+                self.enter(Pending::StatusBlock)?;
+                if self.show_diffs
+                    && let Status::Generated {
+                        want_content,
+                        cur_content,
+                        path,
+                        status: FileStatus::Modified | FileStatus::New,
+                    } = &status
+                {
+                    self.diffs.push(PendingDiff {
+                        path: path.clone(),
+                        cur_content: cur_content.clone(),
+                        want_content: Arc::clone(want_content),
+                    });
+                }
+                if let Some(line) = status_to_line(&status, self.show_clean) {
+                    self.lines.push(line);
+                }
+                Ok(())
+            }
+            Event::AppliedAction(action) => {
+                self.enter(Pending::StatusBlock)?;
+                self.lines.push(action_to_line(&action));
+                Ok(())
+            }
+            Event::PkgEntry(entry) => {
+                match entry {
+                    PkgEntry::NoPackageManagerDetected { supported } => {
+                        // One-shot pre-block warning. Renders inline so the
+                        // user sees it before any pkg rows; doesn't open a
+                        // PkgBlock so the column-padding only considers
+                        // actual rows.
+                        self.enter(Pending::None)?;
+                        writeln!(
+                            self.out,
+                            "note: no known package manager detected on PATH; install \
+                             guidance will be hidden. Supported managers: {}.",
+                            supported.join(", "),
+                        )?;
+                    }
+                    PkgEntry::Pkg {
+                        name,
+                        key: _,
+                        description,
+                        state,
+                        matched_detect,
+                        install_hints,
+                    } => {
+                        self.enter(Pending::PkgBlock)?;
+                        self.pkg_rows.push(PkgRow {
+                            name,
+                            description,
+                            state,
+                            matched_detect,
+                            install_hints,
+                        });
+                    }
+                    PkgEntry::AggregateInstall {
+                        pkg_manager,
+                        command,
+                        packages: _,
+                    } => {
+                        self.enter(Pending::PkgBlock)?;
+                        self.pkg_aggregate = Some(PkgAggregate {
+                            pkg_manager,
+                            command,
+                        });
+                    }
+                }
+                Ok(())
+            }
+            Event::DoctorCheck(check) => {
                 self.enter(Pending::None)?;
-                writeln!(
-                    self.out,
-                    "note: no known package manager detected on PATH; install \
-                     guidance will be hidden. Supported managers: {}.",
-                    supported.join(", "),
-                )?;
+                self.render_doctor_check(&check)
             }
-            PkgEntry::Pkg {
-                name,
-                key: _,
-                description,
-                state,
-                matched_detect,
-                install_hints,
-            } => {
-                self.enter(Pending::PkgBlock)?;
-                self.pkg_rows.push(PkgRow {
-                    name,
-                    description,
-                    state,
-                    matched_detect,
-                    install_hints,
-                });
+            Event::InitSummary(summary) => {
+                self.enter(Pending::None)?;
+                self.render_init_summary(&summary)
             }
-            PkgEntry::AggregateInstall {
-                pkg_manager,
-                command,
-                packages: _,
-            } => {
-                self.enter(Pending::PkgBlock)?;
-                self.pkg_aggregate = Some(PkgAggregate {
-                    pkg_manager,
-                    command,
-                });
+            Event::BootstrapSummary(summary) => {
+                self.enter(Pending::None)?;
+                self.render_bootstrap_summary(&summary)
             }
         }
-        Ok(())
-    }
-
-    fn push_doctor_check(&mut self, check: DoctorCheck) -> Result<(), OutputError> {
-        self.enter(Pending::None)?;
-        self.render_doctor_check(&check)
-    }
-
-    fn push_init_summary(&mut self, summary: InitSummary) -> Result<(), OutputError> {
-        self.enter(Pending::None)?;
-        self.render_init_summary(&summary)
-    }
-
-    fn push_bootstrap_summary(&mut self, summary: BootstrapSummary) -> Result<(), OutputError> {
-        self.enter(Pending::None)?;
-        self.render_bootstrap_summary(&summary)
     }
 
     fn finalize(&mut self) -> Result<(), OutputError> {
@@ -1343,7 +1301,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, color, show_diffs, show_clean);
-            r.push_status(status).unwrap();
+            r.push(Event::Status(status)).unwrap();
             r.finalize().unwrap();
         }
         String::from_utf8(buf).unwrap()
@@ -1353,7 +1311,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, false, false, false);
-            r.push_applied_action(action).unwrap();
+            r.push(Event::AppliedAction(action)).unwrap();
             r.finalize().unwrap();
         }
         String::from_utf8(buf).unwrap()
@@ -1675,13 +1633,13 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, false, false, false);
-            r.push_status(pkg_missing("py", None)).unwrap();
-            r.push_status(generated(
+            r.push(Event::Status(pkg_missing("py", None))).unwrap();
+            r.push(Event::Status(generated(
                 Some("a\n"),
                 "b\n",
                 "long/nested/path/file.toml",
                 FileStatus::Modified,
-            ))
+            )))
             .unwrap();
             r.finalize().unwrap();
         }
@@ -1711,7 +1669,7 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, false, false, false);
-            r.push_status(pkg_missing("x", None)).unwrap();
+            r.push(Event::Status(pkg_missing("x", None))).unwrap();
             r.finalize().unwrap();
             r.finalize().unwrap();
         }
@@ -1806,18 +1764,18 @@ mod tests {
         {
             let mut r = TerminalRenderer::new(&mut buf, true, false, false);
             // Short zenops-rooted path (splits): ~/.config/zenops/a.toml (22 chars visible)
-            r.push_status(Status::Git {
+            r.push(Event::Status(Status::Git {
                 repo: zenops_path(""),
                 status: GitFileStatus::Modified(relpath("a.toml")),
-            })
+            }))
             .unwrap();
             // Longer home path (single dim segment)
-            r.push_status(generated(
+            r.push(Event::Status(generated(
                 Some("a\n"),
                 "b\n",
                 "long/nested/path/file.toml",
                 FileStatus::Modified,
-            ))
+            )))
             .unwrap();
             r.finalize().unwrap();
         }
@@ -1856,7 +1814,9 @@ mod tests {
 
     fn json_line_for_status(status: Status) -> serde_json::Value {
         let mut buf: Vec<u8> = Vec::new();
-        JsonOutput::new(&mut buf).push_status(status).unwrap();
+        JsonOutput::new(&mut buf)
+            .push(Event::Status(status))
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.ends_with('\n'), "JSON line must end with newline: {s:?}");
         assert_eq!(
@@ -1870,7 +1830,7 @@ mod tests {
     fn json_line_for_action(action: AppliedAction) -> serde_json::Value {
         let mut buf: Vec<u8> = Vec::new();
         JsonOutput::new(&mut buf)
-            .push_applied_action(action)
+            .push(Event::AppliedAction(action))
             .unwrap();
         let s = String::from_utf8(buf).unwrap();
         serde_json::from_str(s.trim_end()).unwrap()
@@ -1960,9 +1920,12 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut out = JsonOutput::new(&mut buf);
-            out.push_status(pkg_missing("python", None)).unwrap();
-            out.push_applied_action(AppliedAction::CreatedDir(home_path("d")))
+            out.push(Event::Status(pkg_missing("python", None)))
                 .unwrap();
+            out.push(Event::AppliedAction(AppliedAction::CreatedDir(home_path(
+                "d",
+            ))))
+            .unwrap();
         }
         let s = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = s.lines().collect();
@@ -1991,7 +1954,7 @@ mod tests {
         {
             let mut r = TerminalRenderer::new(&mut buf, color, false, false);
             for e in entries {
-                r.push_pkg_entry(e).unwrap();
+                r.push(Event::PkgEntry(e)).unwrap();
             }
             r.finalize().unwrap();
         }
@@ -2086,7 +2049,7 @@ mod tests {
         {
             let mut r = TerminalRenderer::new(&mut buf, color, false, false);
             for c in checks {
-                r.push_doctor_check(c).unwrap();
+                r.push(Event::DoctorCheck(c)).unwrap();
             }
             r.finalize().unwrap();
         }
@@ -2181,12 +2144,12 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, false, false, false);
-            r.push_init_summary(InitSummary {
+            r.push(Event::InitSummary(InitSummary {
                 clone_path: PathBuf::from("/home/test/.config/zenops"),
                 remote: Some("git@example.com:cfg.git".into()),
                 shell: Some("bash".into()),
                 pkg_count: 12,
-            })
+            }))
             .unwrap();
             r.finalize().unwrap();
         }
@@ -2203,7 +2166,9 @@ mod tests {
 
     fn json_line_for_pkg_entry(entry: PkgEntry) -> serde_json::Value {
         let mut buf: Vec<u8> = Vec::new();
-        JsonOutput::new(&mut buf).push_pkg_entry(entry).unwrap();
+        JsonOutput::new(&mut buf)
+            .push(Event::PkgEntry(entry))
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         serde_json::from_str(s.trim_end()).unwrap()
     }
@@ -2255,7 +2220,9 @@ mod tests {
 
     fn json_line_for_doctor_check(check: DoctorCheck) -> Option<serde_json::Value> {
         let mut buf: Vec<u8> = Vec::new();
-        JsonOutput::new(&mut buf).push_doctor_check(check).unwrap();
+        JsonOutput::new(&mut buf)
+            .push(Event::DoctorCheck(check))
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         if s.is_empty() {
             None
@@ -2297,12 +2264,12 @@ mod tests {
     fn json_init_summary_includes_all_fields() {
         let mut buf: Vec<u8> = Vec::new();
         JsonOutput::new(&mut buf)
-            .push_init_summary(InitSummary {
+            .push(Event::InitSummary(InitSummary {
                 clone_path: PathBuf::from("/home/test/.config/zenops"),
                 remote: Some("git@example.com:cfg.git".into()),
                 shell: Some("zsh".into()),
                 pkg_count: 7,
-            })
+            }))
             .unwrap();
         let s = String::from_utf8(buf).unwrap();
         let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
@@ -2318,14 +2285,17 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut r = TerminalRenderer::new(&mut buf, false, false, false);
-            r.push_status(pkg_missing("py", None)).unwrap();
-            r.push_pkg_entry(pkg_entry_pkg("foo", PkgEntryState::Missing))
-                .unwrap();
+            r.push(Event::Status(pkg_missing("py", None))).unwrap();
+            r.push(Event::PkgEntry(pkg_entry_pkg(
+                "foo",
+                PkgEntryState::Missing,
+            )))
+            .unwrap();
             r.finalize().unwrap();
         }
         let got = String::from_utf8(buf).unwrap();
         let lines: Vec<&str> = got.lines().collect();
-        // First line = the status row from push_status; second line = the
+        // First line = the status row from the Status event; second line = the
         // first pkg row. The two blocks are independent — no shared
         // column padding bleeds across.
         assert!(lines[0].starts_with("✗  py"), "{got:?}");
@@ -2349,7 +2319,7 @@ mod tests {
     fn terminal_renderer_surfaces_writer_errors_on_finalize() {
         let mut w = FailingWriter;
         let mut r = TerminalRenderer::new(&mut w, false, false, false);
-        r.push_status(pkg_missing("x", None)).unwrap();
+        r.push(Event::Status(pkg_missing("x", None))).unwrap();
         let err = r.finalize().unwrap_err();
         assert!(matches!(err, OutputError::Io(_)), "unexpected: {err:?}");
     }
@@ -2358,7 +2328,7 @@ mod tests {
     fn json_output_surfaces_writer_errors() {
         let mut w = FailingWriter;
         let err = JsonOutput::new(&mut w)
-            .push_status(pkg_missing("x", None))
+            .push(Event::Status(pkg_missing("x", None)))
             .unwrap_err();
         // `serde_json::to_writer` wraps the underlying IO failure in its own
         // `serde_json::Error`, which lifts into `OutputError::Json`. Either

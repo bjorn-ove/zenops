@@ -13,7 +13,7 @@
 use crate::{
     config::{Config, PkgConfig},
     error::Error,
-    output::{Output, PkgEntry, PkgEntryState, PkgInstallHints},
+    output::{Event, Output, PkgEntry, PkgEntryState, PkgInstallHints},
     pkg_manager,
 };
 
@@ -46,9 +46,9 @@ pub struct Options {
 pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(), Error> {
     let manager = pkg_manager::detect();
     if manager.is_none() {
-        output.push_pkg_entry(PkgEntry::NoPackageManagerDetected {
+        output.push(Event::PkgEntry(PkgEntry::NoPackageManagerDetected {
             supported: vec!["brew".to_string()],
-        })?;
+        }))?;
     }
 
     let home = config.home();
@@ -115,25 +115,25 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
             PkgInstallHints::default()
         };
 
-        output.push_pkg_entry(PkgEntry::Pkg {
+        output.push(Event::PkgEntry(PkgEntry::Pkg {
             name: smol_str::SmolStr::new(label),
             key: key.clone(),
             description: pkg.description.clone(),
             state,
             matched_detect,
             install_hints,
-        })?;
+        }))?;
     }
 
     if !opts.all_hints
         && let Some(mgr) = manager
         && !aggregate_packages.is_empty()
     {
-        output.push_pkg_entry(PkgEntry::AggregateInstall {
+        output.push(Event::PkgEntry(PkgEntry::AggregateInstall {
             pkg_manager: mgr.name().to_string(),
             command: mgr.install_command(&aggregate_packages),
             packages: aggregate_packages,
-        })?;
+        }))?;
     }
 
     Ok(())

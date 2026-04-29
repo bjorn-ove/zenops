@@ -29,7 +29,9 @@ use serde::Serialize;
 
 use crate::{
     error::Error,
-    output::{AppliedAction, FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus},
+    output::{
+        AppliedAction, Event, FileStatus, Output, ResolvedConfigFilePath, Status, SymlinkStatus,
+    },
     prompt::{PendingChange, Prompter},
 };
 use similar::{DiffOp, TextDiff};
@@ -337,7 +339,9 @@ impl<'dirs> ConfigFiles<'dirs> {
     /// `zenops status` and as the pre-change pass of `zenops apply`.
     pub fn check_status(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            output.push_status(self.entry_status(path.clone(), entry)?.into())?;
+            output.push(Event::Status(
+                self.entry_status(path.clone(), entry)?.into(),
+            ))?;
         }
         Ok(())
     }
@@ -375,11 +379,11 @@ impl<'dirs> ConfigFiles<'dirs> {
                     {
                         std::fs::create_dir_all(&parent.full)
                             .map_err(|e| Error::CreateDirectoryError(parent.clone(), e))?;
-                        output.push_applied_action(AppliedAction::CreatedDir(parent))?;
+                        output.push(Event::AppliedAction(AppliedAction::CreatedDir(parent)))?;
                     }
                     std::fs::write(&path.full, want_content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
-                    output.push_applied_action(AppliedAction::CreatedFile(path))?;
+                    output.push(Event::AppliedAction(AppliedAction::CreatedFile(path)))?;
                 }
                 FileEntryStatus::Generated {
                     status: FileStatus::Modified,
@@ -408,7 +412,7 @@ impl<'dirs> ConfigFiles<'dirs> {
                     let content = reconstruct(cur, want, &groups, &approvals);
                     std::fs::write(&path.full, content.as_bytes())
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
-                    output.push_applied_action(AppliedAction::UpdatedFile(path))?;
+                    output.push(Event::AppliedAction(AppliedAction::UpdatedFile(path)))?;
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::Ok,
@@ -426,7 +430,10 @@ impl<'dirs> ConfigFiles<'dirs> {
                         continue;
                     }
                     create_symlink(&real, &symlink)?;
-                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
+                    output.push(Event::AppliedAction(AppliedAction::CreatedSymlink {
+                        real,
+                        symlink,
+                    }))?;
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::DstDirIsMissing { dir },
@@ -444,9 +451,12 @@ impl<'dirs> ConfigFiles<'dirs> {
                         Ok(()) => {}
                         Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
                     }
-                    output.push_applied_action(AppliedAction::CreatedDir(dir))?;
+                    output.push(Event::AppliedAction(AppliedAction::CreatedDir(dir)))?;
                     create_symlink(&real, &symlink)?;
-                    output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
+                    output.push(Event::AppliedAction(AppliedAction::CreatedSymlink {
+                        real,
+                        symlink,
+                    }))?;
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsFile,
@@ -477,7 +487,10 @@ impl<'dirs> ConfigFiles<'dirs> {
                     std::fs::remove_file(&symlink.full)
                         .map_err(|e| Error::SymlinkProbeFailed(symlink.full.to_path_buf(), e))?;
                     create_symlink(&real, &symlink)?;
-                    output.push_applied_action(AppliedAction::ReplacedSymlink { real, symlink })?;
+                    output.push(Event::AppliedAction(AppliedAction::ReplacedSymlink {
+                        real,
+                        symlink,
+                    }))?;
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::RealPathIsMissing,
