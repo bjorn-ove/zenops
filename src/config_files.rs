@@ -206,7 +206,7 @@ impl<'dirs> ConfigFiles<'dirs> {
         );
     }
 
-    fn entry_status(&self, full: Arc<Path>, entry: &FileEntry) -> Status {
+    fn entry_status(&self, full: Arc<Path>, entry: &FileEntry) -> Result<Status, Error> {
         let path = ResolvedConfigFilePath {
             path: entry.path.clone(),
             full,
@@ -215,67 +215,74 @@ impl<'dirs> ConfigFiles<'dirs> {
         match &entry.src {
             ResolvedFileSource::Generated(content) => {
                 if path.full.exists() {
-                    if let Ok(cur_content) = std::fs::read_to_string(&path.full) {
-                        let status = if cur_content == content.as_ref() {
-                            FileStatus::Ok
-                        } else {
-                            FileStatus::Modified
-                        };
-                        Status::Generated {
-                            want_content: content.clone(),
-                            cur_content: Some(cur_content),
-                            path,
-                            status,
-                        }
+                    let cur_content = std::fs::read_to_string(&path.full)
+                        .map_err(|e| Error::FailedToReadConfig(path.clone(), e))?;
+                    let status = if cur_content == content.as_ref() {
+                        FileStatus::Ok
                     } else {
-                        todo!()
-                    }
+                        FileStatus::Modified
+                    };
+                    Ok(Status::Generated {
+                        want_content: content.clone(),
+                        cur_content: Some(cur_content),
+                        path,
+                        status,
+                    })
                 } else {
-                    Status::Generated {
+                    Ok(Status::Generated {
                         want_content: content.clone(),
                         cur_content: None,
                         path,
                         status: FileStatus::New,
-                    }
+                    })
                 }
             }
             ResolvedFileSource::SymlinkFrom { full, rel } => {
-                let status = match SymlinkInfo::from_path(&path.full) {
+                let status = match SymlinkInfo::from_path(&path.full)? {
                     SymlinkInfo::LinksTo(link_path) => {
                         if link_path == full.as_ref() {
                             match full.symlink_metadata() {
                                 Ok(_) => SymlinkStatus::Ok,
-                                Err(e) => match e.kind() {
-                                    std::io::ErrorKind::NotFound => {
-                                        SymlinkStatus::RealPathIsMissing
-                                    }
-                                    unk => todo!("{unk:?}"),
-                                },
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                    SymlinkStatus::RealPathIsMissing
+                                }
+                                Err(e) => {
+                                    return Err(Error::SymlinkProbeFailed(full.to_path_buf(), e));
+                                }
                             }
                         } else {
                             SymlinkStatus::WrongLink(link_path)
                         }
                     }
                     SymlinkInfo::NotFound => {
-                        match path.full.parent().map(|v| v.symlink_metadata()) {
-                            None | Some(Ok(_)) => SymlinkStatus::New,
-                            Some(Err(e)) => match e.kind() {
-                                std::io::ErrorKind::NotFound => SymlinkStatus::DstDirIsMissing,
-                                unk => todo!("{unk:?}"),
+                        let parent_present = match path.full.parent() {
+                            None => true,
+                            Some(p) => match p.symlink_metadata() {
+                                Ok(_) => true,
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                                Err(e) => {
+                                    return Err(Error::SymlinkProbeFailed(p.to_path_buf(), e));
+                                }
                             },
+                        };
+                        if parent_present {
+                            SymlinkStatus::New
+                        } else {
+                            SymlinkStatus::DstDirIsMissing
                         }
                     }
                     SymlinkInfo::NotSymlinkIsFile => SymlinkStatus::IsFile,
                     SymlinkInfo::NotSymlinkIsDir => SymlinkStatus::IsDir,
+                    SymlinkInfo::NotSymlinkIsOther => SymlinkStatus::IsOther,
                 };
-                Status::Symlink {
+                Ok(Status::Symlink {
                     real: ResolvedConfigFilePath {
                         path: rel.clone(),
                         full: full.clone(),
                     },
                     symlink: path,
                     status,
-                }
+                })
             }
         }
     }
@@ -285,7 +292,7 @@ impl<'dirs> ConfigFiles<'dirs> {
     /// `zenops status` and as the pre-change pass of `zenops apply`.
     pub fn check_status(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            output.push_status(self.entry_status(path.clone(), entry))?;
+            output.push_status(self.entry_status(path.clone(), entry)?)?;
         }
         Ok(())
     }
@@ -300,7 +307,7 @@ impl<'dirs> ConfigFiles<'dirs> {
         prompter: &mut dyn Prompter,
     ) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            let status = self.entry_status(path.clone(), entry);
+            let status = self.entry_status(path.clone(), entry)?;
             match status {
                 Status::Generated {
                     status: FileStatus::Ok,
@@ -373,7 +380,7 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
-                    create_symlink(&real.full, &symlink.full)?;
+                    create_symlink(&real, &symlink)?;
                     output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
                 Status::Symlink {
@@ -382,7 +389,10 @@ impl<'dirs> ConfigFiles<'dirs> {
                     symlink,
                 } => {
                     let dir = symlink.parent().unwrap_or_else(|| {
-                        todo!("This should not be possible due to earlier check")
+                        unreachable!(
+                            "DstDirIsMissing implies path.full has a parent that lstat'd \
+                             with NotFound; saw symlink={symlink:?}",
+                        )
                     });
                     if !prompter.confirm(PendingChange::CreateSymlinkWithParent {
                         real: &real,
@@ -396,7 +406,7 @@ impl<'dirs> ConfigFiles<'dirs> {
                         Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
                     }
                     output.push_applied_action(AppliedAction::CreatedDir(dir))?;
-                    create_symlink(&real.full, &symlink.full)?;
+                    create_symlink(&real, &symlink)?;
                     output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
                 Status::Symlink {
@@ -414,13 +424,39 @@ impl<'dirs> ConfigFiles<'dirs> {
                     return Err(Error::RefusingToOverwriteDirectoryWithSymlink { real, symlink });
                 }
                 Status::Symlink {
-                    status: SymlinkStatus::WrongLink(_) | SymlinkStatus::RealPathIsMissing,
+                    status: SymlinkStatus::WrongLink(current_target),
+                    real,
+                    symlink,
+                } => {
+                    if !prompter.confirm(PendingChange::ReplaceWrongSymlink {
+                        real: &real,
+                        symlink: &symlink,
+                        current_target: &current_target,
+                    })? {
+                        continue;
+                    }
+                    std::fs::remove_file(&symlink.full)
+                        .map_err(|e| Error::SymlinkProbeFailed(symlink.full.to_path_buf(), e))?;
+                    create_symlink(&real, &symlink)?;
+                    output.push_applied_action(AppliedAction::ReplacedSymlink { real, symlink })?;
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::RealPathIsMissing,
+                    real,
+                    symlink,
+                } => {
+                    return Err(Error::SymlinkRealPathMissing { real, symlink });
+                }
+                Status::Symlink {
+                    status: SymlinkStatus::IsOther,
+                    symlink,
                     ..
-                } => todo!(),
-                Status::Git { repo, status } => todo!("{repo}: {status:?}"),
-                Status::GitRepoClean { .. } | Status::Pkg { .. } => {
+                } => {
+                    return Err(Error::RefusingToOverwriteOtherWithSymlink(symlink));
+                }
+                Status::Git { .. } | Status::GitRepoClean { .. } | Status::Pkg { .. } => {
                     unreachable!(
-                        "GitRepoClean/Pkg events are pushed directly to Output, not through ConfigFiles",
+                        "Git/GitRepoClean/Pkg events are pushed directly to Output, not through ConfigFiles",
                     )
                 }
             }
@@ -487,44 +523,45 @@ enum SymlinkInfo {
     NotFound,
     NotSymlinkIsFile,
     NotSymlinkIsDir,
+    NotSymlinkIsOther,
 }
 
 impl SymlinkInfo {
-    pub fn from_path(p: impl AsRef<Path>) -> Self {
+    pub fn from_path(p: impl AsRef<Path>) -> Result<Self, Error> {
         let p = p.as_ref();
         match p.symlink_metadata() {
             Ok(meta) => {
                 if meta.is_symlink() {
                     match std::fs::read_link(p) {
-                        Ok(link_path) => Self::LinksTo(link_path),
-                        Err(e) => todo!("{p:?} {e:?}"),
+                        Ok(link_path) => Ok(Self::LinksTo(link_path)),
+                        Err(e) => Err(Error::SymlinkProbeFailed(p.to_path_buf(), e)),
                     }
                 } else if meta.is_file() {
-                    Self::NotSymlinkIsFile
+                    Ok(Self::NotSymlinkIsFile)
                 } else if meta.is_dir() {
-                    Self::NotSymlinkIsDir
+                    Ok(Self::NotSymlinkIsDir)
                 } else {
-                    todo!()
+                    Ok(Self::NotSymlinkIsOther)
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => Self::NotFound,
-            Err(e) => todo!("{e:?}"),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => Ok(Self::NotFound),
+            Err(e) => Err(Error::SymlinkProbeFailed(p.to_path_buf(), e)),
         }
     }
 }
 
 #[cfg(unix)]
-fn create_symlink(real_path: &Path, symlink_path: &Path) -> Result<(), Error> {
-    use std::io::ErrorKind;
-
-    match std::os::unix::fs::symlink(real_path, symlink_path) {
-        Ok(()) => Ok(()),
-        Err(e) => match e.kind() {
-            ErrorKind::AlreadyExists => todo!(),
-            ErrorKind::NotFound => todo!(),
-            unk => todo!("{unk:?}"),
-        },
-    }
+fn create_symlink(
+    real: &ResolvedConfigFilePath,
+    symlink: &ResolvedConfigFilePath,
+) -> Result<(), Error> {
+    std::os::unix::fs::symlink(&real.full, &symlink.full).map_err(|source| {
+        Error::CreateSymlinkFailed {
+            real: real.clone(),
+            symlink: symlink.clone(),
+            source,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -570,5 +607,180 @@ mod tests {
         let got = reconstruct(old, new, &groups, &approvals);
         let expected = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\nY\n15\n";
         assert_eq!(got, expected);
+    }
+
+    /// RAII guard that restores a directory's mode on drop so `tempfile`'s
+    /// recursive cleanup can still descend after a test chmod-ed it to 0.
+    struct ModeGuard {
+        path: PathBuf,
+        original: u32,
+    }
+
+    impl ModeGuard {
+        fn chmod(path: PathBuf, mode: u32) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let original = std::fs::metadata(&path).unwrap().permissions().mode();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            Self { path, original }
+        }
+    }
+
+    impl Drop for ModeGuard {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &self.path,
+                std::fs::Permissions::from_mode(self.original),
+            );
+        }
+    }
+
+    /// Build a `ConfigFileDirs` rooted at a fresh tempdir's `home/`.
+    /// Returns the tempdir (drop = cleanup) and the dirs.
+    fn fresh_dirs() -> (tempfile::TempDir, ConfigFileDirs) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".config/zenops")).unwrap();
+        let dirs = ConfigFileDirs::load(home);
+        (tmp, dirs)
+    }
+
+    #[test]
+    fn entry_status_propagates_real_target_probe_error() {
+        // Symlink at ~/foo correctly points at a file in the zenops repo, but
+        // the file's parent dir has been chmod'd to 0o000 so symlink_metadata
+        // on the real target returns PermissionDenied. Expect SymlinkProbeFailed.
+        let (_tmp, dirs) = fresh_dirs();
+        let real_dir = dirs.zenops().join("configs/foo");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real_path = real_dir.join("bar.toml");
+        std::fs::write(&real_path, b"# bar\n").unwrap();
+
+        let symlink_path = dirs.home().join("foo");
+        std::os::unix::fs::symlink(&real_path, &symlink_path).unwrap();
+
+        let mut config_files = ConfigFiles::new(&dirs);
+        config_files.add(
+            ConfigFilePath::in_home(SafeRelativePath::from_relative_path("foo").unwrap()),
+            ConfigFileSource::SymlinkFrom(ConfigFilePath::Zenops(Arc::from(
+                SafeRelativePath::from_relative_path("configs/foo/bar.toml").unwrap(),
+            ))),
+        );
+
+        let _guard = ModeGuard::chmod(real_dir, 0o000);
+
+        let (path, entry) = config_files.files.first().unwrap();
+        let result = config_files.entry_status(path.clone(), entry);
+        match result {
+            Err(Error::SymlinkProbeFailed(p, e)) => {
+                assert_eq!(p, real_path);
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected SymlinkProbeFailed, got {other:?}"),
+        }
+    }
+
+    /// Build a `ResolvedConfigFilePath` rooted in `home` for tests that
+    /// poke at `create_symlink` directly.
+    fn home_resolved(home: &Path, rel: &str) -> ResolvedConfigFilePath {
+        let srp = SafeRelativePath::from_relative_path(rel).unwrap();
+        let full = srp.to_full_path(home);
+        ResolvedConfigFilePath {
+            path: ConfigFilePath::in_home(srp),
+            full: Arc::from(full),
+        }
+    }
+
+    #[test]
+    fn create_symlink_already_exists() {
+        let (_tmp, dirs) = fresh_dirs();
+        let real = home_resolved(dirs.home(), "real");
+        std::fs::write(&real.full, b"real\n").unwrap();
+        let symlink = home_resolved(dirs.home(), "dst");
+        std::fs::write(&symlink.full, b"in the way\n").unwrap();
+
+        match create_symlink(&real, &symlink) {
+            Err(Error::CreateSymlinkFailed { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("expected CreateSymlinkFailed/AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_symlink_parent_missing() {
+        let (_tmp, dirs) = fresh_dirs();
+        let real = home_resolved(dirs.home(), "real");
+        std::fs::write(&real.full, b"real\n").unwrap();
+        let symlink = home_resolved(dirs.home(), "no_such_dir/dst");
+
+        match create_symlink(&real, &symlink) {
+            Err(Error::CreateSymlinkFailed { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected CreateSymlinkFailed/NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_symlink_parent_not_writable() {
+        let (_tmp, dirs) = fresh_dirs();
+        let real = home_resolved(dirs.home(), "real");
+        std::fs::write(&real.full, b"real\n").unwrap();
+        let read_only_dir = dirs.home().join("ro");
+        std::fs::create_dir(&read_only_dir).unwrap();
+        let symlink = home_resolved(dirs.home(), "ro/dst");
+
+        let _guard = ModeGuard::chmod(read_only_dir, 0o555);
+
+        match create_symlink(&real, &symlink) {
+            Err(Error::CreateSymlinkFailed { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected CreateSymlinkFailed/PermissionDenied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entry_status_propagates_probe_error_when_path_unreachable() {
+        // The symlink path's parent has been chmod'd to 0o000 so traversal
+        // into it fails with PermissionDenied. SymlinkInfo::from_path can't
+        // even lstat the path; expect SymlinkProbeFailed surfacing the
+        // symlink path that couldn't be probed.
+        //
+        // (This is the trigger for both the from_path catch-all and the
+        // entry_status dst-parent catch-all: the same chmod hits from_path
+        // first. The dst-parent branch is preserved as defensive propagation
+        // for the race-only edge case where the path itself returns NotFound
+        // but probing the parent returns a non-NotFound I/O error.)
+        let (_tmp, dirs) = fresh_dirs();
+
+        let real_path = dirs.zenops().join("configs/foo/bar.toml");
+        std::fs::create_dir_all(real_path.parent().unwrap()).unwrap();
+        std::fs::write(&real_path, b"# bar\n").unwrap();
+
+        let sub = dirs.home().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let symlink_path = sub.join("foo");
+
+        let mut config_files = ConfigFiles::new(&dirs);
+        config_files.add(
+            ConfigFilePath::in_home(SafeRelativePath::from_relative_path("sub/foo").unwrap()),
+            ConfigFileSource::SymlinkFrom(ConfigFilePath::Zenops(Arc::from(
+                SafeRelativePath::from_relative_path("configs/foo/bar.toml").unwrap(),
+            ))),
+        );
+
+        let _guard = ModeGuard::chmod(sub.clone(), 0o000);
+
+        let (path, entry) = config_files.files.first().unwrap();
+        let result = config_files.entry_status(path.clone(), entry);
+        match result {
+            Err(Error::SymlinkProbeFailed(p, e)) => {
+                assert_eq!(p, symlink_path);
+                assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected SymlinkProbeFailed, got {other:?}"),
+        }
     }
 }

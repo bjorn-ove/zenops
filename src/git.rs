@@ -44,6 +44,24 @@ pub enum GitFileStatus {
     },
 }
 
+/// Interpret the trimmed stdout of `git rev-parse --is-inside-work-tree`.
+/// Git answers `true` when the cwd is inside a working tree, `false` when
+/// inside `.git/`, and emits nothing on stdout for non-repos (the error
+/// goes to stderr, which the caller ignores). Treat anything other than
+/// `true` as "not a working tree" so unexpected output (stderr leakage,
+/// future format changes) doesn't panic — `is_git_repo`'s contract is to
+/// return `false`, not error, for non-repo paths.
+fn parse_is_inside_work_tree(raw: &str) -> bool {
+    match raw.trim() {
+        "true" => true,
+        "" | "false" => false,
+        unk => {
+            log::debug!("git rev-parse --is-inside-work-tree: unrecognised output {unk:?}");
+            false
+        }
+    }
+}
+
 /// Reduce a porcelain=v2 `XY` pair to the kind we care about. We prefer the
 /// worktree side (Y); if it's `.` (unchanged) we fall back to the index side
 /// (X) so `M.` / `A.` / `D.` (staged-only) still surface.
@@ -125,17 +143,12 @@ impl<'path, 'shell> Git<'path, 'shell> {
     /// — not an error — for non-repo paths so callers can branch cleanly.
     pub fn is_git_repo(&self) -> Result<bool, Error> {
         let Self { path, sh } = self;
-        match cmd!(sh, "git -C {path} rev-parse --is-inside-work-tree")
+        let raw = cmd!(sh, "git -C {path} rev-parse --is-inside-work-tree")
             .quiet()
             .ignore_status()
             .ignore_stderr()
-            .read()?
-            .trim()
-        {
-            "" => Ok(false),
-            "true" => Ok(true),
-            unk => todo!("{unk:?}"),
-        }
+            .read()?;
+        Ok(parse_is_inside_work_tree(&raw))
     }
 
     /// Per-file status from `git status --porcelain=v2`. Renames surface
@@ -333,5 +346,38 @@ impl GitCmd {
         .run()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_is_inside_work_tree_recognises_true() {
+        assert!(parse_is_inside_work_tree("true"));
+        assert!(parse_is_inside_work_tree("true\n"));
+        assert!(parse_is_inside_work_tree("  true  "));
+    }
+
+    #[test]
+    fn parse_is_inside_work_tree_treats_empty_as_not_a_repo() {
+        assert!(!parse_is_inside_work_tree(""));
+        assert!(!parse_is_inside_work_tree("\n"));
+    }
+
+    #[test]
+    fn parse_is_inside_work_tree_treats_false_as_not_a_work_tree() {
+        // `git rev-parse --is-inside-work-tree` prints `false` from inside
+        // `.git/` itself; we treat that as not a managed work tree.
+        assert!(!parse_is_inside_work_tree("false"));
+    }
+
+    #[test]
+    fn parse_is_inside_work_tree_falls_back_to_false_for_unknown_output() {
+        // Stderr leakage, future format changes, stray bytes — never panic.
+        assert!(!parse_is_inside_work_tree("garbage"));
+        assert!(!parse_is_inside_work_tree("yes"));
+        assert!(!parse_is_inside_work_tree("fatal: not a git repository"));
     }
 }

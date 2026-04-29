@@ -66,6 +66,18 @@ pub enum PendingChange<'a> {
         /// The parent directory that will be created first.
         parent: &'a ResolvedConfigFilePath,
     },
+    /// Replace a symlink that exists but points at the wrong target. zenops
+    /// owns the managed entry, so the apply pass can correct drift; the
+    /// prompter shows the current (wrong) target so the user can confirm
+    /// before it's overwritten.
+    ReplaceWrongSymlink {
+        /// New target the symlink should point at.
+        real: &'a ResolvedConfigFilePath,
+        /// Where the (existing, wrong) symlink lives.
+        symlink: &'a ResolvedConfigFilePath,
+        /// What the symlink currently points at.
+        current_target: &'a std::path::Path,
+    },
 }
 
 /// Outcome of the pre-apply prompt that fires when the zenops repo has
@@ -281,6 +293,15 @@ fn render_change(out: &mut dyn Write, change: &PendingChange<'_>, color: bool) -
         } => writeln!(
             out,
             "Create symlink {symlink} -> {real}? (will also create directory {parent})"
+        ),
+        PendingChange::ReplaceWrongSymlink {
+            real,
+            symlink,
+            current_target,
+        } => writeln!(
+            out,
+            "Replace symlink {symlink}: currently -> {} -> {real}?",
+            current_target.display(),
         ),
     }
 }

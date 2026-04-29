@@ -35,6 +35,46 @@ pub enum Error {
     /// Writing a generated config file to disk failed.
     #[error("Failed to write config file {0}: {1}")]
     FailedToWriteConfig(ResolvedConfigFilePath, std::io::Error),
+    /// Reading an existing managed file from disk failed (e.g. permission
+    /// denied, or a directory occupies the path where a generated file should
+    /// land).
+    #[error("Failed to read existing config file {0}: {1}")]
+    FailedToReadConfig(ResolvedConfigFilePath, #[source] std::io::Error),
+    /// Stat-ing a managed path failed for a reason other than "not found"
+    /// (e.g. permission denied on a parent). The wrapped path is whichever
+    /// path the probe was attempted on.
+    #[error("Failed to probe filesystem state at {0:?}: {1}")]
+    SymlinkProbeFailed(PathBuf, #[source] std::io::Error),
+    /// `symlink(2)` failed in [`crate::config_files`]'s `create_symlink`
+    /// helper. Bundles both ends so the user sees the symlink they were
+    /// attempting and the underlying I/O reason.
+    #[error("Failed to create symlink {symlink} -> {real}: {source}")]
+    CreateSymlinkFailed {
+        /// The intended symlink target (the file in the zenops repo).
+        real: ResolvedConfigFilePath,
+        /// Where the symlink was being created.
+        symlink: ResolvedConfigFilePath,
+        /// Underlying `symlink(2)` failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Apply pass: a managed symlink already points at the intended target,
+    /// but that target doesn't exist in the zenops repo. The user must add
+    /// the file before zenops can manage it.
+    #[error("Symlink {symlink} -> {real}: {real} does not exist in the zenops repo")]
+    SymlinkRealPathMissing {
+        /// The intended symlink target (the file in the zenops repo).
+        real: ResolvedConfigFilePath,
+        /// Where the symlink lives.
+        symlink: ResolvedConfigFilePath,
+    },
+    /// Apply pass refused to clobber a path that is neither a regular file,
+    /// directory, nor symlink (FIFO, socket, device node, etc.) with a
+    /// managed symlink. The user must remove the existing entry first.
+    #[error(
+        "Not creating symlink at {0}: a non-file, non-directory entry (FIFO, socket, etc.) already exists"
+    )]
+    RefusingToOverwriteOtherWithSymlink(ResolvedConfigFilePath),
     /// A `..`-traversal or other path-safety violation surfaced from
     /// [`zenops_safe_relative_path`].
     #[error(transparent)]
@@ -195,6 +235,38 @@ impl PartialEq for Error {
             (Self::FailedToWriteConfig(l0, l1), Self::FailedToWriteConfig(r0, r1)) => {
                 l0 == r0 && l1.kind() == r1.kind()
             }
+            (Self::FailedToReadConfig(l0, l1), Self::FailedToReadConfig(r0, r1)) => {
+                l0 == r0 && l1.kind() == r1.kind()
+            }
+            (Self::SymlinkProbeFailed(l0, l1), Self::SymlinkProbeFailed(r0, r1)) => {
+                l0 == r0 && l1.kind() == r1.kind()
+            }
+            (
+                Self::CreateSymlinkFailed {
+                    real: l_real,
+                    symlink: l_symlink,
+                    source: l_src,
+                },
+                Self::CreateSymlinkFailed {
+                    real: r_real,
+                    symlink: r_symlink,
+                    source: r_src,
+                },
+            ) => l_real == r_real && l_symlink == r_symlink && l_src.kind() == r_src.kind(),
+            (
+                Self::SymlinkRealPathMissing {
+                    real: l_real,
+                    symlink: l_symlink,
+                },
+                Self::SymlinkRealPathMissing {
+                    real: r_real,
+                    symlink: r_symlink,
+                },
+            ) => l_real == r_real && l_symlink == r_symlink,
+            (
+                Self::RefusingToOverwriteOtherWithSymlink(l0),
+                Self::RefusingToOverwriteOtherWithSymlink(r0),
+            ) => l0 == r0,
             (Self::SafeRelativePath(l0), Self::SafeRelativePath(r0)) => l0 == r0,
             (
                 Self::RefusingToOverwriteFileWithSymlink {

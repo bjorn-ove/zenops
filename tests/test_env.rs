@@ -340,6 +340,52 @@ impl TestEnv {
             panic!("Failed to create symlink from {real_path:?} to {symlink_path:?}: {e}")
         });
     }
+
+    pub fn create_dangling_symlink(
+        &self,
+        real_path: impl AsRef<Path>,
+        symlink_path: impl AsRef<SafeRelativePath>,
+    ) {
+        self.ensure_dir_exists_for_file(symlink_path.as_ref());
+        let symlink_path = self.resolve_path(symlink_path);
+        std::os::unix::fs::symlink(real_path.as_ref(), &symlink_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to create symlink from {:?} to {symlink_path:?}: {e}",
+                real_path.as_ref()
+            )
+        });
+    }
+
+    /// Set the mode bits on `rel`. Returns a guard that restores the
+    /// original mode on drop so `tempfile` cleanup can recurse into the
+    /// directory at the end of the test.
+    pub fn chmod(&self, rel: impl AsRef<SafeRelativePath>, mode: u32) -> PermGuard {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.resolve_path(rel);
+        let original = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("Failed to read metadata for {path:?}: {e}"))
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .unwrap_or_else(|e| panic!("Failed to chmod {path:?} to {mode:o}: {e}"));
+        PermGuard { path, original }
+    }
+}
+
+/// RAII guard that restores a path's original Unix mode on drop. Tests
+/// that chmod managed paths use this so `tempfile`'s recursive cleanup
+/// can still descend into them after the test body completes.
+pub struct PermGuard {
+    path: PathBuf,
+    original: u32,
+}
+
+impl Drop for PermGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ =
+            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.original));
+    }
 }
 
 #[derive(Debug, PartialEq)]

@@ -2069,6 +2069,236 @@ fn init_apply_false_emits_init_summary_event() {
 }
 
 #[test]
+fn apply_refuses_to_overwrite_fifo_with_symlink() {
+    // A FIFO (named pipe) sits at the managed symlink path. zenops must
+    // not clobber non-file/non-directory entries; status reports IsOther
+    // and apply errors with RefusingToOverwriteOtherWithSymlink.
+    let env = test_env::TestEnv::load();
+    let real = env.cfpath("configs/dummy/dummy.toml", ConfigFilePath::Zenops);
+    let symlink = env.cfpath(".dummy/dummy.toml", ConfigFilePath::Home);
+
+    env.init_config(
+        r#"
+        [pkg.dummy]
+        enable = "on"
+        [pkg.dummy.install_hint.brew]
+        packages = []
+        [[pkg.dummy.configs]]
+        type = "home"
+        dir = ".dummy"
+        source = "configs/dummy"
+        symlinks = ["dummy.toml"]
+    "#,
+    );
+    env.write_zenops_file(
+        srpath!("configs/dummy/dummy.toml"),
+        "# real\n",
+        Some("Add dummy.toml"),
+    );
+
+    // Create a FIFO at the managed path.
+    env.ensure_dir_exists_for_file(paths::HOME_DIR.safe_join(srpath!(".dummy/dummy.toml")));
+    let status = std::process::Command::new("mkfifo")
+        .arg(symlink.full.as_ref())
+        .status()
+        .expect("mkfifo");
+    assert!(status.success(), "mkfifo failed");
+
+    let status_out = env
+        .run(&Cmd::Status {
+            diff: false,
+            all: false,
+        })
+        .expect("status should succeed");
+    assert!(
+        status_out.entries.iter().any(|e| matches!(
+            e,
+            Entry::Status(Status::Symlink {
+                status: SymlinkStatus::IsOther,
+                ..
+            })
+        )),
+        "expected IsOther status, got {:?}",
+        status_out.entries,
+    );
+
+    let result = env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+        allow_dirty: true,
+    });
+    assert_eq!(
+        result,
+        Err(Error::RefusingToOverwriteOtherWithSymlink(symlink)),
+    );
+    let _ = real;
+}
+
+#[test]
+fn apply_errors_when_real_path_missing() {
+    // The user's managed symlink correctly points at the zenops repo
+    // location, but the file at that location was never committed to the
+    // repo (or was removed). zenops can't synthesise the file content; apply
+    // must surface this as a clean error rather than panicking.
+    let env = test_env::TestEnv::load();
+    let real = env.cfpath("configs/dummy/dummy.toml", ConfigFilePath::Zenops);
+    let symlink = env.cfpath(".dummy/dummy.toml", ConfigFilePath::Home);
+
+    env.init_config(
+        r#"
+        [pkg.dummy]
+        enable = "on"
+        [pkg.dummy.install_hint.brew]
+        packages = []
+        [[pkg.dummy.configs]]
+        type = "home"
+        dir = ".dummy"
+        source = "configs/dummy"
+        symlinks = ["dummy.toml"]
+    "#,
+    );
+
+    // Pre-create the symlink pointing at the repo path, but never write the
+    // real target into the repo.
+    env.create_symlink(
+        paths::ZENOPS_DIR.safe_join(srpath!("configs/dummy/dummy.toml")),
+        paths::HOME_DIR.safe_join(srpath!(".dummy/dummy.toml")),
+    );
+
+    let result = env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+        allow_dirty: true,
+    });
+
+    assert_eq!(result, Err(Error::SymlinkRealPathMissing { real, symlink }),);
+}
+
+#[test]
+fn apply_replaces_wrong_symlink() {
+    // A symlink at the managed path exists but points somewhere else than
+    // the zenops repo target. Apply must replace it (with the user's --yes
+    // confirmation) and emit ReplacedSymlink.
+    let env = test_env::TestEnv::load();
+    let real = env.cfpath("configs/dummy/dummy.toml", ConfigFilePath::Zenops);
+    let symlink = env.cfpath(".dummy/dummy.toml", ConfigFilePath::Home);
+
+    env.init_config(
+        r#"
+        [pkg.dummy]
+        enable = "on"
+        [pkg.dummy.install_hint.brew]
+        packages = []
+        [[pkg.dummy.configs]]
+        type = "home"
+        dir = ".dummy"
+        source = "configs/dummy"
+        symlinks = ["dummy.toml"]
+    "#,
+    );
+
+    env.write_zenops_file(
+        srpath!("configs/dummy/dummy.toml"),
+        "# real\n",
+        Some("Add dummy.toml"),
+    );
+
+    // Pre-create a symlink at the managed path pointing somewhere wrong.
+    env.create_dangling_symlink(
+        std::path::Path::new("/tmp/zenops-wrong-target-does-not-exist"),
+        paths::HOME_DIR.safe_join(srpath!(".dummy/dummy.toml")),
+    );
+
+    // Status: drift surfaces as WrongLink.
+    let status_out = env
+        .run(&Cmd::Status {
+            diff: false,
+            all: false,
+        })
+        .expect("status should succeed");
+    assert!(
+        status_out.entries.iter().any(|e| matches!(
+            e,
+            Entry::Status(Status::Symlink {
+                status: SymlinkStatus::WrongLink(_),
+                ..
+            })
+        )),
+        "expected WrongLink status, got {:?}",
+        status_out.entries,
+    );
+
+    // Apply: confirms via --yes and emits ReplacedSymlink.
+    let apply_out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+            allow_dirty: true,
+        })
+        .expect("apply should succeed");
+    assert_eq!(
+        apply_out,
+        Output {
+            entries: vec![Entry::AppliedAction(AppliedAction::ReplacedSymlink {
+                real: real.clone(),
+                symlink: symlink.clone(),
+            })],
+        },
+    );
+
+    // The symlink now points at the real target.
+    let resolved = std::fs::read_link(&symlink.full).expect("read_link");
+    assert_eq!(resolved, real.full.as_ref());
+}
+
+#[test]
+fn entry_status_propagates_unreadable_generated_file() {
+    // A managed shell config wants to land at ~/.zenops_bash_profile, but a
+    // directory occupies that path. read_to_string fails with IsADirectory;
+    // expect Error::FailedToReadConfig rather than a `not yet implemented`
+    // panic.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+
+    env.create_dir(srpath!("home/bob/.zenops_bash_profile"));
+
+    let result = env.run(&Cmd::Status {
+        diff: false,
+        all: false,
+    });
+
+    match result {
+        Err(Error::FailedToReadConfig(p, e)) => {
+            assert_eq!(
+                p.path,
+                ConfigFilePath::in_home(srpath!(".zenops_bash_profile"))
+            );
+            // IsADirectory landed in stable rust 1.83+. Older targets surface
+            // the same condition as Other; accept both.
+            assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::IsADirectory | std::io::ErrorKind::Other,
+                ),
+                "unexpected I/O error kind: {:?}",
+                e.kind(),
+            );
+        }
+        other => panic!("expected FailedToReadConfig, got {other:?}"),
+    }
+}
+
+#[test]
 fn init_apply_true_does_not_emit_init_summary() {
     let env = test_env::TestEnv::load();
     let bare = env.seed_bare_repo(&[(

@@ -238,6 +238,10 @@ pub enum SymlinkStatus {
     IsFile,
     /// The path is a directory and not a symlink
     IsDir,
+    /// The path exists but is neither a regular file, directory, nor symlink
+    /// (e.g. FIFO, socket, device node). zenops refuses to clobber it; the
+    /// user must remove it manually.
+    IsOther,
     /// The symlink exists and points to the correct location, but the source does not exist.
     RealPathIsMissing,
     /// The directory that should contain the symlink is missing
@@ -370,6 +374,14 @@ pub enum AppliedAction {
         /// Target the symlink points at.
         real: ResolvedConfigFilePath,
         /// Where the symlink was created.
+        symlink: ResolvedConfigFilePath,
+    },
+    /// Symlink replaced at `symlink`: it previously pointed somewhere else
+    /// and now points at `real`.
+    ReplacedSymlink {
+        /// New target the symlink points at.
+        real: ResolvedConfigFilePath,
+        /// Where the (replaced) symlink lives.
         symlink: ResolvedConfigFilePath,
     },
     /// Parent directory created so a managed file or symlink could land.
@@ -834,6 +846,19 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
             ],
         }),
         Status::Symlink {
+            symlink,
+            status: SymlinkStatus::IsOther,
+            ..
+        } => Some(Line {
+            marker: '✗',
+            marker_style: Style::Red,
+            path: path_segments(symlink),
+            description: vec![
+                Segment::new(Style::Red, "is not a regular file"),
+                Segment::new(Style::Dim, ", expected symlink"),
+            ],
+        }),
+        Status::Symlink {
             real,
             status: SymlinkStatus::RealPathIsMissing,
             ..
@@ -941,6 +966,12 @@ fn action_to_line(action: &AppliedAction) -> Line {
             marker_style: Style::Green,
             path: symlink_path_segments(symlink, real),
             description: vec![Segment::new(Style::Green, "linked")],
+        },
+        AppliedAction::ReplacedSymlink { real, symlink } => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: symlink_path_segments(symlink, real),
+            description: vec![Segment::new(Style::Green, "relinked")],
         },
         AppliedAction::CreatedDir(path) => Line {
             marker: '✓',
