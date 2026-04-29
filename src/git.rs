@@ -62,6 +62,87 @@ fn parse_is_inside_work_tree(raw: &str) -> bool {
     }
 }
 
+/// Parse the raw stdout of `git status --porcelain=v2` into per-file
+/// entries. Pure function — no I/O — so the unreachable-from-real-git
+/// rejection arms (`!` ignored marker, unknown line tag, paths that
+/// fail [`SafeRelativePath::from_relative_path`]) can be unit-tested
+/// without driving real git into states it doesn't naturally produce.
+/// Success-path coverage stays in `tests/git_status.rs` against real
+/// git output.
+fn parse_porcelain_v2(out: &str) -> Result<Vec<GitFileStatus>, Error> {
+    let mut ret = Vec::new();
+    for line in out.lines() {
+        let mut cur = line;
+        let mut next_arg = || {
+            if cur.is_empty() {
+                return None;
+            }
+            let (ret, remain) = cur.split_once(' ').unwrap_or((cur, ""));
+            cur = remain;
+            Some(ret)
+        };
+        match next_arg().unwrap() {
+            "1" => {
+                let xy_status = next_arg().unwrap();
+                let _submodule_state = next_arg().unwrap();
+                let _mode_head = next_arg().unwrap();
+                let _mode_index = next_arg().unwrap();
+                let _mode_worktree = next_arg().unwrap();
+                let _hash_head = next_arg().unwrap();
+                let _hash_index = next_arg().unwrap();
+                let path = SafeRelativePath::from_relative_path(cur)?.into();
+                ret.push(status_from_xy(xy_status, path));
+            }
+            "2" => {
+                // Rename/copy: `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
+                // <X><score> <path>\t<origPath>`. We surface the new path.
+                let xy_status = next_arg().unwrap();
+                let _submodule_state = next_arg().unwrap();
+                let _mode_head = next_arg().unwrap();
+                let _mode_index = next_arg().unwrap();
+                let _mode_worktree = next_arg().unwrap();
+                let _hash_head = next_arg().unwrap();
+                let _hash_index = next_arg().unwrap();
+                let _rename_score = next_arg().unwrap();
+                let new_path = cur.split_once('\t').map(|(p, _)| p).unwrap_or(cur);
+                let path = SafeRelativePath::from_relative_path(new_path)?.into();
+                ret.push(status_from_xy(xy_status, path));
+            }
+            "u" => {
+                // Unmerged: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2>
+                // <h3> <path>`. We don't distinguish unmerged states; just
+                // surface it as Other so the user sees it.
+                let xy_status = next_arg().unwrap();
+                // 8 metadata fields between XY and path: sub, m1, m2, m3,
+                // mW, h1, h2, h3.
+                for _ in 0..8 {
+                    let _ = next_arg().unwrap();
+                }
+                let path = SafeRelativePath::from_relative_path(cur)?.into();
+                ret.push(GitFileStatus::Other {
+                    code: SmolStr::new(xy_status),
+                    path,
+                });
+            }
+            "?" => {
+                ret.push(GitFileStatus::Untracked(
+                    SafeRelativePath::from_relative_path(cur)?.into(),
+                ));
+            }
+            "!" => {
+                // Ignored file; should only appear with --ignored, but
+                // skip defensively rather than panic.
+            }
+            tag => {
+                // Unknown line format — skip rather than abort; the user
+                // still sees the git diff we print alongside this list.
+                log::debug!("git status --porcelain=v2: unknown line tag {tag:?}");
+            }
+        }
+    }
+    Ok(ret)
+}
+
 /// Reduce a porcelain=v2 `XY` pair to the kind we care about. We prefer the
 /// worktree side (Y); if it's `.` (unchanged) we fall back to the index side
 /// (X) so `M.` / `A.` / `D.` (staged-only) still surface.
@@ -157,79 +238,10 @@ impl<'path, 'shell> Git<'path, 'shell> {
     /// conflict state.
     pub fn status(&self) -> Result<Vec<GitFileStatus>, Error> {
         let Self { path, sh } = self;
-        let mut ret = Vec::new();
-        for line in cmd!(sh, "git -C {path} status --porcelain=v2")
+        let raw = cmd!(sh, "git -C {path} status --porcelain=v2")
             .quiet()
-            .read()?
-            .lines()
-        {
-            let mut cur = line;
-            let mut next_arg = || {
-                if cur.is_empty() {
-                    return None;
-                }
-                let (ret, remain) = cur.split_once(' ').unwrap_or((cur, ""));
-                cur = remain;
-                Some(ret)
-            };
-            match next_arg().unwrap() {
-                "1" => {
-                    let xy_status = next_arg().unwrap();
-                    let _submodule_state = next_arg().unwrap();
-                    let _mode_head = next_arg().unwrap();
-                    let _mode_index = next_arg().unwrap();
-                    let _mode_worktree = next_arg().unwrap();
-                    let _hash_head = next_arg().unwrap();
-                    let _hash_index = next_arg().unwrap();
-                    let path = SafeRelativePath::from_relative_path(cur)?.into();
-                    ret.push(status_from_xy(xy_status, path));
-                }
-                "2" => {
-                    // Rename/copy: `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
-                    // <X><score> <path>\t<origPath>`. We surface the new path.
-                    let xy_status = next_arg().unwrap();
-                    let _submodule_state = next_arg().unwrap();
-                    let _mode_head = next_arg().unwrap();
-                    let _mode_index = next_arg().unwrap();
-                    let _mode_worktree = next_arg().unwrap();
-                    let _hash_head = next_arg().unwrap();
-                    let _hash_index = next_arg().unwrap();
-                    let _rename_score = next_arg().unwrap();
-                    let new_path = cur.split_once('\t').map(|(p, _)| p).unwrap_or(cur);
-                    let path = SafeRelativePath::from_relative_path(new_path)?.into();
-                    ret.push(status_from_xy(xy_status, path));
-                }
-                "u" => {
-                    // Unmerged: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2>
-                    // <h3> <path>`. We don't distinguish unmerged states; just
-                    // surface it as Other so the user sees it.
-                    let xy_status = next_arg().unwrap();
-                    for _ in 0..9 {
-                        let _ = next_arg().unwrap();
-                    }
-                    let path = SafeRelativePath::from_relative_path(cur)?.into();
-                    ret.push(GitFileStatus::Other {
-                        code: SmolStr::new(xy_status),
-                        path,
-                    });
-                }
-                "?" => {
-                    ret.push(GitFileStatus::Untracked(
-                        SafeRelativePath::from_relative_path(cur)?.into(),
-                    ));
-                }
-                "!" => {
-                    // Ignored file; should only appear with --ignored, but
-                    // skip defensively rather than panic.
-                }
-                tag => {
-                    // Unknown line format — skip rather than abort; the user
-                    // still sees the git diff we print alongside this list.
-                    log::debug!("git status --porcelain=v2: unknown line tag {tag:?}");
-                }
-            }
-        }
-        Ok(ret)
+            .read()?;
+        parse_porcelain_v2(&raw)
     }
 
     /// Fast check: does the working tree have any uncommitted changes
@@ -371,6 +383,47 @@ mod tests {
         // `git rev-parse --is-inside-work-tree` prints `false` from inside
         // `.git/` itself; we treat that as not a managed work tree.
         assert!(!parse_is_inside_work_tree("false"));
+    }
+
+    #[test]
+    fn parse_porcelain_v2_skips_unknown_tag() {
+        // Real git only emits 1/2/u/?/!  — but the parser still has to
+        // not panic on the rest. Documents the `tag =>` arm's contract.
+        let out = "xyz some/path\n";
+        assert_eq!(parse_porcelain_v2(out).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn parse_porcelain_v2_skips_ignored_marker() {
+        // `!` lines only appear under `git status --ignored`, which the
+        // call site doesn't pass. Documents what *would* happen.
+        let out = "! ignored.txt\n";
+        assert_eq!(parse_porcelain_v2(out).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn parse_porcelain_v2_rejects_unsafe_path() {
+        // A well-formed `1` line whose path escapes the repo. Real git
+        // won't emit this (it commits paths relative to the worktree
+        // root), but the parser must reject rather than accept.
+        let out = "1 .M N... 100644 100644 100644 abcd abcd ../escape\n";
+        let err = parse_porcelain_v2(out).unwrap_err();
+        assert!(
+            matches!(err, Error::SafeRelativePath(_)),
+            "expected SafeRelativePath error, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn parse_porcelain_v2_handles_mixed_known_and_skipped_lines() {
+        // Sanity guard: skipping `!` and unknown lines must not also
+        // swallow good rows.
+        let out = "! ignored.txt\n? wanted.txt\nxyz junk\n";
+        let entries = parse_porcelain_v2(out).unwrap();
+        let path = SafeRelativePath::from_relative_path("wanted.txt")
+            .unwrap()
+            .into();
+        assert_eq!(entries, vec![GitFileStatus::Untracked(path)]);
     }
 
     #[test]
