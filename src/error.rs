@@ -31,7 +31,7 @@ pub enum Error {
     /// A subprocess invoked through `xshell` failed (non-zero exit, signal,
     /// I/O error). The wrapped error carries the command and stderr.
     #[error("Failed to execute command")]
-    Shell(xshell::Error),
+    Shell(#[from] xshell::Error),
     /// Writing a generated config file to disk failed.
     #[error("Failed to write config file {0}: {1}")]
     FailedToWriteConfig(ResolvedConfigFilePath, std::io::Error),
@@ -78,7 +78,7 @@ pub enum Error {
     /// A `..`-traversal or other path-safety violation surfaced from
     /// [`zenops_safe_relative_path`].
     #[error(transparent)]
-    SafeRelativePath(zenops_safe_relative_path::error::Error),
+    SafeRelativePath(#[from] zenops_safe_relative_path::error::Error),
     /// Apply pass refused to clobber an existing regular file with a
     /// symlink. The user must remove the existing file first.
     #[error("Not creating symlink {symlink} -> {real}: a file already exists")]
@@ -356,18 +356,6 @@ impl PartialEq for Error {
             (Self::SchemaWrite(l), Self::SchemaWrite(r)) => l.kind() == r.kind(),
             _ => false,
         }
-    }
-}
-
-impl From<xshell::Error> for Error {
-    fn from(e: xshell::Error) -> Self {
-        Self::Shell(e)
-    }
-}
-
-impl From<zenops_safe_relative_path::error::Error> for Error {
-    fn from(e: zenops_safe_relative_path::error::Error) -> Self {
-        Self::SafeRelativePath(e)
     }
 }
 
