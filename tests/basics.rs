@@ -737,12 +737,16 @@ fn symlinked_configs() {
                 Entry::Status(Status::Symlink {
                     real: dummy_real.clone(),
                     symlink: dummy_symlink.clone(),
-                    status: SymlinkStatus::DstDirIsMissing
+                    status: SymlinkStatus::DstDirIsMissing {
+                        dir: dummy_symlink.parent().unwrap(),
+                    },
                 }),
                 Entry::Status(Status::Symlink {
                     real: dummy2_real.clone(),
                     symlink: dummy2_symlink.clone(),
-                    status: SymlinkStatus::DstDirIsMissing
+                    status: SymlinkStatus::DstDirIsMissing {
+                        dir: dummy2_symlink.parent().unwrap(),
+                    },
                 })
             ]
         })
@@ -894,6 +898,7 @@ fn pkg_configs_default_dir_name_to_pkg_key() {
     let env = test_env::TestEnv::load();
     let real = env.cfpath("configs/helix/config.toml", ConfigFilePath::Zenops);
     let symlink = env.cfpath("helix/config.toml", ConfigFilePath::DotConfig);
+    let dir = symlink.parent().unwrap();
 
     env.init_config(
         r#"
@@ -919,7 +924,7 @@ fn pkg_configs_default_dir_name_to_pkg_key() {
                 Entry::Status(Status::Symlink {
                     real,
                     symlink,
-                    status: SymlinkStatus::DstDirIsMissing,
+                    status: SymlinkStatus::DstDirIsMissing { dir },
                 }),
             ],
         })
@@ -933,6 +938,7 @@ fn pkg_configs_explicit_name_overrides_pkg_key() {
     let env = test_env::TestEnv::load();
     let real = env.cfpath("configs/nvim/init.lua", ConfigFilePath::Zenops);
     let symlink = env.cfpath("nvim/init.lua", ConfigFilePath::DotConfig);
+    let dir = symlink.parent().unwrap();
 
     env.init_config(
         r#"
@@ -959,7 +965,7 @@ fn pkg_configs_explicit_name_overrides_pkg_key() {
                 Entry::Status(Status::Symlink {
                     real,
                     symlink,
-                    status: SymlinkStatus::DstDirIsMissing,
+                    status: SymlinkStatus::DstDirIsMissing { dir },
                 }),
             ],
         })

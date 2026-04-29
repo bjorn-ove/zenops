@@ -190,21 +190,6 @@ pub enum Cmd {
     },
 }
 
-impl Cmd {
-    fn should_update_self(&self, _args: &Args) -> bool {
-        match self {
-            Cmd::Apply { pull_config, .. } => *pull_config,
-            Cmd::Status { .. }
-            | Cmd::Pkg { .. }
-            | Cmd::Repo { .. }
-            | Cmd::Init { .. }
-            | Cmd::Doctor
-            | Cmd::Schema
-            | Cmd::Completions { .. } => false,
-        }
-    }
-}
-
 fn build_prompter(yes: bool, dry_run: bool, color: bool) -> Result<Box<dyn Prompter>, Error> {
     if dry_run {
         Ok(Box::new(DryRunPrompter::new(color)))
@@ -230,22 +215,17 @@ pub fn real_main(
     dirs: &ConfigFileDirs,
     output: &mut dyn Output,
 ) -> Result<(), Error> {
-    if let Cmd::Completions { .. } = command {
+    match command {
         // Handled by main.rs where the top-level `Cli` is in scope;
         // real_main must not touch config because completions run at every
         // interactive shell startup.
-        return Ok(());
-    }
-    if let Cmd::Init {
-        url,
-        branch,
-        apply,
-        yes,
-    } = command
-    {
-        // Init runs before a config.toml exists, so it cannot go through the
-        // normal Config::load path below.
-        return init::run(
+        Cmd::Completions { .. } => Ok(()),
+        Cmd::Init {
+            url,
+            branch,
+            apply,
+            yes,
+        } => init::run(
             url.as_deref(),
             branch.as_deref(),
             *apply,
@@ -253,30 +233,24 @@ pub fn real_main(
             dirs,
             args,
             output,
-        );
-    }
-    if let Cmd::Doctor = command {
+        ),
         // Doctor must survive a missing or broken config.toml — it's the
-        // command the user runs when things are wrong. Dispatch before
-        // Config::load so load failures can be caught and rendered with
-        // actionable hints inside doctor::run.
-        let sh = Shell::new().unwrap();
-        return doctor::run(args, dirs, &sh, output);
-    }
-    if let Cmd::Schema = command {
-        return schema::run(&mut std::io::stdout().lock());
-    }
-    let sh = Shell::new().unwrap();
-    let config = Config::load(dirs, &sh, command.should_update_self(args))?;
-    let mut config_files = ConfigFiles::new(dirs);
-
-    match command {
+        // command the user runs when things are wrong, so it doesn't go
+        // through `Config::load` here.
+        Cmd::Doctor => {
+            let sh = Shell::new().unwrap();
+            doctor::run(args, dirs, &sh, output)
+        }
+        Cmd::Schema => schema::run(&mut std::io::stdout().lock()),
         Cmd::Apply {
-            pull_config: _,
+            pull_config,
             yes,
             dry_run,
             allow_dirty,
         } => {
+            let sh = Shell::new().unwrap();
+            let config = Config::load(dirs, &sh, *pull_config)?;
+            let mut config_files = ConfigFiles::new(dirs);
             let stdout_color = args.color.enabled(std::io::stdout().is_terminal());
             let mut prompter = build_prompter(*yes, *dry_run, stdout_color)?;
             config.push_pkg_health(output)?;
@@ -307,12 +281,17 @@ pub fn real_main(
 
             config.update_config_files(&sh, &mut config_files)?;
             config_files.apply_changes(output, prompter.as_mut())?;
+            Ok(())
         }
         Cmd::Status { diff: _, all: _ } => {
+            let sh = Shell::new().unwrap();
+            let config = Config::load(dirs, &sh, false)?;
+            let mut config_files = ConfigFiles::new(dirs);
             config.push_pkg_health(output)?;
             config.check_own_status(&sh, output)?;
             config.update_config_files(&sh, &mut config_files)?;
             config_files.check_status(output)?;
+            Ok(())
         }
         Cmd::Pkg {
             pattern,
@@ -320,6 +299,8 @@ pub fn real_main(
             all_hints,
             verbose,
         } => {
+            let sh = Shell::new().unwrap();
+            let config = Config::load(dirs, &sh, false)?;
             pkg_list::push(
                 &config,
                 pkg_list::Options {
@@ -330,15 +311,12 @@ pub fn real_main(
                 },
                 output,
             )?;
+            Ok(())
         }
         Cmd::Repo { command } => {
+            let sh = Shell::new().unwrap();
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
+            Ok(())
         }
-        Cmd::Init { .. } => unreachable!("handled before Config::load"),
-        Cmd::Doctor => unreachable!("handled before Config::load"),
-        Cmd::Schema => unreachable!("handled before Config::load"),
-        Cmd::Completions { .. } => unreachable!("handled before Config::load"),
     }
-
-    Ok(())
 }

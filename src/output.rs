@@ -225,7 +225,7 @@ pub struct BootstrapSummary {
 }
 
 /// Where a managed symlink stands relative to its desired target.
-#[derive(Debug, PartialEq, Clone, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(Debug, PartialEq, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum SymlinkStatus {
     /// Symlink exists and points to the right place.
@@ -244,8 +244,13 @@ pub enum SymlinkStatus {
     IsOther,
     /// The symlink exists and points to the correct location, but the source does not exist.
     RealPathIsMissing,
-    /// The directory that should contain the symlink is missing
-    DstDirIsMissing,
+    /// The directory that should contain the symlink is missing.
+    /// `dir` is the parent path that needs to be created before the symlink
+    /// can land.
+    DstDirIsMissing {
+        /// Parent directory of the symlink that needs to be created.
+        dir: ResolvedConfigFilePath,
+    },
 }
 
 /// Where a generated file stands relative to its desired contents.
@@ -870,7 +875,7 @@ fn status_to_line(status: &Status, show_clean: bool) -> Option<Line> {
         }),
         Status::Symlink {
             symlink,
-            status: SymlinkStatus::DstDirIsMissing,
+            status: SymlinkStatus::DstDirIsMissing { .. },
             ..
         } => Some(Line {
             marker: '✗',
@@ -1513,7 +1518,11 @@ mod tests {
     fn symlink_dst_dir_missing_reports_symlink_path() {
         assert_eq!(
             render_status(
-                symlink("s", "d", SymlinkStatus::DstDirIsMissing),
+                symlink(
+                    "s",
+                    "d",
+                    SymlinkStatus::DstDirIsMissing { dir: home_path("") },
+                ),
                 false,
                 false,
             ),

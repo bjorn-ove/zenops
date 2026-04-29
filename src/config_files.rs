@@ -140,6 +140,53 @@ enum ResolvedFileSource {
     },
 }
 
+/// Internal subset of [`Status`] that `entry_status` can actually produce —
+/// only the file-level variants. Lifting these out lets `apply_changes`
+/// match exhaustively without an `unreachable!` arm for the channel-level
+/// `Status::Git`/`GitRepoClean`/`Pkg` events that other code paths emit
+/// directly.
+#[derive(Debug)]
+enum FileEntryStatus {
+    Generated {
+        want_content: Arc<str>,
+        cur_content: Option<String>,
+        path: ResolvedConfigFilePath,
+        status: FileStatus,
+    },
+    Symlink {
+        real: ResolvedConfigFilePath,
+        symlink: ResolvedConfigFilePath,
+        status: SymlinkStatus,
+    },
+}
+
+impl From<FileEntryStatus> for Status {
+    fn from(s: FileEntryStatus) -> Self {
+        match s {
+            FileEntryStatus::Generated {
+                want_content,
+                cur_content,
+                path,
+                status,
+            } => Status::Generated {
+                want_content,
+                cur_content,
+                path,
+                status,
+            },
+            FileEntryStatus::Symlink {
+                real,
+                symlink,
+                status,
+            } => Status::Symlink {
+                real,
+                symlink,
+                status,
+            },
+        }
+    }
+}
+
 /// The three resolved root paths every [`ConfigFilePath`] is anchored to.
 /// Built once at startup from the user's home directory and threaded
 /// through every command.
@@ -206,7 +253,7 @@ impl<'dirs> ConfigFiles<'dirs> {
         );
     }
 
-    fn entry_status(&self, full: Arc<Path>, entry: &FileEntry) -> Result<Status, Error> {
+    fn entry_status(&self, full: Arc<Path>, entry: &FileEntry) -> Result<FileEntryStatus, Error> {
         let path = ResolvedConfigFilePath {
             path: entry.path.clone(),
             full,
@@ -222,14 +269,14 @@ impl<'dirs> ConfigFiles<'dirs> {
                     } else {
                         FileStatus::Modified
                     };
-                    Ok(Status::Generated {
+                    Ok(FileEntryStatus::Generated {
                         want_content: content.clone(),
                         cur_content: Some(cur_content),
                         path,
                         status,
                     })
                 } else {
-                    Ok(Status::Generated {
+                    Ok(FileEntryStatus::Generated {
                         want_content: content.clone(),
                         cur_content: None,
                         path,
@@ -254,28 +301,26 @@ impl<'dirs> ConfigFiles<'dirs> {
                             SymlinkStatus::WrongLink(link_path)
                         }
                     }
-                    SymlinkInfo::NotFound => {
-                        let parent_present = match path.full.parent() {
-                            None => true,
-                            Some(p) => match p.symlink_metadata() {
-                                Ok(_) => true,
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                                Err(e) => {
-                                    return Err(Error::SymlinkProbeFailed(p.to_path_buf(), e));
-                                }
-                            },
-                        };
-                        if parent_present {
-                            SymlinkStatus::New
-                        } else {
-                            SymlinkStatus::DstDirIsMissing
-                        }
-                    }
+                    SymlinkInfo::NotFound => match path.parent() {
+                        None => SymlinkStatus::New,
+                        Some(parent) => match parent.full.symlink_metadata() {
+                            Ok(_) => SymlinkStatus::New,
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                SymlinkStatus::DstDirIsMissing { dir: parent }
+                            }
+                            Err(e) => {
+                                return Err(Error::SymlinkProbeFailed(
+                                    parent.full.to_path_buf(),
+                                    e,
+                                ));
+                            }
+                        },
+                    },
                     SymlinkInfo::NotSymlinkIsFile => SymlinkStatus::IsFile,
                     SymlinkInfo::NotSymlinkIsDir => SymlinkStatus::IsDir,
                     SymlinkInfo::NotSymlinkIsOther => SymlinkStatus::IsOther,
                 };
-                Ok(Status::Symlink {
+                Ok(FileEntryStatus::Symlink {
                     real: ResolvedConfigFilePath {
                         path: rel.clone(),
                         full: full.clone(),
@@ -292,7 +337,7 @@ impl<'dirs> ConfigFiles<'dirs> {
     /// `zenops status` and as the pre-change pass of `zenops apply`.
     pub fn check_status(&self, output: &mut dyn Output) -> Result<(), Error> {
         for (path, entry) in &self.files {
-            output.push_status(self.entry_status(path.clone(), entry)?)?;
+            output.push_status(self.entry_status(path.clone(), entry)?.into())?;
         }
         Ok(())
     }
@@ -309,11 +354,11 @@ impl<'dirs> ConfigFiles<'dirs> {
         for (path, entry) in &self.files {
             let status = self.entry_status(path.clone(), entry)?;
             match status {
-                Status::Generated {
+                FileEntryStatus::Generated {
                     status: FileStatus::Ok,
                     ..
                 } => {}
-                Status::Generated {
+                FileEntryStatus::Generated {
                     status: FileStatus::New,
                     want_content,
                     path,
@@ -336,7 +381,7 @@ impl<'dirs> ConfigFiles<'dirs> {
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
                     output.push_applied_action(AppliedAction::CreatedFile(path))?;
                 }
-                Status::Generated {
+                FileEntryStatus::Generated {
                     status: FileStatus::Modified,
                     want_content,
                     cur_content,
@@ -365,11 +410,11 @@ impl<'dirs> ConfigFiles<'dirs> {
                         .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
                     output.push_applied_action(AppliedAction::UpdatedFile(path))?;
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::Ok,
                     ..
                 } => {}
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::New,
                     real,
                     symlink,
@@ -383,17 +428,11 @@ impl<'dirs> ConfigFiles<'dirs> {
                     create_symlink(&real, &symlink)?;
                     output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
-                Status::Symlink {
-                    status: SymlinkStatus::DstDirIsMissing,
+                FileEntryStatus::Symlink {
+                    status: SymlinkStatus::DstDirIsMissing { dir },
                     real,
                     symlink,
                 } => {
-                    let dir = symlink.parent().unwrap_or_else(|| {
-                        unreachable!(
-                            "DstDirIsMissing implies path.full has a parent that lstat'd \
-                             with NotFound; saw symlink={symlink:?}",
-                        )
-                    });
                     if !prompter.confirm(PendingChange::CreateSymlinkWithParent {
                         real: &real,
                         symlink: &symlink,
@@ -409,21 +448,21 @@ impl<'dirs> ConfigFiles<'dirs> {
                     create_symlink(&real, &symlink)?;
                     output.push_applied_action(AppliedAction::CreatedSymlink { real, symlink })?;
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsFile,
                     real,
                     symlink,
                 } => {
                     return Err(Error::RefusingToOverwriteFileWithSymlink { real, symlink });
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsDir,
                     real,
                     symlink,
                 } => {
                     return Err(Error::RefusingToOverwriteDirectoryWithSymlink { real, symlink });
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::WrongLink(current_target),
                     real,
                     symlink,
@@ -440,24 +479,19 @@ impl<'dirs> ConfigFiles<'dirs> {
                     create_symlink(&real, &symlink)?;
                     output.push_applied_action(AppliedAction::ReplacedSymlink { real, symlink })?;
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::RealPathIsMissing,
                     real,
                     symlink,
                 } => {
                     return Err(Error::SymlinkRealPathMissing { real, symlink });
                 }
-                Status::Symlink {
+                FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsOther,
                     symlink,
                     ..
                 } => {
                     return Err(Error::RefusingToOverwriteOtherWithSymlink(symlink));
-                }
-                Status::Git { .. } | Status::GitRepoClean { .. } | Status::Pkg { .. } => {
-                    unreachable!(
-                        "Git/GitRepoClean/Pkg events are pushed directly to Output, not through ConfigFiles",
-                    )
                 }
             }
         }
