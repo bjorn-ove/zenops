@@ -187,7 +187,7 @@ impl<'path, 'shell> Git<'path, 'shell> {
             c = c.arg("--branch").arg(b);
         }
         c = c.arg(url).arg(dest);
-        c.run().map_err(|e| Error::InitCloneFailed {
+        c.run().map_err(|e| crate::init::InitError::CloneFailed {
             url: url.to_string(),
             source: e,
         })?;
@@ -203,7 +203,7 @@ impl<'path, 'shell> Git<'path, 'shell> {
             .quiet()
             .ignore_stdout()
             .run()
-            .map_err(|e| Error::InitGitInitFailed { source: e })?;
+            .map_err(|e| crate::init::InitError::GitInitFailed { source: e })?;
         Ok(())
     }
 

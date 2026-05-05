@@ -12,6 +12,7 @@ use zenops::{
     Cmd,
     error::Error,
     git::{Git, GitCmd, GitFileStatus},
+    init::InitError,
 };
 use zenops_safe_relative_path::srpath;
 
@@ -101,8 +102,8 @@ fn clone_to_returns_init_clone_failed_on_bad_url() {
         .expect_err("clone of nonexistent url must fail");
 
     assert!(
-        matches!(err, Error::InitCloneFailed { .. }),
-        "expected InitCloneFailed, got: {err:?}",
+        matches!(err, Error::Init(InitError::CloneFailed { .. })),
+        "expected InitError::CloneFailed, got: {err:?}",
     );
 }
 

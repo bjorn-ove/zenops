@@ -1,5 +1,5 @@
 use similar_asserts::assert_eq;
-use zenops::{Cmd, error::Error};
+use zenops::{Cmd, error::Error, init::InitError};
 
 use test_env::{Entry, paths};
 
@@ -74,7 +74,9 @@ fn init_refuses_nonempty_dir() {
     let result = env.run(&init_cmd(bare.to_str().unwrap()));
     assert_eq!(
         result,
-        Err(Error::InitDirNotEmpty(env.resolve_path(paths::ZENOPS_DIR))),
+        Err(Error::Init(InitError::DirNotEmpty(
+            env.resolve_path(paths::ZENOPS_DIR)
+        ))),
     );
 }
 
@@ -86,7 +88,9 @@ fn init_rejects_repo_without_config_toml() {
     let result = env.run(&init_cmd(bare.to_str().unwrap()));
     assert_eq!(
         result,
-        Err(Error::InitNoConfigToml(env.resolve_path(paths::ZENOPS_DIR))),
+        Err(Error::Init(InitError::NoConfigToml(
+            env.resolve_path(paths::ZENOPS_DIR)
+        ))),
     );
 
     // Directory was left in place so the user can inspect it.
@@ -106,7 +110,9 @@ fn init_bootstrap_refuses_existing_empty_dir() {
     let result = env.run(&bootstrap_cmd());
     assert_eq!(
         result,
-        Err(Error::InitDirExists(env.resolve_path(paths::ZENOPS_DIR))),
+        Err(Error::Init(InitError::DirExists(
+            env.resolve_path(paths::ZENOPS_DIR)
+        ))),
     );
 }
 
@@ -122,7 +128,9 @@ fn init_bootstrap_refuses_existing_git_dir() {
     let result = env.run(&bootstrap_cmd());
     assert_eq!(
         result,
-        Err(Error::InitGitDirExists(env.resolve_path(paths::ZENOPS_DIR))),
+        Err(Error::Init(InitError::GitDirExists(
+            env.resolve_path(paths::ZENOPS_DIR)
+        ))),
     );
 }
 
@@ -135,7 +143,7 @@ fn init_bootstrap_needs_tty_when_dir_is_clear() {
     env.delete_dir_all(paths::ZENOPS_DIR);
 
     let result = env.run(&bootstrap_cmd());
-    assert_eq!(result, Err(Error::InitNeedsTty));
+    assert_eq!(result, Err(Error::Init(InitError::NeedsTty)));
 }
 
 #[test]

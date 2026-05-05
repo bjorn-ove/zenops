@@ -21,7 +21,7 @@ pub mod config_files;
 mod doctor;
 pub mod error;
 pub mod git;
-mod init;
+pub mod init;
 pub mod line_prompter;
 pub mod output;
 pub mod pkg_list;

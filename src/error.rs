@@ -140,61 +140,9 @@ pub enum Error {
     /// (rendering or JSON serialization error).
     #[error(transparent)]
     Output(#[from] OutputError),
-    /// `zenops init` target directory exists and is non-empty. The user
-    /// must clear it (or use `zenops repo pull` if it's already a clone).
-    #[error(
-        "Cannot init: {0:?} already exists and is not empty. Remove it first, or use `zenops repo pull` if it's already a zenops repo."
-    )]
-    InitDirNotEmpty(PathBuf),
-    /// `zenops init` (bootstrap form, no URL) found the target directory
-    /// already exists. Bootstrap refuses to touch any existing path so it
-    /// can never clobber a previous setup.
-    #[error(
-        "Cannot init: {0:?} already exists. Bootstrap refuses to touch an existing path; remove it first, or pass a URL to clone into it."
-    )]
-    InitDirExists(PathBuf),
-    /// `zenops init` bootstrap target already contains a `.git` directory.
-    /// Reported instead of [`Self::InitDirExists`] when the existing
-    /// directory looks like a git repo.
-    #[error(
-        "Cannot init: {0:?} already contains a .git directory. Looks like a zenops repo already exists; remove it first or skip init."
-    )]
-    InitGitDirExists(PathBuf),
-    /// `git init` itself failed during `zenops init` bootstrap.
-    #[error("Failed to initialize git repo: {source}")]
-    InitGitInitFailed {
-        /// Underlying xshell failure.
-        #[source]
-        source: xshell::Error,
-    },
-    /// `zenops init` (bootstrap form, no URL) was invoked without a TTY.
-    /// Prompts can't run reliably without one, so we refuse rather than
-    /// silently accept defaults from a closed stdin.
-    #[error(
-        "init bootstrap requires a terminal for prompts; clone with a URL instead, or run from a TTY"
-    )]
-    InitNeedsTty,
-    /// `zenops init` cloned successfully but the repo lacks a `config.toml`
-    /// at its root, so it isn't a zenops config repo. The clone is left in
-    /// place for inspection.
-    #[error(
-        "Cloned repo at {0:?} has no config.toml at its root. Is this a zenops config repo? The clone was left in place so you can inspect it."
-    )]
-    InitNoConfigToml(PathBuf),
-    /// `git clone` itself failed during `zenops init` (auth, network,
-    /// invalid URL).
-    #[error("Failed to clone {url}: {source}")]
-    InitCloneFailed {
-        /// The URL passed to `git clone`.
-        url: String,
-        /// The underlying xshell failure.
-        #[source]
-        source: xshell::Error,
-    },
-    /// I/O error during `zenops init` pre-flight (e.g. probing the target
-    /// directory, removing it before clone).
-    #[error("Init I/O error at {0:?}: {1}")]
-    InitIo(PathBuf, #[source] std::io::Error),
+    /// Wraps [`crate::init::InitError`].
+    #[error(transparent)]
+    Init(#[from] crate::init::InitError),
     /// `curl` isn't on `PATH` and is needed to fetch a user's GitHub keys.
     #[error(
         "curl is required to fetch GitHub SSH keys; install curl or switch the entry to type = \"manual\""
@@ -325,26 +273,7 @@ impl PartialEq for Error {
             (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
             (Self::PromptInterrupted, Self::PromptInterrupted) => true,
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
-            (Self::InitDirNotEmpty(l0), Self::InitDirNotEmpty(r0)) => l0 == r0,
-            (Self::InitDirExists(l0), Self::InitDirExists(r0)) => l0 == r0,
-            (Self::InitGitDirExists(l0), Self::InitGitDirExists(r0)) => l0 == r0,
-            (
-                Self::InitGitInitFailed { source: l_src },
-                Self::InitGitInitFailed { source: r_src },
-            ) => l_src.to_string() == r_src.to_string(),
-            (Self::InitNeedsTty, Self::InitNeedsTty) => true,
-            (Self::InitNoConfigToml(l0), Self::InitNoConfigToml(r0)) => l0 == r0,
-            (
-                Self::InitCloneFailed {
-                    url: l_url,
-                    source: l_src,
-                },
-                Self::InitCloneFailed {
-                    url: r_url,
-                    source: r_src,
-                },
-            ) => l_url == r_url && l_src.to_string() == r_src.to_string(),
-            (Self::InitIo(l0, l1), Self::InitIo(r0, r1)) => l0 == r0 && l1.kind() == r1.kind(),
+            (Self::Init(l0), Self::Init(r0)) => l0 == r0,
             (Self::CurlNotFound, Self::CurlNotFound) => true,
             (
                 Self::GithubKeyFetchFailed {
@@ -614,7 +543,6 @@ mod tests {
     fn unit_variants_compare_equal_to_themselves() {
         assert_eq!(Error::ApplyNeedsYesOrTty, Error::ApplyNeedsYesOrTty);
         assert_eq!(Error::PromptInterrupted, Error::PromptInterrupted);
-        assert_eq!(Error::InitNeedsTty, Error::InitNeedsTty);
         assert_eq!(Error::CurlNotFound, Error::CurlNotFound);
         assert_eq!(Error::NoHomeDir, Error::NoHomeDir);
     }
@@ -668,69 +596,19 @@ mod tests {
     }
 
     #[test]
-    fn init_dir_variants_eq_and_ne() {
-        assert_eq!(
-            Error::InitDirNotEmpty(PathBuf::from("/a")),
-            Error::InitDirNotEmpty(PathBuf::from("/a"))
-        );
-        assert_ne!(
-            Error::InitDirNotEmpty(PathBuf::from("/a")),
-            Error::InitDirNotEmpty(PathBuf::from("/b"))
-        );
-        assert_eq!(
-            Error::InitDirExists(PathBuf::from("/a")),
-            Error::InitDirExists(PathBuf::from("/a"))
-        );
-        assert_ne!(
-            Error::InitDirExists(PathBuf::from("/a")),
-            Error::InitDirExists(PathBuf::from("/b"))
-        );
-        assert_eq!(
-            Error::InitGitDirExists(PathBuf::from("/a")),
-            Error::InitGitDirExists(PathBuf::from("/a"))
-        );
-        assert_eq!(
-            Error::InitNoConfigToml(PathBuf::from("/a")),
-            Error::InitNoConfigToml(PathBuf::from("/a"))
-        );
-    }
-
-    #[test]
-    fn init_git_init_failed_eq_compares_display_string() {
-        let a = Error::InitGitInitFailed {
-            source: xshell_err(),
-        };
-        let b = Error::InitGitInitFailed {
-            source: xshell_err(),
-        };
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn init_clone_failed_eq_compares_url_and_display() {
-        let a = Error::InitCloneFailed {
-            url: "https://example/x".to_string(),
-            source: xshell_err(),
-        };
-        let b = Error::InitCloneFailed {
-            url: "https://example/x".to_string(),
-            source: xshell_err(),
-        };
-        let c = Error::InitCloneFailed {
-            url: "https://example/y".to_string(),
-            source: xshell_err(),
-        };
+    fn init_wrap_eq_delegates_to_inner() {
+        let a = Error::Init(crate::init::InitError::DirNotEmpty(PathBuf::from("/a")));
+        let b = Error::Init(crate::init::InitError::DirNotEmpty(PathBuf::from("/a")));
+        let c = Error::Init(crate::init::InitError::DirNotEmpty(PathBuf::from("/b")));
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
-    fn init_io_eq_and_ne() {
-        let a = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::Other));
-        let b = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::Other));
-        let c = Error::InitIo(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn from_init_error_wraps_in_init_variant() {
+        let inner = crate::init::InitError::NeedsTty;
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Init(_)));
     }
 
     #[test]

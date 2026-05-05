@@ -17,6 +17,10 @@
 //! Both forms run *before* a `config.toml` exists, so they can't go through
 //! the normal [`Config::load`] path in [`crate::real_main`].
 
+mod error;
+
+pub use error::Error as InitError;
+
 use std::fs;
 
 use xshell::{Shell, cmd};
@@ -32,6 +36,9 @@ use crate::{
     real_main,
 };
 
+/// Entry point for `zenops init`. Picks clone or bootstrap based on
+/// whether a `url` was supplied, then either emits a summary or hands off
+/// to apply when `apply` is set.
 pub fn run(
     url: Option<&str>,
     branch: Option<&str>,
@@ -66,7 +73,7 @@ fn run_clone(
 
     let config = Config::load(dirs, sh, false).map_err(|e| match e {
         Error::OpenDb(_, io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {
-            Error::InitNoConfigToml(dirs.zenops().to_path_buf())
+            InitError::NoConfigToml(dirs.zenops().to_path_buf()).into()
         }
         other => other,
     })?;
@@ -91,7 +98,7 @@ fn run_bootstrap(
 ) -> Result<(), Error> {
     preflight_bootstrap(dirs)?;
     if !args.stdin_is_terminal {
-        return Err(Error::InitNeedsTty);
+        return Err(InitError::NeedsTty.into());
     }
 
     let detected_shell = detect_shell_from_env(std::env::var("SHELL").ok().as_deref());
@@ -105,11 +112,12 @@ fn run_bootstrap(
     let email = prompt_with_default(&mut prompter, "Email", detected_email.as_deref())?;
 
     let zenops_dir = dirs.zenops();
-    fs::create_dir_all(zenops_dir).map_err(|e| Error::InitIo(zenops_dir.to_path_buf(), e))?;
+    fs::create_dir_all(zenops_dir)
+        .map_err(|e| Error::from(InitError::Io(zenops_dir.to_path_buf(), e)))?;
 
     let body = render_bootstrap_config(shell, name.as_deref(), email.as_deref());
     let cfg_path = zenops_dir.join("config.toml");
-    fs::write(&cfg_path, &body).map_err(|e| Error::InitIo(cfg_path.clone(), e))?;
+    fs::write(&cfg_path, &body).map_err(|e| Error::from(InitError::Io(cfg_path.clone(), e)))?;
 
     Git::init_repo(zenops_dir, sh)?;
     Git::initial_commit(zenops_dir, sh, "Initial zenops config")?;
@@ -149,16 +157,18 @@ fn preflight_clone(dirs: &ConfigFileDirs) -> Result<(), Error> {
     match fs::read_dir(zenops_dir) {
         Ok(mut iter) => {
             if iter.next().is_some() {
-                return Err(Error::InitDirNotEmpty(zenops_dir.to_path_buf()));
+                return Err(InitError::DirNotEmpty(zenops_dir.to_path_buf()).into());
             }
-            fs::remove_dir(zenops_dir).map_err(|e| Error::InitIo(zenops_dir.to_path_buf(), e))?;
+            fs::remove_dir(zenops_dir)
+                .map_err(|e| Error::from(InitError::Io(zenops_dir.to_path_buf(), e)))?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = zenops_dir.parent() {
-                fs::create_dir_all(parent).map_err(|e| Error::InitIo(parent.to_path_buf(), e))?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| Error::from(InitError::Io(parent.to_path_buf(), e)))?;
             }
         }
-        Err(e) => return Err(Error::InitIo(zenops_dir.to_path_buf(), e)),
+        Err(e) => return Err(InitError::Io(zenops_dir.to_path_buf(), e).into()),
     }
     Ok(())
 }
@@ -167,21 +177,22 @@ fn preflight_bootstrap(dirs: &ConfigFileDirs) -> Result<(), Error> {
     let zenops_dir = dirs.zenops();
     if zenops_dir
         .try_exists()
-        .map_err(|e| Error::InitIo(zenops_dir.to_path_buf(), e))?
+        .map_err(|e| Error::from(InitError::Io(zenops_dir.to_path_buf(), e)))?
     {
         // Distinguish .git so the user gets a more specific message when
         // they're effectively re-initing an existing zenops repo.
         let dot_git = zenops_dir.join(".git");
         if dot_git
             .try_exists()
-            .map_err(|e| Error::InitIo(dot_git.clone(), e))?
+            .map_err(|e| Error::from(InitError::Io(dot_git.clone(), e)))?
         {
-            return Err(Error::InitGitDirExists(zenops_dir.to_path_buf()));
+            return Err(InitError::GitDirExists(zenops_dir.to_path_buf()).into());
         }
-        return Err(Error::InitDirExists(zenops_dir.to_path_buf()));
+        return Err(InitError::DirExists(zenops_dir.to_path_buf()).into());
     }
     if let Some(parent) = zenops_dir.parent() {
-        fs::create_dir_all(parent).map_err(|e| Error::InitIo(parent.to_path_buf(), e))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| Error::from(InitError::Io(parent.to_path_buf(), e)))?;
     }
     Ok(())
 }
