@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.13.0] - 2026-05-05
+
+### Changed
+- **Breaking (library):** Restructured the crate-level `Error` enum. The flat per-source variants (`FailedToWriteConfig`, `FailedToReadConfig`, `SymlinkProbeFailed`, `CreateSymlinkFailed`, `SymlinkRealPathMissing`, `RefusingToOverwriteOtherWithSymlink`, `RefusingToOverwriteFileWithSymlink`, `RefusingToOverwriteDirectoryWithSymlink`, `CreateDirectoryError`, `InitDirNotEmpty`, `InitDirExists`, `InitGitDirExists`, `InitGitInitFailed`, `InitNeedsTty`, `InitNoConfigToml`, `InitCloneFailed`, `InitIo`, `CurlNotFound`, `GithubKeyFetchFailed`, `GithubKeyParseFailed`) have been folded into per-module wrapper variants `Error::ConfigFiles(ConfigFilesError)`, `Error::Init(InitError)`, `Error::Ssh(SshError)`, `Error::PkgError(pkg::Error)`, and `Error::Which(which::Error)`. Callers matching on the old variants must match on the new wrapper or its inner enum.
+- **Breaking (library):** `crate::init` is now a public module exporting `InitError`; the `config_files` module gained a public `ConfigFilesError` and `config::ssh` gained a public `SshError`. These are the inner types referenced by the new `Error` wrapper variants.
+
+### Added
+- New `Error::NoHomeDir` variant: bubbles out of `main` when `home::home_dir()` returns `None`, replacing the previous panic.
+- New `Error::BrewProbeFailed(PathBuf, io::Error)` variant: surfaces IO failures while probing for a `brew` install prefix instead of treating them as "not installed".
+
+### Fixed
+- Filesystem probes now use `Path::try_exists` and propagate IO errors, so unreadable parents or broken metadata produce actionable errors rather than misleading "not found" results.
+- `xshell` failures from git probes are no longer swallowed; failed `git`/`Shell::new` invocations now propagate instead of being silently treated as a clean working tree.
+- Replaced remaining `.unwrap()` calls on `Shell::new()` and `home::home_dir()` in command dispatch with proper error propagation, so misconfigured environments report a clean error instead of panicking.
+- Extra error coverage in `config::pkg` (detect/doctor paths) so previously-swallowed failures now reach the user.
+
 ## [0.12.0] - 2026-04-29
 
 ### Changed
