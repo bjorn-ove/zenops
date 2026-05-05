@@ -95,8 +95,8 @@ fn run_bootstrap(
     }
 
     let detected_shell = detect_shell_from_env(std::env::var("SHELL").ok().as_deref());
-    let detected_name = detect_git_config(sh, "user.name");
-    let detected_email = detect_git_config(sh, "user.email");
+    let detected_name = detect_git_config(sh, "user.name")?;
+    let detected_email = detect_git_config(sh, "user.email")?;
 
     let mut prompter = RustylinePrompter::new().map_err(Error::PromptRead)?;
 
@@ -193,13 +193,12 @@ fn emit_clone_summary(
     output: &mut dyn Output,
 ) -> Result<(), Error> {
     let dest = dirs.zenops();
-    let remote = cmd!(sh, "git -C {dest} remote get-url origin")
+    let remote_raw = cmd!(sh, "git -C {dest} remote get-url origin")
         .quiet()
         .ignore_stderr()
-        .read()
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .ignore_status()
+        .read()?;
+    let remote = Some(remote_raw.trim().to_string()).filter(|s| !s.is_empty());
 
     let shell = config.shell().map(|s| match s {
         crate::config::pkg::Shell::Bash => "bash".to_string(),
@@ -249,15 +248,13 @@ fn detect_shell_from_env(shell_var: Option<&str>) -> Option<BootstrapShell> {
     }
 }
 
-fn detect_git_config(sh: &Shell, key: &str) -> Option<String> {
-    cmd!(sh, "git config --global --get {key}")
+fn detect_git_config(sh: &Shell, key: &str) -> Result<Option<String>, Error> {
+    let raw = cmd!(sh, "git config --global --get {key}")
         .quiet()
         .ignore_status()
         .ignore_stderr()
-        .read()
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .read()?;
+    Ok(Some(raw.trim().to_string()).filter(|s| !s.is_empty()))
 }
 
 fn read_trimmed_line(

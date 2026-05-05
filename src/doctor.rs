@@ -191,14 +191,12 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, em: &mut DoctorEmitter) -> Resu
     }
     em.ok("git repo:", "yes")?;
 
-    let remote = cmd!(sh, "git -C {zenops} remote get-url origin")
+    let remote_raw = cmd!(sh, "git -C {zenops} remote get-url origin")
         .quiet()
         .ignore_stderr()
         .ignore_status()
-        .read()
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .read()?;
+    let remote = Some(remote_raw.trim().to_string()).filter(|s| !s.is_empty());
     match remote {
         Some(url) => em.info("remote:", url)?,
         None => em.warn(
@@ -208,14 +206,12 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, em: &mut DoctorEmitter) -> Resu
         )?,
     }
 
-    let branch = cmd!(sh, "git -C {zenops} rev-parse --abbrev-ref HEAD")
+    let branch_raw = cmd!(sh, "git -C {zenops} rev-parse --abbrev-ref HEAD")
         .quiet()
         .ignore_stderr()
         .ignore_status()
-        .read()
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s != "HEAD");
+        .read()?;
+    let branch = Some(branch_raw.trim().to_string()).filter(|s| !s.is_empty() && s != "HEAD");
     if let Some(b) = branch {
         em.info("branch:", b)?;
     }
