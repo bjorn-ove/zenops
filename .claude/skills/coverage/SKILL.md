@@ -9,31 +9,67 @@ Measure → propose options → implement → re-measure. The skill never picks
 an option on its own, never commits, and never installs tooling — it
 prepares work and stops at decision points so the user can steer.
 
+## Helper tools
+
+The skill ships three scripts so you don't write one-off shell or
+`python3 <<EOF` blocks each run:
+
+- **`cov_preflight.sh`** — verify `cargo-llvm-cov`, the `llvm-tools`
+  rustup component, the workspace root, and the dirty-tree warning in
+  one go. Use this for the **Pre-flight** step.
+- **`cov_rank.py`** — parse a `cargo-llvm-cov` JSON report and surface
+  ranked candidates: weakest files, low-function-coverage modules, and
+  (with `--unwraps --full`) `unwrap`/`expect`/`panic!` sites on
+  uncovered lines. Use this for the **Analyze** step.
+- **`cov_diff.py`** — diff two summary JSONs and print the workspace +
+  per-file delta. Use this for the **Re-measure and report** step.
+
+All three live next to this file and are executable. Invoke them with
+their absolute paths (the skill directory is not on `$PATH`):
+
+```bash
+.claude/skills/coverage/cov_preflight.sh
+.claude/skills/coverage/cov_rank.py target/llvm-cov-target/summary.json
+.claude/skills/coverage/cov_diff.py before.json after.json
+```
+
+Each script's `--help` documents every flag. Do not reimplement what
+they already do — extend the scripts in place if a new shape is needed.
+
 ## Pre-flight
 
-Stop with a one-line fix on any failure — do not auto-install, do not retry.
+Run `cov_preflight.sh` and react to its output. The script does the
+four checks below in one pass and emits one line per check, prefixed
+`OK`, `WARN`, or `FAIL`:
 
-1. **Tool present.**
-   ```bash
-   command -v cargo-llvm-cov
-   ```
-   If missing, tell the user exactly one of:
+```bash
+.claude/skills/coverage/cov_preflight.sh
+```
+
+Exit codes — `0` (all required checks passed; dirty-tree is a warning),
+`1` (`cargo-llvm-cov` missing), `2` (`llvm-tools` rustup component
+missing), `3` (not at a Cargo workspace root). On any non-zero exit,
+relay the `fix:` line the script printed to stderr to the user and
+**stop** — do not auto-install, do not retry.
+
+If the script prints a `WARN` about uncommitted changes under `src/` or
+`tests/`, surface it once and ask whether to continue before writing
+new tests that would blend into the user's in-progress diff. Pass
+`--no-dirty` to skip that check entirely if the user has already
+acknowledged it; pass `--quiet` to suppress the `OK` lines on a re-run.
+
+The four checks the script performs:
+
+1. **Tool present.** `cargo-llvm-cov` on `PATH`. Fix:
    `brew install cargo-llvm-cov` · `cargo binstall cargo-llvm-cov` ·
-   `cargo install cargo-llvm-cov --locked`. Stop.
-
-2. **Rustup component.**
-   ```bash
-   rustup component list --installed | grep -q llvm-tools-preview
-   ```
-   If missing: `rustup component add llvm-tools-preview`. Stop.
-
-3. **Workspace root.** Read `Cargo.toml` and confirm a `[workspace]` block.
-   If absent, the skill was invoked from the wrong directory — stop.
-
-4. **Dirty tree warning.** `git status --porcelain`. If uncommitted
-   changes touch `src/` or `tests/`, warn once so the user can stash
-   before the skill writes tests that would blend into their in-progress
-   diff. Ask whether to continue anyway.
+   `cargo install cargo-llvm-cov --locked`.
+2. **Rustup component.** Matches both the old `llvm-tools-preview`
+   naming and the newer `llvm-tools-<host-triple>` naming. Fix:
+   `rustup component add llvm-tools-preview`.
+3. **Workspace root.** `Cargo.toml` exists and contains a
+   `[workspace]` block. Fix: cd to the workspace root.
+4. **Dirty-tree warning.** `git status --porcelain` over `src/` and
+   `tests/`, filtered to `.rs` / `.toml` files. Non-fatal.
 
 ## Measure
 
@@ -60,10 +96,11 @@ than every tracked `.rs` file and every `Cargo.toml`. Re-measure on demand
 ("fresh", "re-run coverage"). The post-implementation re-measure in the
 final step is always fresh.
 
-**Optional deeper runs** — only when the user asks:
+**Optional deeper run** — needed only if you intend to use
+`cov_rank.py --unwraps` or the user asks for HTML / region detail:
 
 ```bash
-# region/branch-level data for "show me uncovered lines in <file>"
+# region-level data — required by cov_rank.py --unwraps
 cargo llvm-cov --workspace --json \
   --ignore-filename-regex '/(tests|test_env)\.rs$' \
   --output-path target/llvm-cov-target/full.json
@@ -79,44 +116,59 @@ broken suite isn't honest — fix the test first.
 
 ## Analyze
 
-Parse `summary.json`. The shape is:
+Run `cov_rank.py` against the summary JSON. The default output is
+already shaped for chat — print it as-is, then layer interpretation on
+top. The two normal invocations:
 
-```
-data[0].totals.{lines,regions,functions,branches}.{count,covered,percent}
-data[0].files[].filename
-data[0].files[].summary.{lines,regions,functions,branches}.{count,covered,percent,notcovered}
+```bash
+# Quick ranking (no full.json needed)
+.claude/skills/coverage/cov_rank.py \
+  target/llvm-cov-target/summary.json --top 10
+
+# With unwrap/expect/panic intersection (template 3)
+.claude/skills/coverage/cov_rank.py \
+  target/llvm-cov-target/summary.json \
+  --full target/llvm-cov-target/full.json --unwraps --top 10
 ```
 
-Bucket each file into one of the option templates below; pick the
-highest-value entry in each template to build the menu. Aim for **3–5
-distinct options**. If fewer than 3 meaningful options exist (e.g.
-coverage is already very high), say so honestly rather than pad.
+Flags worth knowing:
+
+- `--min-lines N` (default 50) — drop tiny files that distort the
+  ranking.
+- `--max-pct P` (default 95.0) — cap on what counts as "weak".
+- `--top N` — number of rows to print per section.
+- `--format tsv|json` — for further scripting; `text` is the default.
+
+The script's "Weakest files" section maps to template 1, the "Modules
+with low function coverage" section maps to template 4, and the
+"Unwrap/expect/panic on uncovered branches" section maps to template
+3. Templates 2 (untested public API) and 5 (subcrate lift) you still
+derive by hand — extend `cov_rank.py` if you find yourself recomputing
+them often.
 
 Templates:
 
-1. **Lowest-coverage file with enough lines to matter.** Sort ascending
-   by `summary.lines.percent`; filter `summary.lines.count >= 50` so tiny
-   files don't distort the ranking.
+1. **Lowest-coverage file with enough lines to matter.** Surfaced by
+   `cov_rank.py` directly. Pick the entry with the highest absolute
+   uncovered-line count among the worst few percentages.
 
 2. **Untested public API.** For `src/lib.rs` and every
-   `crates/*/src/lib.rs`, grep `^pub (fn|struct|enum) `. Cross-reference
-   the declaration line against uncovered regions (needs `full.json`,
-   not `summary.json` — re-run without `--summary-only` if this template
-   produces a candidate). Surface per crate with the worst offender.
+   `crates/*/src/lib.rs`, grep `^pub (fn|struct|enum) ` and
+   cross-reference declaration lines against uncovered ranges from
+   `full.json`. The `cov_rank.py` source already has an
+   `uncovered_line_ranges` helper — reuse it if you script this out.
 
-3. **Unwrap / expect / panic on uncovered branches.** Grep
-   `\.unwrap\(|\.expect\(|panic!\(` across `src/` and `crates/*/src/`.
-   Intersect line numbers with uncovered regions. Surface as
-   "Cover error paths in `<file>` (N unwrap/expect sites on uncovered
-   branches)."
+3. **Unwrap / expect / panic on uncovered branches.** Surfaced directly
+   by `cov_rank.py --unwraps --full`. Each row is "Cover error paths in
+   `<file>` (N unwrap/expect sites on uncovered branches)."
 
-4. **Integration-test shaped gap.** A module in `src/` with
-   `summary.functions.percent < 40` that's reachable from `Cmd::*`
-   dispatch in `src/lib.rs::real_main` → propose a new integration test
-   in `tests/basics.rs`.
+4. **Integration-test shaped gap.** A module in `src/` with low
+   `funcs%` reachable from `Cmd::*` dispatch in
+   `src/lib.rs::real_main` → propose a new integration test under
+   `tests/`.
 
 5. **Subcrate lift.** A subcrate's total significantly below the
-   workspace average → extend its own `tests/basics.rs`
+   workspace average → extend that crate's own `tests/basics.rs`
    (`crates/zenops-safe-relative-path/tests/basics.rs` is an existing
    model).
 
@@ -125,7 +177,8 @@ Each option carries:
 - **target** — files + approximate line ranges.
 - **rationale** — why this matters (public API? error handling? reachable
   from a CLI subcommand?).
-- **current coverage** — `%` and uncovered-line count.
+- **current coverage** — `%` and uncovered-line count (read directly
+  from `cov_rank.py` output).
 - **expected gain** — crude estimate:
   `uncovered_lines_addressed / total_workspace_lines * 100`, rounded.
 - **effort** — S / M / L based on how many tests and fixtures are
@@ -154,7 +207,7 @@ Options (pick one or combine):
    Effort:    M — 4-6 integration tests using TestEnv with broken
               git repos.
 
-2. Add end-to-end test for `Cmd::Repo` in tests/basics.rs
+2. Add end-to-end test for `Cmd::Repo`
    Rationale: Repo subcommand is reachable from main but has no direct
               integration coverage.
    Current:   0% (dispatch uncovered)
@@ -171,11 +224,17 @@ pause.
 ## Implement
 
 Once the user picks, follow the repo's existing idiom — do not invent
-new patterns.
+new patterns. Inspect `tests/` first to find the closest existing test
+shape rather than assuming a fixed filename.
 
-**Integration tests** land in `tests/basics.rs`:
+**Integration tests** land in the appropriate file under `tests/`
+(currently split per surface area: `tests/apply.rs`, `tests/init.rs`,
+`tests/doctor.rs`, `tests/pkg_list.rs`, `tests/git_status.rs`,
+`tests/symlinks.rs`, …). Use the file whose name matches the surface
+under test; only add a new file if no existing surface fits. The shared
+fixture is `tests/test_env.rs`.
 
-- `use similar_asserts::assert_eq;` — the file already uses it.
+- `use similar_asserts::assert_eq;` — the existing files use it.
 - `let env = test_env::TestEnv::load();` — the canonical setup.
 - Helpers available on `TestEnv`: `.run(&Cmd)`, `.resolve_path()`,
   `.cfpath()`, `.write_file()`, `.append_file()`, `.write_zenops_file()`,
@@ -192,7 +251,7 @@ new patterns.
 Iterate fast, then widen:
 
 ```bash
-cargo test --test basics <new_test_name> -- --nocapture
+cargo test --test <file_stem> <new_test_name> -- --nocapture
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
@@ -203,6 +262,7 @@ files were touched so the review is cheap.
 ## Re-measure and report
 
 Always fresh — the whole point of the delta is to reflect the new work.
+Save the new summary to a sibling path and run `cov_diff.py`:
 
 ```bash
 cargo llvm-cov --workspace --summary-only \
@@ -211,9 +271,16 @@ cargo llvm-cov --workspace --summary-only \
 cargo llvm-cov --workspace --json --summary-only \
   --ignore-filename-regex '/(tests|test_env)\.rs$' \
   --output-path target/llvm-cov-target/summary.after.json
+
+.claude/skills/coverage/cov_diff.py \
+  target/llvm-cov-target/summary.json \
+  target/llvm-cov-target/summary.after.json
 ```
 
-Diff against `summary.json` and emit:
+`cov_diff.py` prints workspace totals (lines + regions + functions) and
+the top per-file deltas (sorted by line-% change, hides churn below
+`--min-delta`, default 0.5 pts). Read its output, then compose the
+final report:
 
 ```
 Coverage delta:
@@ -221,9 +288,10 @@ Coverage delta:
   src/git.rs:       41.2% -> 74.6%  (+33.4 pts, 91 lines now covered)
 
 Tests added:
-  tests/basics.rs
+  tests/git_status.rs
     + git_status_on_detached_head
     + git_repo_with_missing_remote
+  tests/apply.rs
     + apply_fails_when_git_rev_parse_errors
 
 Next: review `git diff`, then commit if you're happy.
@@ -234,6 +302,9 @@ internals.
 
 ## Notes
 
+- **Helper scripts are stdlib-only.** No `pip install`. If a future
+  enhancement needs a third-party library, prefer extending the script
+  with stdlib code over adding a dependency.
 - **First instrumented run is slow** (2–5× a normal `cargo test`).
   Instrumented binaries are large; `cargo-llvm-cov` keeps its own
   `target/llvm-cov-target/` so the normal incremental cache isn't
@@ -246,13 +317,13 @@ internals.
 - **Doctests are not covered** by a plain `cargo llvm-cov` run
   (`--doctests` is nightly-only). Low doc-test volume in this repo; note
   the gap, do not enable.
-- **Coverage attributes to source files, not test location.** A test in
-  `tests/basics.rs` that exercises `zenops-safe-relative-path` shows up
-  under the subcrate in the JSON. Rank by `filename`, not by where the
-  test lives.
-- **Flaky integration tests distort coverage.** `tests/basics.rs` spins
-  up real git repos via `xshell`. If a test fails on the measure run,
-  abort — don't rank options on a broken run.
+- **Coverage attributes to source files, not test location.** A test
+  in `tests/apply.rs` that exercises `zenops-safe-relative-path` shows
+  up under the subcrate in the JSON. Rank by `filename`, not by where
+  the test lives.
+- **Flaky integration tests distort coverage.** The `tests/*.rs` files
+  spin up real git repos via `xshell`. If a test fails on the measure
+  run, abort — don't rank options on a broken run.
 - **Out of scope for v1:** a `--ci` threshold mode that slots into
   `scripts/prerelease.sh`. Wait until the user picks a threshold worth
   enforcing.
