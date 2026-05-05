@@ -14,7 +14,7 @@ use xshell::{Shell, cmd};
 use crate::{
     Args,
     config::Config,
-    config_files::ConfigFileDirs,
+    config_files::{ConfigFileDirs, ConfigFilesError},
     error::Error,
     git::Git,
     output::{DoctorCheck, DoctorSection, DoctorSeverity, Event, Output},
@@ -167,10 +167,12 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, em: &mut DoctorEmitter) -> Resu
     em.enter(DoctorSection::Repo)?;
     let zenops = dirs.zenops();
 
-    if !zenops
-        .try_exists()
-        .map_err(|e| Error::SymlinkProbeFailed(zenops.to_path_buf(), e))?
-    {
+    if !zenops.try_exists().map_err(|e| {
+        Error::from(ConfigFilesError::SymlinkProbeFailed(
+            zenops.to_path_buf(),
+            e,
+        ))
+    })? {
         em.bad(
             "path:",
             "missing",

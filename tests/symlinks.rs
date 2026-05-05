@@ -1,7 +1,7 @@
 use similar_asserts::assert_eq;
 use zenops::{
     Cmd,
-    config_files::ConfigFilePath,
+    config_files::{ConfigFilePath, ConfigFilesError},
     error::Error,
     output::{AppliedAction, Status, SymlinkStatus},
 };
@@ -388,10 +388,12 @@ fn symlink_dst_is_regular_file() {
             dry_run: false,
             allow_dirty: true,
         }),
-        Err(Error::RefusingToOverwriteFileWithSymlink {
-            real: real.clone(),
-            symlink: symlink.clone(),
-        })
+        Err(Error::ConfigFiles(
+            ConfigFilesError::RefusingToOverwriteFileWithSymlink {
+                real: real.clone(),
+                symlink: symlink.clone(),
+            }
+        ))
     );
 }
 
@@ -426,10 +428,12 @@ fn symlink_dst_is_directory() {
             dry_run: false,
             allow_dirty: true,
         }),
-        Err(Error::RefusingToOverwriteDirectoryWithSymlink {
-            real: real.clone(),
-            symlink: symlink.clone(),
-        })
+        Err(Error::ConfigFiles(
+            ConfigFilesError::RefusingToOverwriteDirectoryWithSymlink {
+                real: real.clone(),
+                symlink: symlink.clone(),
+            }
+        ))
     );
 }
 
@@ -518,7 +522,9 @@ fn apply_refuses_to_overwrite_fifo_with_symlink() {
     });
     assert_eq!(
         result,
-        Err(Error::RefusingToOverwriteOtherWithSymlink(symlink)),
+        Err(Error::ConfigFiles(
+            ConfigFilesError::RefusingToOverwriteOtherWithSymlink(symlink)
+        )),
     );
     let _ = real;
 }
@@ -561,7 +567,12 @@ fn apply_errors_when_real_path_missing() {
         allow_dirty: true,
     });
 
-    assert_eq!(result, Err(Error::SymlinkRealPathMissing { real, symlink }),);
+    assert_eq!(
+        result,
+        Err(Error::ConfigFiles(
+            ConfigFilesError::SymlinkRealPathMissing { real, symlink }
+        )),
+    );
 }
 
 #[test]

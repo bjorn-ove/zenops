@@ -2,7 +2,7 @@ use similar_asserts::assert_eq;
 use smol_str::SmolStr;
 use zenops::{
     Cmd,
-    config_files::ConfigFilePath,
+    config_files::{ConfigFilePath, ConfigFilesError},
     error::Error,
     git::GitFileStatus,
     output::{PkgStatus, Status},
@@ -561,7 +561,7 @@ fn entry_status_propagates_unreadable_generated_file() {
     });
 
     match result {
-        Err(Error::FailedToReadConfig(p, e)) => {
+        Err(Error::ConfigFiles(ConfigFilesError::FailedToReadConfig(p, e))) => {
             assert_eq!(
                 p.path,
                 ConfigFilePath::in_home(srpath!(".zenops_bash_profile"))

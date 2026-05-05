@@ -27,6 +27,10 @@ use indexmap::IndexMap;
 use schemars::JsonSchema;
 use serde::Serialize;
 
+mod error;
+
+pub use error::Error as ConfigFilesError;
+
 use crate::{
     error::Error,
     output::{
@@ -263,13 +267,15 @@ impl<'dirs> ConfigFiles<'dirs> {
 
         match &entry.src {
             ResolvedFileSource::Generated(content) => {
-                if path
-                    .full
-                    .try_exists()
-                    .map_err(|e| Error::SymlinkProbeFailed(path.full.to_path_buf(), e))?
-                {
-                    let cur_content = std::fs::read_to_string(&path.full)
-                        .map_err(|e| Error::FailedToReadConfig(path.clone(), e))?;
+                if path.full.try_exists().map_err(|e| {
+                    Error::from(ConfigFilesError::SymlinkProbeFailed(
+                        path.full.to_path_buf(),
+                        e,
+                    ))
+                })? {
+                    let cur_content = std::fs::read_to_string(&path.full).map_err(|e| {
+                        Error::from(ConfigFilesError::FailedToReadConfig(path.clone(), e))
+                    })?;
                     let status = if cur_content == content.as_ref() {
                         FileStatus::Ok
                     } else {
@@ -300,7 +306,11 @@ impl<'dirs> ConfigFiles<'dirs> {
                                     SymlinkStatus::RealPathIsMissing
                                 }
                                 Err(e) => {
-                                    return Err(Error::SymlinkProbeFailed(full.to_path_buf(), e));
+                                    return Err(ConfigFilesError::SymlinkProbeFailed(
+                                        full.to_path_buf(),
+                                        e,
+                                    )
+                                    .into());
                                 }
                             }
                         } else {
@@ -315,10 +325,11 @@ impl<'dirs> ConfigFiles<'dirs> {
                                 SymlinkStatus::DstDirIsMissing { dir: parent }
                             }
                             Err(e) => {
-                                return Err(Error::SymlinkProbeFailed(
+                                return Err(ConfigFilesError::SymlinkProbeFailed(
                                     parent.full.to_path_buf(),
                                     e,
-                                ));
+                                )
+                                .into());
                             }
                         },
                     },
@@ -379,17 +390,21 @@ impl<'dirs> ConfigFiles<'dirs> {
                         continue;
                     }
                     if let Some(parent) = path.parent()
-                        && !parent
-                            .full
-                            .try_exists()
-                            .map_err(|e| Error::SymlinkProbeFailed(parent.full.to_path_buf(), e))?
+                        && !parent.full.try_exists().map_err(|e| {
+                            Error::from(ConfigFilesError::SymlinkProbeFailed(
+                                parent.full.to_path_buf(),
+                                e,
+                            ))
+                        })?
                     {
-                        std::fs::create_dir_all(&parent.full)
-                            .map_err(|e| Error::CreateDirectoryError(parent.clone(), e))?;
+                        std::fs::create_dir_all(&parent.full).map_err(|e| {
+                            Error::from(ConfigFilesError::CreateDirectoryError(parent.clone(), e))
+                        })?;
                         output.push(Event::AppliedAction(AppliedAction::CreatedDir(parent)))?;
                     }
-                    std::fs::write(&path.full, want_content.as_bytes())
-                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
+                    std::fs::write(&path.full, want_content.as_bytes()).map_err(|e| {
+                        Error::from(ConfigFilesError::FailedToWriteConfig(path.to_owned(), e))
+                    })?;
                     output.push(Event::AppliedAction(AppliedAction::CreatedFile(path)))?;
                 }
                 FileEntryStatus::Generated {
@@ -417,8 +432,9 @@ impl<'dirs> ConfigFiles<'dirs> {
                         continue;
                     }
                     let content = reconstruct(cur, want, &groups, &approvals);
-                    std::fs::write(&path.full, content.as_bytes())
-                        .map_err(|e| Error::FailedToWriteConfig(path.to_owned(), e))?;
+                    std::fs::write(&path.full, content.as_bytes()).map_err(|e| {
+                        Error::from(ConfigFilesError::FailedToWriteConfig(path.to_owned(), e))
+                    })?;
                     output.push(Event::AppliedAction(AppliedAction::UpdatedFile(path)))?;
                 }
                 FileEntryStatus::Symlink {
@@ -456,7 +472,7 @@ impl<'dirs> ConfigFiles<'dirs> {
                     }
                     match std::fs::create_dir_all(&dir.full) {
                         Ok(()) => {}
-                        Err(e) => return Err(Error::CreateDirectoryError(dir, e)),
+                        Err(e) => return Err(ConfigFilesError::CreateDirectoryError(dir, e).into()),
                     }
                     output.push(Event::AppliedAction(AppliedAction::CreatedDir(dir)))?;
                     create_symlink(&real, &symlink)?;
@@ -470,14 +486,22 @@ impl<'dirs> ConfigFiles<'dirs> {
                     real,
                     symlink,
                 } => {
-                    return Err(Error::RefusingToOverwriteFileWithSymlink { real, symlink });
+                    return Err(ConfigFilesError::RefusingToOverwriteFileWithSymlink {
+                        real,
+                        symlink,
+                    }
+                    .into());
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsDir,
                     real,
                     symlink,
                 } => {
-                    return Err(Error::RefusingToOverwriteDirectoryWithSymlink { real, symlink });
+                    return Err(ConfigFilesError::RefusingToOverwriteDirectoryWithSymlink {
+                        real,
+                        symlink,
+                    }
+                    .into());
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::WrongLink(current_target),
@@ -491,8 +515,12 @@ impl<'dirs> ConfigFiles<'dirs> {
                     })? {
                         continue;
                     }
-                    std::fs::remove_file(&symlink.full)
-                        .map_err(|e| Error::SymlinkProbeFailed(symlink.full.to_path_buf(), e))?;
+                    std::fs::remove_file(&symlink.full).map_err(|e| {
+                        Error::from(ConfigFilesError::SymlinkProbeFailed(
+                            symlink.full.to_path_buf(),
+                            e,
+                        ))
+                    })?;
                     create_symlink(&real, &symlink)?;
                     output.push(Event::AppliedAction(AppliedAction::ReplacedSymlink {
                         real,
@@ -504,14 +532,16 @@ impl<'dirs> ConfigFiles<'dirs> {
                     real,
                     symlink,
                 } => {
-                    return Err(Error::SymlinkRealPathMissing { real, symlink });
+                    return Err(ConfigFilesError::SymlinkRealPathMissing { real, symlink }.into());
                 }
                 FileEntryStatus::Symlink {
                     status: SymlinkStatus::IsOther,
                     symlink,
                     ..
                 } => {
-                    return Err(Error::RefusingToOverwriteOtherWithSymlink(symlink));
+                    return Err(
+                        ConfigFilesError::RefusingToOverwriteOtherWithSymlink(symlink).into(),
+                    );
                 }
             }
         }
@@ -588,7 +618,9 @@ impl SymlinkInfo {
                 if meta.is_symlink() {
                     match std::fs::read_link(p) {
                         Ok(link_path) => Ok(Self::LinksTo(link_path)),
-                        Err(e) => Err(Error::SymlinkProbeFailed(p.to_path_buf(), e)),
+                        Err(e) => {
+                            Err(ConfigFilesError::SymlinkProbeFailed(p.to_path_buf(), e).into())
+                        }
                     }
                 } else if meta.is_file() {
                     Ok(Self::NotSymlinkIsFile)
@@ -599,7 +631,7 @@ impl SymlinkInfo {
                 }
             }
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => Ok(Self::NotFound),
-            Err(e) => Err(Error::SymlinkProbeFailed(p.to_path_buf(), e)),
+            Err(e) => Err(ConfigFilesError::SymlinkProbeFailed(p.to_path_buf(), e).into()),
         }
     }
 }
@@ -610,11 +642,11 @@ fn create_symlink(
     symlink: &ResolvedConfigFilePath,
 ) -> Result<(), Error> {
     std::os::unix::fs::symlink(&real.full, &symlink.full).map_err(|source| {
-        Error::CreateSymlinkFailed {
+        Error::from(ConfigFilesError::CreateSymlinkFailed {
             real: real.clone(),
             symlink: symlink.clone(),
             source,
-        }
+        })
     })
 }
 
@@ -726,7 +758,7 @@ mod tests {
         let (path, entry) = config_files.files.first().unwrap();
         let result = config_files.entry_status(path.clone(), entry);
         match result {
-            Err(Error::SymlinkProbeFailed(p, e)) => {
+            Err(Error::ConfigFiles(ConfigFilesError::SymlinkProbeFailed(p, e))) => {
                 assert_eq!(p, real_path);
                 assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
             }
@@ -754,7 +786,7 @@ mod tests {
         std::fs::write(&symlink.full, b"in the way\n").unwrap();
 
         match create_symlink(&real, &symlink) {
-            Err(Error::CreateSymlinkFailed { source, .. }) => {
+            Err(Error::ConfigFiles(ConfigFilesError::CreateSymlinkFailed { source, .. })) => {
                 assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
             }
             other => panic!("expected CreateSymlinkFailed/AlreadyExists, got {other:?}"),
@@ -769,7 +801,7 @@ mod tests {
         let symlink = home_resolved(dirs.home(), "no_such_dir/dst");
 
         match create_symlink(&real, &symlink) {
-            Err(Error::CreateSymlinkFailed { source, .. }) => {
+            Err(Error::ConfigFiles(ConfigFilesError::CreateSymlinkFailed { source, .. })) => {
                 assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
             }
             other => panic!("expected CreateSymlinkFailed/NotFound, got {other:?}"),
@@ -788,7 +820,7 @@ mod tests {
         let _guard = ModeGuard::chmod(read_only_dir, 0o555);
 
         match create_symlink(&real, &symlink) {
-            Err(Error::CreateSymlinkFailed { source, .. }) => {
+            Err(Error::ConfigFiles(ConfigFilesError::CreateSymlinkFailed { source, .. })) => {
                 assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
             }
             other => panic!("expected CreateSymlinkFailed/PermissionDenied, got {other:?}"),
@@ -830,7 +862,7 @@ mod tests {
         let (path, entry) = config_files.files.first().unwrap();
         let result = config_files.entry_status(path.clone(), entry);
         match result {
-            Err(Error::SymlinkProbeFailed(p, e)) => {
+            Err(Error::ConfigFiles(ConfigFilesError::SymlinkProbeFailed(p, e))) => {
                 assert_eq!(p, symlink_path);
                 assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
             }

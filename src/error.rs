@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use smol_str::SmolStr;
 
-use crate::output::{OutputError, ResolvedConfigFilePath};
+use crate::output::OutputError;
 
 /// Crate-wide error. Each variant's user-facing string lives on its
 /// `#[error(...)]` attribute (the `Display` impl); the doc comment here
@@ -32,73 +32,13 @@ pub enum Error {
     /// I/O error). The wrapped error carries the command and stderr.
     #[error("Failed to execute command")]
     Shell(#[from] xshell::Error),
-    /// Writing a generated config file to disk failed.
-    #[error("Failed to write config file {0}: {1}")]
-    FailedToWriteConfig(ResolvedConfigFilePath, std::io::Error),
-    /// Reading an existing managed file from disk failed (e.g. permission
-    /// denied, or a directory occupies the path where a generated file should
-    /// land).
-    #[error("Failed to read existing config file {0}: {1}")]
-    FailedToReadConfig(ResolvedConfigFilePath, #[source] std::io::Error),
-    /// Stat-ing a managed path failed for a reason other than "not found"
-    /// (e.g. permission denied on a parent). The wrapped path is whichever
-    /// path the probe was attempted on.
-    #[error("Failed to probe filesystem state at {0:?}: {1}")]
-    SymlinkProbeFailed(PathBuf, #[source] std::io::Error),
-    /// `symlink(2)` failed in [`crate::config_files`]'s `create_symlink`
-    /// helper. Bundles both ends so the user sees the symlink they were
-    /// attempting and the underlying I/O reason.
-    #[error("Failed to create symlink {symlink} -> {real}: {source}")]
-    CreateSymlinkFailed {
-        /// The intended symlink target (the file in the zenops repo).
-        real: ResolvedConfigFilePath,
-        /// Where the symlink was being created.
-        symlink: ResolvedConfigFilePath,
-        /// Underlying `symlink(2)` failure.
-        #[source]
-        source: std::io::Error,
-    },
-    /// Apply pass: a managed symlink already points at the intended target,
-    /// but that target doesn't exist in the zenops repo. The user must add
-    /// the file before zenops can manage it.
-    #[error("Symlink {symlink} -> {real}: {real} does not exist in the zenops repo")]
-    SymlinkRealPathMissing {
-        /// The intended symlink target (the file in the zenops repo).
-        real: ResolvedConfigFilePath,
-        /// Where the symlink lives.
-        symlink: ResolvedConfigFilePath,
-    },
-    /// Apply pass refused to clobber a path that is neither a regular file,
-    /// directory, nor symlink (FIFO, socket, device node, etc.) with a
-    /// managed symlink. The user must remove the existing entry first.
-    #[error(
-        "Not creating symlink at {0}: a non-file, non-directory entry (FIFO, socket, etc.) already exists"
-    )]
-    RefusingToOverwriteOtherWithSymlink(ResolvedConfigFilePath),
+    /// Wraps [`crate::config_files::ConfigFilesError`].
+    #[error(transparent)]
+    ConfigFiles(#[from] crate::config_files::ConfigFilesError),
     /// A `..`-traversal or other path-safety violation surfaced from
     /// [`zenops_safe_relative_path`].
     #[error(transparent)]
     SafeRelativePath(#[from] zenops_safe_relative_path::error::Error),
-    /// Apply pass refused to clobber an existing regular file with a
-    /// symlink. The user must remove the existing file first.
-    #[error("Not creating symlink {symlink} -> {real}: a file already exists")]
-    RefusingToOverwriteFileWithSymlink {
-        /// The intended symlink target (the file in the zenops repo).
-        real: ResolvedConfigFilePath,
-        /// The path that already exists as a regular file.
-        symlink: ResolvedConfigFilePath,
-    },
-    /// Apply pass refused to clobber an existing directory with a symlink.
-    #[error("Not creating symlink {symlink} -> {real}: a directory already exists")]
-    RefusingToOverwriteDirectoryWithSymlink {
-        /// The intended symlink target.
-        real: ResolvedConfigFilePath,
-        /// The path that already exists as a directory.
-        symlink: ResolvedConfigFilePath,
-    },
-    /// `mkdir -p` of a parent directory for a managed file failed.
-    #[error("Failed to create directory {0:?}: {1}")]
-    CreateDirectoryError(ResolvedConfigFilePath, std::io::Error),
     /// A pkg's template referenced an input that's not declared anywhere
     /// (no system input, no `[pkg.<name>.inputs]` entry).
     #[error(
@@ -194,65 +134,8 @@ impl PartialEq for Error {
             (Self::OpenDb(l0, l1), Self::OpenDb(r0, r1)) => l0 == r0 && l1.kind() == r1.kind(),
             (Self::ParseDb(l0, l1), Self::ParseDb(r0, r1)) => l0 == r0 && l1 == r1,
             (Self::Shell(l0), Self::Shell(r0)) => l0.to_string() == r0.to_string(),
-            (Self::FailedToWriteConfig(l0, l1), Self::FailedToWriteConfig(r0, r1)) => {
-                l0 == r0 && l1.kind() == r1.kind()
-            }
-            (Self::FailedToReadConfig(l0, l1), Self::FailedToReadConfig(r0, r1)) => {
-                l0 == r0 && l1.kind() == r1.kind()
-            }
-            (Self::SymlinkProbeFailed(l0, l1), Self::SymlinkProbeFailed(r0, r1)) => {
-                l0 == r0 && l1.kind() == r1.kind()
-            }
-            (
-                Self::CreateSymlinkFailed {
-                    real: l_real,
-                    symlink: l_symlink,
-                    source: l_src,
-                },
-                Self::CreateSymlinkFailed {
-                    real: r_real,
-                    symlink: r_symlink,
-                    source: r_src,
-                },
-            ) => l_real == r_real && l_symlink == r_symlink && l_src.kind() == r_src.kind(),
-            (
-                Self::SymlinkRealPathMissing {
-                    real: l_real,
-                    symlink: l_symlink,
-                },
-                Self::SymlinkRealPathMissing {
-                    real: r_real,
-                    symlink: r_symlink,
-                },
-            ) => l_real == r_real && l_symlink == r_symlink,
-            (
-                Self::RefusingToOverwriteOtherWithSymlink(l0),
-                Self::RefusingToOverwriteOtherWithSymlink(r0),
-            ) => l0 == r0,
+            (Self::ConfigFiles(l0), Self::ConfigFiles(r0)) => l0 == r0,
             (Self::SafeRelativePath(l0), Self::SafeRelativePath(r0)) => l0 == r0,
-            (
-                Self::RefusingToOverwriteFileWithSymlink {
-                    real: l_real,
-                    symlink: l_symlink,
-                },
-                Self::RefusingToOverwriteFileWithSymlink {
-                    real: r_real,
-                    symlink: r_symlink,
-                },
-            ) => l_real == r_real && l_symlink == r_symlink,
-            (
-                Self::RefusingToOverwriteDirectoryWithSymlink {
-                    real: l_real,
-                    symlink: l_symlink,
-                },
-                Self::RefusingToOverwriteDirectoryWithSymlink {
-                    real: r_real,
-                    symlink: r_symlink,
-                },
-            ) => l_real == r_real && l_symlink == r_symlink,
-            (Self::CreateDirectoryError(l0, l1), Self::CreateDirectoryError(r0, r1)) => {
-                l0 == r0 && l1.kind() == r1.kind()
-            }
             (
                 Self::UnresolvedInput {
                     pkg: l_pkg,
@@ -372,78 +255,29 @@ mod tests {
     }
 
     #[test]
-    fn failed_to_write_config_eq_and_ne() {
-        let a = Error::FailedToWriteConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let b = Error::FailedToWriteConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let c = Error::FailedToWriteConfig(rcfp("b"), io(io::ErrorKind::PermissionDenied));
+    fn config_files_wrap_eq_delegates_to_inner() {
+        let a = Error::ConfigFiles(crate::config_files::ConfigFilesError::FailedToWriteConfig(
+            rcfp("a"),
+            io(io::ErrorKind::PermissionDenied),
+        ));
+        let b = Error::ConfigFiles(crate::config_files::ConfigFilesError::FailedToWriteConfig(
+            rcfp("a"),
+            io(io::ErrorKind::PermissionDenied),
+        ));
+        let c = Error::ConfigFiles(crate::config_files::ConfigFilesError::FailedToWriteConfig(
+            rcfp("b"),
+            io(io::ErrorKind::PermissionDenied),
+        ));
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
-    fn failed_to_read_config_eq_and_ne() {
-        let a = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let b = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let c = Error::FailedToReadConfig(rcfp("a"), io(io::ErrorKind::NotFound));
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn symlink_probe_failed_eq_and_ne() {
-        let a = Error::SymlinkProbeFailed(PathBuf::from("/x"), io(io::ErrorKind::Other));
-        let b = Error::SymlinkProbeFailed(PathBuf::from("/x"), io(io::ErrorKind::Other));
-        let c = Error::SymlinkProbeFailed(PathBuf::from("/y"), io(io::ErrorKind::Other));
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn create_symlink_failed_eq_and_ne() {
-        let mk = |real, symlink, kind| Error::CreateSymlinkFailed {
-            real: rcfp(real),
-            symlink: rcfp(symlink),
-            source: io(kind),
-        };
-        assert_eq!(
-            mk("r", "s", io::ErrorKind::AlreadyExists),
-            mk("r", "s", io::ErrorKind::AlreadyExists)
-        );
-        assert_ne!(
-            mk("r", "s", io::ErrorKind::AlreadyExists),
-            mk("other", "s", io::ErrorKind::AlreadyExists)
-        );
-        assert_ne!(
-            mk("r", "s", io::ErrorKind::AlreadyExists),
-            mk("r", "s", io::ErrorKind::NotFound)
-        );
-    }
-
-    #[test]
-    fn symlink_real_path_missing_eq_and_ne() {
-        let a = Error::SymlinkRealPathMissing {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let b = Error::SymlinkRealPathMissing {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let c = Error::SymlinkRealPathMissing {
-            real: rcfp("r"),
-            symlink: rcfp("other"),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn refusing_to_overwrite_other_eq_and_ne() {
-        let a = Error::RefusingToOverwriteOtherWithSymlink(rcfp("a"));
-        let b = Error::RefusingToOverwriteOtherWithSymlink(rcfp("a"));
-        let c = Error::RefusingToOverwriteOtherWithSymlink(rcfp("b"));
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn from_config_files_error_wraps_in_config_files_variant() {
+        let inner =
+            crate::config_files::ConfigFilesError::RefusingToOverwriteOtherWithSymlink(rcfp("a"));
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::ConfigFiles(_)));
     }
 
     #[test]
@@ -457,51 +291,6 @@ mod tests {
         let c = Error::SafeRelativePath(
             zenops_safe_relative_path::error::Error::NotASinglePathComponent("a/b".to_string()),
         );
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn refusing_to_overwrite_file_eq_and_ne() {
-        let a = Error::RefusingToOverwriteFileWithSymlink {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let b = Error::RefusingToOverwriteFileWithSymlink {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let c = Error::RefusingToOverwriteFileWithSymlink {
-            real: rcfp("r"),
-            symlink: rcfp("t"),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn refusing_to_overwrite_directory_eq_and_ne() {
-        let a = Error::RefusingToOverwriteDirectoryWithSymlink {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let b = Error::RefusingToOverwriteDirectoryWithSymlink {
-            real: rcfp("r"),
-            symlink: rcfp("s"),
-        };
-        let c = Error::RefusingToOverwriteDirectoryWithSymlink {
-            real: rcfp("other"),
-            symlink: rcfp("s"),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn create_directory_error_eq_and_ne() {
-        let a = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let b = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::PermissionDenied));
-        let c = Error::CreateDirectoryError(rcfp("a"), io(io::ErrorKind::NotFound));
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
