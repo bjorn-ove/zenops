@@ -60,16 +60,17 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
     let mut entries: Vec<(&str, &smol_str::SmolStr, &PkgConfig)> = Vec::new();
 
     for (key, pkg) in config.pkgs() {
-        if opts.all || !pkg.is_disabled() {
-            if pkg.supports_current_os()? && pkg.supports_shell(configured_shell) {
-                let label = pkg.name.as_deref().unwrap_or(key.as_str());
-                if needles.is_empty()
-                    || needles.iter().any(|n| {
-                        label.to_lowercase().contains(n) || key.as_str().to_lowercase().contains(n)
-                    })
-                {
-                    entries.push((label, key, pkg));
-                }
+        if (opts.all || !pkg.is_disabled())
+            && pkg.supports_current_os()?
+            && pkg.supports_shell(configured_shell)
+        {
+            let label = pkg.name.as_deref().unwrap_or(key.as_str());
+            if needles.is_empty()
+                || needles.iter().any(|n| {
+                    label.to_lowercase().contains(n) || key.as_str().to_lowercase().contains(n)
+                })
+            {
+                entries.push((label, key, pkg));
             }
         }
     }
