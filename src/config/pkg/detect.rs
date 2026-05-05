@@ -7,6 +7,8 @@ use std::path::Path;
 
 use zenops_expand::{ExpandLookup, ExpandStr};
 
+use super::error::Error;
+
 use super::Os;
 
 /// A detect strategy wraps a concrete check (`kind`) with an optional OS gate.
@@ -47,35 +49,43 @@ pub enum DetectKind {
 impl DetectStrategy {
     /// Apply the OS gate first, then delegate to the kind. Unresolved
     /// `${var}` placeholders inside the leaf checks also yield `false`.
-    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> bool {
-        if !self.os.is_empty() {
-            let Some(cur) = Os::current() else {
-                return false;
-            };
-            if !self.os.contains(&cur) {
-                return false;
-            }
+    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> Result<bool, Error> {
+        if !self.os.is_empty() && !self.os.contains(&Os::current()?) {
+            return Ok(false);
         }
         self.kind.check(home, lookup)
     }
 }
 
 impl DetectKind {
-    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> bool {
+    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> Result<bool, Error> {
         match self {
             Self::File { path } => {
                 let Ok(expanded) = path.expand_to_string(lookup) else {
-                    return false;
+                    return Ok(false);
                 };
                 let resolved = expanded.replacen('~', &home.to_string_lossy(), 1);
-                Path::new(&resolved).exists()
+                Path::new(&resolved)
+                    .try_exists()
+                    .map_err(|e| Error::ExistsFailed(resolved, e))
             }
-            Self::Which { binary } => match binary.expand_to_string(lookup) {
-                Ok(b) => which_on_path(&b),
-                Err(_) => false,
-            },
-            Self::Any { of } => of.iter().any(|s| s.check(home, lookup)),
-            Self::All { of } => of.iter().all(|s| s.check(home, lookup)),
+            Self::Which { binary } => Ok(crate::utils::which::expand_and_exists(binary, lookup)?),
+            Self::Any { of } => {
+                for s in of {
+                    if s.check(home, lookup)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Self::All { of } => {
+                for s in of {
+                    if !s.check(home, lookup)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -121,11 +131,4 @@ fn write_combinator(
         write!(f, "{s}")?;
     }
     write!(f, ")")
-}
-
-pub(crate) fn which_on_path(binary: &str) -> bool {
-    std::env::var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .any(|dir| Path::new(dir).join(binary).is_file())
 }

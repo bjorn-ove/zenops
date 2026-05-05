@@ -3,7 +3,6 @@ use std::fmt::Write as _;
 use zenops_safe_relative_path::srpath;
 
 use crate::{
-    config::pkg::which_on_path,
     config_files::{ConfigFilePath, ConfigFileSource, ConfigFiles},
     error::Error,
 };
@@ -45,7 +44,7 @@ pub(super) struct CurlGithubKeyFetcher;
 
 impl GithubKeyFetcher for CurlGithubKeyFetcher {
     fn fetch(&self, username: &str) -> Result<Vec<String>, Error> {
-        if !which_on_path("curl") {
+        if !crate::utils::which::exists("curl")? {
             return Err(Error::CurlNotFound);
         }
         let sh = xshell::Shell::new().map_err(Error::Shell)?;

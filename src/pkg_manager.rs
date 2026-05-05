@@ -7,7 +7,7 @@
 //! [`DetectedPackageManager::install_command`], and the matching
 //! `InstallHint` field.
 
-use crate::config::pkg::{InstallHint, which_on_path};
+use crate::{config::pkg::InstallHint, error::Error};
 
 /// A package manager zenops successfully detected on the current host.
 /// Today only Homebrew; the variant enumerates expansion points for
@@ -48,11 +48,11 @@ impl DetectedPackageManager {
 
 /// Probe `PATH` for a supported package manager. Returns the first match
 /// in priority order, or `None` if nothing supported is on `PATH`.
-pub fn detect() -> Option<DetectedPackageManager> {
-    if which_on_path("brew") {
-        return Some(DetectedPackageManager::Brew);
+pub fn detect() -> Result<Option<DetectedPackageManager>, Error> {
+    if crate::utils::which::exists("brew")? {
+        return Ok(Some(DetectedPackageManager::Brew));
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]

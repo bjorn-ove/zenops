@@ -224,6 +224,12 @@ pub enum Error {
     /// I/O error writing the serialised schema to stdout.
     #[error("Failed to write schema to stdout: {0}")]
     SchemaWrite(#[source] std::io::Error),
+    /// Wraps [`crate::config::pkg::Error`].
+    #[error(transparent)]
+    PkgError(#[from] crate::config::pkg::Error),
+    /// Wraps [`crate::utils::which::Error`].
+    #[error(transparent)]
+    Which(#[from] crate::utils::which::Error),
 }
 
 impl PartialEq for Error {

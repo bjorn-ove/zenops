@@ -11,6 +11,7 @@
 
 mod action;
 mod detect;
+mod error;
 mod install;
 
 #[cfg(test)]
@@ -26,10 +27,10 @@ use super::pkg_config_files::PkgConfigFiles;
 pub(crate) use action::PkgShellConfig;
 pub use action::{ActionKind, ShellInitAction};
 pub use detect::DetectStrategy;
-pub(crate) use detect::which_on_path;
 // `BrewHint` is reachable from outside the crate via this re-export; only the
 // pkg_manager test module imports it directly today, which the non-test build
 // can't see.
+pub use error::Error;
 #[allow(unused_imports)]
 pub use install::BrewHint;
 pub use install::InstallHint;
@@ -52,11 +53,11 @@ pub enum Os {
 }
 
 impl Os {
-    pub fn current() -> Option<Self> {
+    pub fn current() -> Result<Self, Error> {
         match std::env::consts::OS {
-            "linux" => Some(Self::Linux),
-            "macos" => Some(Self::Macos),
-            _ => None,
+            "linux" => Ok(Self::Linux),
+            "macos" => Ok(Self::Macos),
+            unk => Err(Error::UnknownOs(unk)),
         }
     }
 }
@@ -116,9 +117,13 @@ pub struct PkgConfig {
 }
 
 impl PkgConfig {
-    pub fn is_installed(&self, home: &Path, system_inputs: &IndexMap<SmolStr, SmolStr>) -> bool {
-        if !self.supports_current_os() {
-            return false;
+    pub fn is_installed(
+        &self,
+        home: &Path,
+        system_inputs: &IndexMap<SmolStr, SmolStr>,
+    ) -> Result<bool, Error> {
+        if !self.supports_current_os()? {
+            return Ok(false);
         }
         match self.enable {
             // `on` and `detect` run the same installation check; an absent
@@ -129,12 +134,12 @@ impl PkgConfig {
             // output; `detect` miss is silent by design.
             PkgEnable::On | PkgEnable::Detect => {
                 let Some(detect) = self.detect.as_ref() else {
-                    return true;
+                    return Ok(true);
                 };
                 let lookup = [&self.inputs, system_inputs];
                 detect.check(home, &lookup)
             }
-            PkgEnable::Disabled => false,
+            PkgEnable::Disabled => Ok(false),
         }
     }
 
@@ -148,18 +153,18 @@ impl PkgConfig {
         &self,
         home: &Path,
         system_inputs: &IndexMap<SmolStr, SmolStr>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         if !matches!(self.enable, PkgEnable::On) {
-            return false;
+            return Ok(false);
         }
-        if !self.supports_current_os() {
-            return false;
+        if !self.supports_current_os()? {
+            return Ok(false);
         }
         let Some(detect) = self.detect.as_ref() else {
-            return false;
+            return Ok(false);
         };
         let lookup = [&self.inputs, system_inputs];
-        !detect.check(home, &lookup)
+        detect.check(home, &lookup).map(|r| !r)
     }
 
     /// Complement of [`Self::enable_on_but_detect_missing`] within `enable =
@@ -175,15 +180,15 @@ impl PkgConfig {
         &self,
         home: &Path,
         system_inputs: &IndexMap<SmolStr, SmolStr>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         if !matches!(self.enable, PkgEnable::On) {
-            return false;
+            return Ok(false);
         }
-        if !self.supports_current_os() {
-            return false;
+        if !self.supports_current_os()? {
+            return Ok(false);
         }
         let Some(detect) = self.detect.as_ref() else {
-            return false;
+            return Ok(false);
         };
         let lookup = [&self.inputs, system_inputs];
         detect.check(home, &lookup)
@@ -201,23 +206,25 @@ impl PkgConfig {
         &self,
         home: &Path,
         system_inputs: &IndexMap<SmolStr, SmolStr>,
-    ) -> Option<&DetectStrategy> {
-        if !self.supports_current_os() {
-            return None;
+    ) -> Result<Option<&DetectStrategy>, Error> {
+        if !self.supports_current_os()? {
+            return Ok(None);
         }
         match self.enable {
             PkgEnable::On | PkgEnable::Detect => {
-                let detect = self.detect.as_ref()?;
-                let lookup = [&self.inputs, system_inputs];
-                detect.check(home, &lookup).then_some(detect)
+                if let Some(detect) = self.detect.as_ref() {
+                    let lookup = [&self.inputs, system_inputs];
+                    detect.check(home, &lookup).map(|r| r.then_some(detect))
+                } else {
+                    Ok(None)
+                }
             }
-            PkgEnable::Disabled => None,
+            PkgEnable::Disabled => Ok(None),
         }
     }
 
-    pub(crate) fn supports_current_os(&self) -> bool {
-        self.supported_os.is_empty()
-            || Os::current().is_some_and(|os| self.supported_os.contains(&os))
+    pub(crate) fn supports_current_os(&self) -> Result<bool, Error> {
+        Ok(self.supported_os.is_empty() || self.supported_os.contains(&Os::current()?))
     }
 
     pub(crate) fn supports_shell(&self, shell: Option<Shell>) -> bool {

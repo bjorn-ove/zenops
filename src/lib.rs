@@ -28,6 +28,7 @@ pub mod pkg_list;
 pub mod pkg_manager;
 pub mod prompt;
 pub mod schema;
+pub(crate) mod utils;
 
 use std::io::IsTerminal;
 

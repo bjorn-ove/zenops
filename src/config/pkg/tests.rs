@@ -51,8 +51,12 @@ fn detect_strategy_with_unresolved_input_reports_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
-    assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    assert!(
+        pkg.matched_detect(tmp.path(), &system_empty())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -72,7 +76,7 @@ fn detect_strategy_resolves_system_input_and_checks_file() {
     )
     .unwrap();
     let sys = inputs(&[("root", tmp.path().to_str().unwrap())]);
-    assert!(pkg.is_installed(tmp.path(), &sys));
+    assert!(pkg.is_installed(tmp.path(), &sys).unwrap());
 }
 
 #[test]
@@ -95,7 +99,7 @@ fn pkg_inputs_shadow_system_inputs_at_detect() {
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     let sys = inputs(&[("name", "b")]);
-    assert!(pkg.is_installed(tmp.path(), &sys));
+    assert!(pkg.is_installed(tmp.path(), &sys).unwrap());
 }
 
 #[test]
@@ -115,7 +119,10 @@ fn enable_on_with_matching_detect_is_silent() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    assert!(
+        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
+            .unwrap()
+    );
 }
 
 #[test]
@@ -132,7 +139,10 @@ fn enable_on_with_missing_detect_flags_health_signal() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    assert!(
+        pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
+            .unwrap()
+    );
 }
 
 #[test]
@@ -149,7 +159,10 @@ fn enable_on_with_empty_detect_is_silent() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    assert!(
+        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
+            .unwrap()
+    );
 }
 
 #[test]
@@ -167,7 +180,10 @@ fn enable_detect_miss_is_silent() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    assert!(
+        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
+            .unwrap()
+    );
 }
 
 #[test]
@@ -187,7 +203,7 @@ fn enable_on_with_matching_detect_is_installed() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -207,7 +223,7 @@ fn enable_on_with_missing_detect_is_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -221,7 +237,7 @@ fn enable_on_with_empty_detect_is_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -237,9 +253,13 @@ fn empty_detect_with_enable_detect_means_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
     // No detect ran, so `matched_detect` still has nothing to return.
-    assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
+    assert!(
+        pkg.matched_detect(tmp.path(), &system_empty())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -253,7 +273,7 @@ fn disabled_pkg_is_never_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
     assert!(pkg.is_disabled());
 }
 
@@ -274,8 +294,12 @@ fn supported_os_gates_installation() {
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
-    assert!(pkg.matched_detect(tmp.path(), &system_empty()).is_none());
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    assert!(
+        pkg.matched_detect(tmp.path(), &system_empty())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -294,7 +318,7 @@ fn supported_os_allows_installation_when_current_os_listed() {
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -308,7 +332,7 @@ fn empty_supported_os_means_any_os() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -398,7 +422,7 @@ fn any_combinator_matches_when_any_child_matches() {
         present.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -424,11 +448,11 @@ fn all_combinator_requires_every_child() {
         b.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 
     std::fs::write(&b, "").unwrap();
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -458,7 +482,7 @@ fn nested_combinators_compose() {
         b.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -484,7 +508,7 @@ fn per_strategy_os_skips_when_os_mismatches() {
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     // The file exists, but the strategy is gated to the other OS — skip.
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -509,7 +533,7 @@ fn per_strategy_os_allows_when_os_matches() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -531,7 +555,7 @@ fn empty_os_list_means_any_os() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -548,8 +572,11 @@ fn absent_detect_field_is_installed_and_silent() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
-    assert!(!pkg.enable_on_but_detect_missing(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    assert!(
+        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
+            .unwrap()
+    );
 }
 
 #[test]
@@ -569,7 +596,7 @@ fn all_with_empty_of_matches_vacuously() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()));
+    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
 }
 
 #[test]
@@ -683,7 +710,16 @@ fn detect_which_with_unresolved_input_reports_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+    match pkg.is_installed(tmp.path(), &system_empty()).unwrap_err() {
+        Error::Which(crate::utils::which::Error::ExpandError(
+            value,
+            zenops_expand::ExpandError::Unresolved(var),
+        )) => {
+            assert_eq!(value.as_template(), "${unresolved}");
+            assert_eq!(var, "unresolved");
+        }
+        _ => panic!("Expected Which(ExpandError) variant"),
+    }
 }
 
 #[test]

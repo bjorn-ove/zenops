@@ -201,58 +201,52 @@ impl<'dirs> Config<'dirs> {
     pub(crate) fn env_pkg_inits(
         &self,
         shell: Shell,
-    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
-        self.stored
-            .pkg
-            .iter()
-            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
-            .filter(|(_, p)| p.supports_shell(Some(shell)))
-            .flat_map(|(name, p)| {
-                p.shell
-                    .env_init
-                    .for_shell(shell)
-                    .iter()
-                    .map(move |a| (name, p, a))
-            })
-            .collect()
+    ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let mut inits = Vec::new();
+        for (name, p) in &self.stored.pkg {
+            if p.is_installed(self.dirs.home(), &self.system_inputs)?
+                && p.supports_shell(Some(shell))
+            {
+                for a in p.shell.env_init.for_shell(shell).iter() {
+                    inits.push((name, p, a));
+                }
+            }
+        }
+        Ok(inits)
     }
 
     pub(crate) fn login_pkg_inits(
         &self,
         shell: Shell,
-    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
-        self.stored
-            .pkg
-            .iter()
-            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
-            .filter(|(_, p)| p.supports_shell(Some(shell)))
-            .flat_map(|(name, p)| {
-                p.shell
-                    .login_init
-                    .for_shell(shell)
-                    .iter()
-                    .map(move |a| (name, p, a))
-            })
-            .collect()
+    ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let mut inits = Vec::new();
+        for (name, p) in &self.stored.pkg {
+            if p.is_installed(self.dirs.home(), &self.system_inputs)?
+                && p.supports_shell(Some(shell))
+            {
+                for a in p.shell.login_init.for_shell(shell).iter() {
+                    inits.push((name, p, a));
+                }
+            }
+        }
+        Ok(inits)
     }
 
     pub(crate) fn interactive_pkg_inits(
         &self,
         shell: Shell,
-    ) -> Vec<(&SmolStr, &PkgConfig, &ShellInitAction)> {
-        self.stored
-            .pkg
-            .iter()
-            .filter(|(_, p)| p.is_installed(self.dirs.home(), &self.system_inputs))
-            .filter(|(_, p)| p.supports_shell(Some(shell)))
-            .flat_map(|(name, p)| {
-                p.shell
-                    .interactive_init
-                    .for_shell(shell)
-                    .iter()
-                    .map(move |a| (name, p, a))
-            })
-            .collect()
+    ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let mut inits = Vec::new();
+        for (name, p) in &self.stored.pkg {
+            if p.is_installed(self.dirs.home(), &self.system_inputs)?
+                && p.supports_shell(Some(shell))
+            {
+                for a in p.shell.interactive_init.for_shell(shell).iter() {
+                    inits.push((name, p, a));
+                }
+            }
+        }
+        Ok(inits)
     }
 
     pub fn update_config_files(
@@ -270,7 +264,7 @@ impl<'dirs> Config<'dirs> {
             config_files,
         )?;
         for (pkg_key, pkg) in &self.stored.pkg {
-            if !pkg.is_installed(self.dirs.home(), &self.system_inputs) {
+            if !pkg.is_installed(self.dirs.home(), &self.system_inputs)? {
                 continue;
             }
             for cfg in pkg.configs() {
@@ -314,10 +308,10 @@ impl<'dirs> Config<'dirs> {
     /// load isn't an event, and these observations should only surface
     /// from commands the user runs.
     pub fn push_pkg_health(&self, output: &mut dyn Output) -> Result<(), Error> {
-        let manager = pkg_manager::detect();
+        let manager = pkg_manager::detect()?;
         for (key, pkg) in &self.stored.pkg {
             let label = pkg.name.clone().unwrap_or_else(|| key.clone());
-            if pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs) {
+            if pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs)? {
                 let install_command = manager.and_then(|m| {
                     let pkgs = m.packages_for(&pkg.install_hint);
                     (!pkgs.is_empty()).then(|| m.install_command(pkgs))
@@ -326,7 +320,7 @@ impl<'dirs> Config<'dirs> {
                     pkg: label,
                     status: PkgStatus::Missing { install_command },
                 }))?;
-            } else if pkg.enable_on_and_detect_matches(self.dirs.home(), &self.system_inputs) {
+            } else if pkg.enable_on_and_detect_matches(self.dirs.home(), &self.system_inputs)? {
                 output.push(Event::Status(Status::Pkg {
                     pkg: label,
                     status: PkgStatus::Ok,

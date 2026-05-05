@@ -25,13 +25,13 @@ pub(super) fn make_config_files(
 
     write_pkg_inits(
         &mut bash_config,
-        &config.env_pkg_inits(Shell::Bash),
+        &config.env_pkg_inits(Shell::Bash)?,
         config.system_inputs(),
     )?;
 
     write_pkg_inits(
         &mut bash_config,
-        &config.login_pkg_inits(Shell::Bash),
+        &config.login_pkg_inits(Shell::Bash)?,
         config.system_inputs(),
     )?;
 
@@ -40,7 +40,7 @@ pub(super) fn make_config_files(
 
     write_pkg_inits(
         &mut bash_config,
-        &config.interactive_pkg_inits(Shell::Bash),
+        &config.interactive_pkg_inits(Shell::Bash)?,
         config.system_inputs(),
     )?;
 

@@ -44,7 +44,7 @@ pub struct Options {
 ///    combined install command across every missing pkg, when a manager is
 ///    detected and at least one pkg contributes packages.
 pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(), Error> {
-    let manager = pkg_manager::detect();
+    let manager = pkg_manager::detect()?;
     if manager.is_none() {
         output.push(Event::PkgEntry(PkgEntry::NoPackageManagerDetected {
             supported: vec!["brew".to_string()],
@@ -57,20 +57,22 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
     // Entries carry (display_label, key, pkg). The map key stays distinct
     // from the display label so JSON consumers can correlate even when
     // `pkg.name` overrides the key.
-    let mut entries: Vec<(&str, &smol_str::SmolStr, &PkgConfig)> = config
-        .pkgs()
-        .iter()
-        .filter(|(_, p)| opts.all || !p.is_disabled())
-        .filter(|(_, p)| p.supports_current_os())
-        .filter(|(_, p)| p.supports_shell(configured_shell))
-        .map(|(key, pkg)| (pkg.name.as_deref().unwrap_or(key.as_str()), key, pkg))
-        .filter(|(label, key, _)| {
-            needles.is_empty()
-                || needles.iter().any(|n| {
-                    label.to_lowercase().contains(n) || key.as_str().to_lowercase().contains(n)
-                })
-        })
-        .collect();
+    let mut entries: Vec<(&str, &smol_str::SmolStr, &PkgConfig)> = Vec::new();
+
+    for (key, pkg) in config.pkgs() {
+        if opts.all || !pkg.is_disabled() {
+            if pkg.supports_current_os()? && pkg.supports_shell(configured_shell) {
+                let label = pkg.name.as_deref().unwrap_or(key.as_str());
+                if needles.is_empty()
+                    || needles.iter().any(|n| {
+                        label.to_lowercase().contains(n) || key.as_str().to_lowercase().contains(n)
+                    })
+                {
+                    entries.push((label, key, pkg));
+                }
+            }
+        }
+    }
     entries.sort_by_key(|(label, _, _)| *label);
 
     let mut aggregate_packages: Vec<String> = Vec::new();
@@ -78,14 +80,14 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
     for (label, key, pkg) in entries {
         let state = if pkg.is_disabled() {
             PkgEntryState::Disabled
-        } else if pkg.is_installed(home, config.system_inputs()) {
+        } else if pkg.is_installed(home, config.system_inputs())? {
             PkgEntryState::Installed
         } else {
             PkgEntryState::Missing
         };
 
         let matched_detect = if opts.verbose {
-            pkg.matched_detect(home, config.system_inputs())
+            pkg.matched_detect(home, config.system_inputs())?
                 .map(|d| d.to_string())
         } else {
             None

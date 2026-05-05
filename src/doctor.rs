@@ -13,7 +13,7 @@ use xshell::{Shell, cmd};
 
 use crate::{
     Args,
-    config::{Config, pkg::which_on_path},
+    config::Config,
     config_files::ConfigFileDirs,
     error::Error,
     git::Git,
@@ -156,7 +156,7 @@ fn report_bin(
     binary: &str,
     missing_hint: &str,
 ) -> Result<(), Error> {
-    if which_on_path(binary) {
+    if crate::utils::which::exists(binary)? {
         em.ok(label, "found on PATH")
     } else {
         em.bad(label, "not found on PATH", missing_hint)
@@ -296,7 +296,7 @@ fn load_config_or_report<'d>(
 
 fn pkg_manager_block(em: &mut DoctorEmitter) -> Result<(), Error> {
     em.enter(DoctorSection::PkgManager)?;
-    match pkg_manager::detect() {
+    match pkg_manager::detect()? {
         Some(mgr) => em.ok("detected:", mgr.name())?,
         None => em.warn(
             "detected:",
