@@ -19,7 +19,7 @@ mod git;
 pub(crate) mod pkg;
 mod pkg_config_files;
 mod shell;
-mod ssh;
+pub(crate) mod ssh;
 mod stored_relative_path;
 mod user;
 

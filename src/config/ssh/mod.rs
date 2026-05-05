@@ -1,3 +1,7 @@
+mod error;
+
+pub use error::Error as SshError;
+
 use smol_str::SmolStr;
 use std::fmt::Write as _;
 use zenops_safe_relative_path::srpath;
@@ -45,7 +49,7 @@ pub(super) struct CurlGithubKeyFetcher;
 impl GithubKeyFetcher for CurlGithubKeyFetcher {
     fn fetch(&self, username: &str) -> Result<Vec<String>, Error> {
         if !crate::utils::which::exists("curl")? {
-            return Err(Error::CurlNotFound);
+            return Err(SshError::CurlNotFound.into());
         }
         let sh = xshell::Shell::new().map_err(Error::Shell)?;
         let url = format!("https://api.github.com/users/{username}/ssh_signing_keys");
@@ -54,15 +58,18 @@ impl GithubKeyFetcher for CurlGithubKeyFetcher {
             "curl -sSfL -H 'Accept: application/vnd.github+json' -H 'User-Agent: zenops' {url}"
         )
         .read()
-        .map_err(|source| Error::GithubKeyFetchFailed {
-            username: SmolStr::new(username),
-            source,
-        })?;
-        let keys: Vec<GithubSigningKey> =
-            serde_json::from_str(&body).map_err(|source| Error::GithubKeyParseFailed {
+        .map_err(|source| {
+            Error::from(SshError::GithubKeyFetchFailed {
                 username: SmolStr::new(username),
                 source,
-            })?;
+            })
+        })?;
+        let keys: Vec<GithubSigningKey> = serde_json::from_str(&body).map_err(|source| {
+            Error::from(SshError::GithubKeyParseFailed {
+                username: SmolStr::new(username),
+                source,
+            })
+        })?;
         Ok(keys.into_iter().map(|k| k.key).collect())
     }
 }

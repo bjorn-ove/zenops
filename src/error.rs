@@ -83,29 +83,9 @@ pub enum Error {
     /// Wraps [`crate::init::InitError`].
     #[error(transparent)]
     Init(#[from] crate::init::InitError),
-    /// `curl` isn't on `PATH` and is needed to fetch a user's GitHub keys.
-    #[error(
-        "curl is required to fetch GitHub SSH keys; install curl or switch the entry to type = \"manual\""
-    )]
-    CurlNotFound,
-    /// `curl https://api.github.com/users/<u>/ssh_signing_keys` failed.
-    #[error("Failed to fetch SSH keys for GitHub user {username}: {source}")]
-    GithubKeyFetchFailed {
-        /// GitHub username queried.
-        username: SmolStr,
-        /// Underlying xshell/curl failure.
-        #[source]
-        source: xshell::Error,
-    },
-    /// GitHub returned a body that didn't match the expected SSH-signing-key JSON shape.
-    #[error("Failed to parse SSH signing keys response for GitHub user {username}: {source}")]
-    GithubKeyParseFailed {
-        /// GitHub username queried.
-        username: SmolStr,
-        /// Underlying serde_json failure.
-        #[source]
-        source: serde_json::Error,
-    },
+    /// Wraps [`crate::config::ssh::SshError`].
+    #[error(transparent)]
+    Ssh(#[from] crate::config::ssh::SshError),
     /// `serde_json` failed to serialise the bundled JSON Schema.
     #[error("Failed to emit schema: {0}")]
     SchemaEmit(#[source] serde_json::Error),
@@ -157,27 +137,7 @@ impl PartialEq for Error {
             (Self::PromptInterrupted, Self::PromptInterrupted) => true,
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::Init(l0), Self::Init(r0)) => l0 == r0,
-            (Self::CurlNotFound, Self::CurlNotFound) => true,
-            (
-                Self::GithubKeyFetchFailed {
-                    username: l_user,
-                    source: l_src,
-                },
-                Self::GithubKeyFetchFailed {
-                    username: r_user,
-                    source: r_src,
-                },
-            ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
-            (
-                Self::GithubKeyParseFailed {
-                    username: l_user,
-                    source: l_src,
-                },
-                Self::GithubKeyParseFailed {
-                    username: r_user,
-                    source: r_src,
-                },
-            ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
+            (Self::Ssh(l0), Self::Ssh(r0)) => l0 == r0,
             (Self::SchemaEmit(l), Self::SchemaEmit(r)) => l.to_string() == r.to_string(),
             (Self::SchemaWrite(l), Self::SchemaWrite(r)) => l.kind() == r.kind(),
             (Self::NoHomeDir, Self::NoHomeDir) => true,
@@ -332,7 +292,6 @@ mod tests {
     fn unit_variants_compare_equal_to_themselves() {
         assert_eq!(Error::ApplyNeedsYesOrTty, Error::ApplyNeedsYesOrTty);
         assert_eq!(Error::PromptInterrupted, Error::PromptInterrupted);
-        assert_eq!(Error::CurlNotFound, Error::CurlNotFound);
         assert_eq!(Error::NoHomeDir, Error::NoHomeDir);
     }
 
@@ -401,39 +360,17 @@ mod tests {
     }
 
     #[test]
-    fn github_key_fetch_failed_eq_and_ne() {
-        let a = Error::GithubKeyFetchFailed {
-            username: SmolStr::new_static("u"),
-            source: xshell_err(),
-        };
-        let b = Error::GithubKeyFetchFailed {
-            username: SmolStr::new_static("u"),
-            source: xshell_err(),
-        };
-        let c = Error::GithubKeyFetchFailed {
-            username: SmolStr::new_static("v"),
-            source: xshell_err(),
-        };
+    fn ssh_wrap_eq_delegates_to_inner() {
+        let a = Error::Ssh(crate::config::ssh::SshError::CurlNotFound);
+        let b = Error::Ssh(crate::config::ssh::SshError::CurlNotFound);
         assert_eq!(a, b);
-        assert_ne!(a, c);
     }
 
     #[test]
-    fn github_key_parse_failed_eq_and_ne() {
-        let a = Error::GithubKeyParseFailed {
-            username: SmolStr::new_static("u"),
-            source: json_err(),
-        };
-        let b = Error::GithubKeyParseFailed {
-            username: SmolStr::new_static("u"),
-            source: json_err(),
-        };
-        let c = Error::GithubKeyParseFailed {
-            username: SmolStr::new_static("v"),
-            source: json_err(),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn from_ssh_error_wraps_in_ssh_variant() {
+        let inner = crate::config::ssh::SshError::CurlNotFound;
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Ssh(_)));
     }
 
     #[test]
@@ -456,7 +393,7 @@ mod tests {
     fn cross_variant_compare_returns_false() {
         assert_ne!(Error::ApplyNeedsYesOrTty, Error::PromptInterrupted);
         assert_ne!(
-            Error::CurlNotFound,
+            Error::NoHomeDir,
             Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound))
         );
         let _ = srpath!("dummy"); // keep srpath import in use
