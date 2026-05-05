@@ -410,6 +410,158 @@ fn doctor_emits_section_headers_for_every_section() {
 }
 
 #[test]
+fn doctor_reports_unreadable_config_as_bad() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // Hits the non-NotFound `OpenDb` arm: the file exists but can't be
+    // read. chmod 0o000 produces PermissionDenied. PermGuard restores the
+    // mode on drop so tempfile cleanup can recurse into the dir.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    let _guard = env.chmod(test_env::paths::ZENOPS_CONFIG, 0o000);
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail when config.toml is unreadable");
+    let has_unreadable = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Config,
+                label,
+                severity: DoctorSeverity::Bad,
+                value,
+                ..
+            }) if label == "status:" && value == "unreadable"
+        )
+    });
+    assert!(
+        has_unreadable,
+        "expected a Bad status:unreadable config check, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_reports_parse_error_with_invalid_type_hint() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // [shell] is a tagged enum; `type = 42` triggers a serde "invalid
+    // type" error during deserialization. Doctor's parse-error arm should
+    // attach the README hint detail line for the invalid-type / missing-
+    // field family.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = 42
+        "#,
+    );
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail on a parse error");
+    let detail = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Config,
+                label,
+                severity: DoctorSeverity::Bad,
+                value,
+                detail,
+                ..
+            }) if label == "status:" && value == "parse error" => Some(detail),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a parse-error doctor check, got: {:?}",
+                out.entries
+            )
+        });
+    assert!(
+        detail.iter().any(|line| line.contains("README.md")),
+        "expected README hint in invalid-type parse error detail, got: {detail:?}",
+    );
+}
+
+#[test]
+fn doctor_reports_parse_error_with_missing_field_hint() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+
+    // PkgConfig requires `install_hint`; declaring a [pkg.x] with nothing
+    // else triggers the serde "missing field" error path.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.zenops-doctor-missing-field]
+        description = "no install_hint"
+        "#,
+    );
+
+    let out = env
+        .run(&Cmd::Doctor)
+        .expect("doctor must not fail on a parse error");
+    let detail = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Config,
+                label,
+                severity: DoctorSeverity::Bad,
+                value,
+                detail,
+                ..
+            }) if label == "status:" && value == "parse error" => Some(detail),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a parse-error doctor check, got: {:?}",
+                out.entries
+            )
+        });
+    assert!(
+        detail.iter().any(|line| line.contains("README.md")),
+        "expected README hint in missing-field parse error detail, got: {detail:?}",
+    );
+}
+
+#[test]
+fn doctor_reports_zenops_dir_not_a_git_repo() {
+    use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
+    use zenops_safe_relative_path::srpath;
+
+    // Strip the .git dir: zenops dir exists but is not a git repo. Hits
+    // the `git.is_git_repo()? == false` branch in `repo_block`.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+    env.delete_dir_all(srpath!("home/bob/.config/zenops/.git"));
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let has_no_git = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                severity: DoctorSeverity::Warn,
+                value,
+                ..
+            }) if label == "git repo:" && value == "no"
+        )
+    });
+    assert!(
+        has_no_git,
+        "expected a Warn git repo:no row, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
 fn doctor_emits_bad_check_with_detail_for_parse_error() {
     use zenops::output::{DoctorCheck, DoctorSection, DoctorSeverity};
 

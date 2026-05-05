@@ -573,6 +573,120 @@ fn all_with_empty_of_matches_vacuously() {
 }
 
 #[test]
+fn detect_strategy_displays_file_leaf() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "file"
+            path = "/opt/x"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "/opt/x");
+}
+
+#[test]
+fn detect_strategy_displays_which_leaf() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "which"
+            binary = "rg"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "which rg");
+}
+
+#[test]
+fn detect_strategy_displays_any_combinator_with_nested_leaves() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "any"
+            of = [
+                { type = "file", path = "/a" },
+                { type = "which", binary = "b" },
+            ]
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "any(/a, which b)");
+}
+
+#[test]
+fn detect_strategy_displays_all_combinator_empty() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "all"
+            of = []
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "all()");
+}
+
+#[test]
+fn detect_strategy_displays_nested_combinators() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "all"
+            of = [
+                { type = "file", path = "/x" },
+                { type = "any", of = [
+                    { type = "which", binary = "rg" },
+                ] },
+            ]
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "all(/x, any(which rg))");
+}
+
+#[test]
+fn detect_strategy_displays_os_prefix_single() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "file"
+            path = "/opt/x"
+            os = ["macos"]
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "[os=macos] /opt/x");
+}
+
+#[test]
+fn detect_strategy_displays_os_prefix_multiple() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            type = "which"
+            binary = "rg"
+            os = ["linux", "macos"]
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "[os=linux,macos] which rg");
+}
+
+#[test]
+fn detect_which_with_unresolved_input_reports_not_installed() {
+    // Hits the `Err(_) => false` arm in `DetectKind::check` for `Which`:
+    // an unresolved `${var}` in the binary template can't be expanded, so
+    // the strategy is treated as a miss rather than a hard error.
+    let pkg: PkgConfig = toml::from_str(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "which"
+            binary = "${unresolved}"
+            "#,
+    )
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(!pkg.is_installed(tmp.path(), &system_empty()));
+}
+
+#[test]
 fn path_action_kinds_round_trip_from_toml() {
     let pkg: PkgConfig = toml::from_str(
         r#"
