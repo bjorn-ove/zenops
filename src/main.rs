@@ -73,7 +73,14 @@ fn main() {
         OutputMode::Json => Box::new(zenops::output::JsonOutput::new(&mut lock)),
     };
 
-    let dirs = ConfigFileDirs::load(home::home_dir().unwrap());
+    let home = match home::home_dir() {
+        Some(h) => h,
+        None => {
+            eprintln!("error: {}", zenops::error::Error::NoHomeDir);
+            std::process::exit(1);
+        }
+    };
+    let dirs = ConfigFileDirs::load(home);
 
     if let Err(e) = zenops::real_main(&args, &command, &dirs, renderer.as_mut()) {
         eprintln!("error: {e}");

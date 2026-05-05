@@ -167,7 +167,10 @@ fn repo_block(dirs: &ConfigFileDirs, sh: &Shell, em: &mut DoctorEmitter) -> Resu
     em.enter(DoctorSection::Repo)?;
     let zenops = dirs.zenops();
 
-    if !zenops.exists() {
+    if !zenops
+        .try_exists()
+        .map_err(|e| Error::SymlinkProbeFailed(zenops.to_path_buf(), e))?
+    {
         em.bad(
             "path:",
             "missing",

@@ -41,7 +41,7 @@ pub fn run(
     args: &Args,
     output: &mut dyn Output,
 ) -> Result<(), Error> {
-    let sh = Shell::new().unwrap();
+    let sh = Shell::new()?;
 
     match url {
         Some(url) => run_clone(url, branch, apply, yes, dirs, args, &sh, output),
@@ -165,10 +165,17 @@ fn preflight_clone(dirs: &ConfigFileDirs) -> Result<(), Error> {
 
 fn preflight_bootstrap(dirs: &ConfigFileDirs) -> Result<(), Error> {
     let zenops_dir = dirs.zenops();
-    if zenops_dir.exists() {
+    if zenops_dir
+        .try_exists()
+        .map_err(|e| Error::InitIo(zenops_dir.to_path_buf(), e))?
+    {
         // Distinguish .git so the user gets a more specific message when
         // they're effectively re-initing an existing zenops repo.
-        if zenops_dir.join(".git").exists() {
+        let dot_git = zenops_dir.join(".git");
+        if dot_git
+            .try_exists()
+            .map_err(|e| Error::InitIo(dot_git.clone(), e))?
+        {
             return Err(Error::InitGitDirExists(zenops_dir.to_path_buf()));
         }
         return Err(Error::InitDirExists(zenops_dir.to_path_buf()));

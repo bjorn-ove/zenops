@@ -67,13 +67,18 @@ pub struct Config<'dirs> {
     system_inputs: IndexMap<SmolStr, SmolStr>,
 }
 
-fn detect_brew_prefix() -> Option<PathBuf> {
+fn detect_brew_prefix() -> Result<Option<PathBuf>, Error> {
     const CANDIDATES: &[&str] = &["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
-    CANDIDATES
-        .iter()
-        .map(Path::new)
-        .find(|prefix| prefix.join("bin/brew").exists())
-        .map(PathBuf::from)
+    for prefix in CANDIDATES.iter().map(Path::new) {
+        let brew = prefix.join("bin/brew");
+        if brew
+            .try_exists()
+            .map_err(|e| Error::BrewProbeFailed(brew.clone(), e))?
+        {
+            return Ok(Some(prefix.to_path_buf()));
+        }
+    }
+    Ok(None)
 }
 
 fn build_system_inputs(
@@ -172,7 +177,8 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| Error::ParseDb(path.to_path_buf(), e))?;
 
-        let system_inputs = build_system_inputs(detect_brew_prefix().as_deref(), &stored.user);
+        let brew_prefix = detect_brew_prefix()?;
+        let system_inputs = build_system_inputs(brew_prefix.as_deref(), &stored.user);
 
         Ok(Self {
             dirs,

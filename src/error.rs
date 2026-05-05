@@ -230,6 +230,14 @@ pub enum Error {
     /// Wraps [`crate::utils::which::Error`].
     #[error(transparent)]
     Which(#[from] crate::utils::which::Error),
+    /// `home::home_dir()` returned `None` — couldn't determine the user's
+    /// home directory. Bubbled out of `main` rather than panicking.
+    #[error("Could not determine the user's home directory")]
+    NoHomeDir,
+    /// Failed to stat a candidate brew install prefix while detecting the
+    /// system package manager.
+    #[error("Failed to probe for brew at {0:?}: {1}")]
+    BrewProbeFailed(PathBuf, #[source] std::io::Error),
 }
 
 impl PartialEq for Error {
@@ -360,6 +368,10 @@ impl PartialEq for Error {
             ) => l_user == r_user && l_src.to_string() == r_src.to_string(),
             (Self::SchemaEmit(l), Self::SchemaEmit(r)) => l.to_string() == r.to_string(),
             (Self::SchemaWrite(l), Self::SchemaWrite(r)) => l.kind() == r.kind(),
+            (Self::NoHomeDir, Self::NoHomeDir) => true,
+            (Self::BrewProbeFailed(l0, l1), Self::BrewProbeFailed(r0, r1)) => {
+                l0 == r0 && l1.kind() == r1.kind()
+            }
             _ => false,
         }
     }
@@ -604,6 +616,30 @@ mod tests {
         assert_eq!(Error::PromptInterrupted, Error::PromptInterrupted);
         assert_eq!(Error::InitNeedsTty, Error::InitNeedsTty);
         assert_eq!(Error::CurlNotFound, Error::CurlNotFound);
+        assert_eq!(Error::NoHomeDir, Error::NoHomeDir);
+    }
+
+    #[test]
+    fn brew_probe_failed_eq_and_ne() {
+        let a = Error::BrewProbeFailed(
+            PathBuf::from("/opt/homebrew/bin/brew"),
+            io(io::ErrorKind::PermissionDenied),
+        );
+        let b = Error::BrewProbeFailed(
+            PathBuf::from("/opt/homebrew/bin/brew"),
+            io(io::ErrorKind::PermissionDenied),
+        );
+        let c = Error::BrewProbeFailed(
+            PathBuf::from("/usr/local/bin/brew"),
+            io(io::ErrorKind::PermissionDenied),
+        );
+        let d = Error::BrewProbeFailed(
+            PathBuf::from("/opt/homebrew/bin/brew"),
+            io(io::ErrorKind::NotFound),
+        );
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
     }
 
     #[test]

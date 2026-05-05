@@ -208,7 +208,7 @@ struct CommandContext<'dirs> {
 
 impl<'dirs> CommandContext<'dirs> {
     fn load(dirs: &'dirs ConfigFileDirs, pull_config: bool) -> Result<Self, Error> {
-        let sh = Shell::new().unwrap();
+        let sh = Shell::new()?;
         let config = Config::load(dirs, &sh, pull_config)?;
         Ok(Self { sh, config })
     }
@@ -267,7 +267,7 @@ pub fn real_main(
         // command the user runs when things are wrong, so it doesn't go
         // through `Config::load` here.
         Cmd::Doctor => {
-            let sh = Shell::new().unwrap();
+            let sh = Shell::new()?;
             doctor::run(args, dirs, &sh, output)
         }
         Cmd::Schema => schema::run(&mut std::io::stdout().lock()),
@@ -341,7 +341,7 @@ pub fn real_main(
             Ok(())
         }
         Cmd::Repo { command } => {
-            let sh = Shell::new().unwrap();
+            let sh = Shell::new()?;
             command.passthru_dispatch_in(dirs.zenops(), &sh)?;
             Ok(())
         }

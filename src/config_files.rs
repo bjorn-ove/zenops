@@ -263,7 +263,11 @@ impl<'dirs> ConfigFiles<'dirs> {
 
         match &entry.src {
             ResolvedFileSource::Generated(content) => {
-                if path.full.exists() {
+                if path
+                    .full
+                    .try_exists()
+                    .map_err(|e| Error::SymlinkProbeFailed(path.full.to_path_buf(), e))?
+                {
                     let cur_content = std::fs::read_to_string(&path.full)
                         .map_err(|e| Error::FailedToReadConfig(path.clone(), e))?;
                     let status = if cur_content == content.as_ref() {
@@ -375,7 +379,10 @@ impl<'dirs> ConfigFiles<'dirs> {
                         continue;
                     }
                     if let Some(parent) = path.parent()
-                        && !parent.full.exists()
+                        && !parent
+                            .full
+                            .try_exists()
+                            .map_err(|e| Error::SymlinkProbeFailed(parent.full.to_path_buf(), e))?
                     {
                         std::fs::create_dir_all(&parent.full)
                             .map_err(|e| Error::CreateDirectoryError(parent.clone(), e))?;
