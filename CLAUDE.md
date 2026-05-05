@@ -33,6 +33,11 @@ ZenOps is a Rust (edition 2024) system configuration management tool. It reads a
 - `SmolStr`: use `SmolStr::new_static(s)` when `s` is `&'static str` (string literals, `std::env::consts::*`, etc.); reserve `SmolStr::new` for runtime-owned values. `new_static` avoids the allocation check and stores the literal directly.
 - License files in subcrates: each published crate needs `LICENSE-APACHE` and `LICENSE-MIT` at its root (cargo packages each crate independently), but they must be **symlinks** to the workspace-root files (`ln -s ../../LICENSE-APACHE LICENSE-APACHE`), not real copies. Cargo resolves symlinks when building the `.crate` tarball, so each published crate ships the license text without duplicating bytes on disk. When adding a new subcrate, create the symlinks — do not copy the files.
 - Per-crate versioning: every crate has its own explicit `version = "X.Y.Z"` in its `[package]` block — the workspace does not share a version. The root `[workspace.dependencies]` pins each internal crate with `version = "X.Y.Z"`; bumping an internal crate means editing both its own `[package] version` and that pin. Release tags are `<crate>-v<X.Y.Z>` (e.g. `zenops-expand-v0.4.3`). The pre-split `v0.4.2` workspace tag is kept as a one-time fallback anchor for the first per-crate bump. The `bump-version` skill automates this.
+- Error handling:
+  - Modules with more than ~2 fallible-error kinds get their own `thiserror::Error` enum (e.g. `src/config/pkg/error.rs`, `src/utils/which.rs`), wrapped into the crate-level `Error` via `#[from]` + `#[error(transparent)]`.
+  - Don't swallow errors. When an error IS expected, match the *specific* inner variant and bubble the rest. Canonical example: `src/utils/which.rs::get_path` matches `which::Error::CannotFindBinaryPath` / `CannotGetCurrentDirAndPathListEmpty` as "not found"; `CannotCanonicalize` bubbles up.
+  - Use `Path::try_exists()` not `Path::exists()` — `exists()` swallows IO errors.
+  - No `.unwrap()` / `.expect()` in production code paths. If an invariant is real, encode it in the type system (cf. commit `6ef5db9` "Eliminate unreachable!() calls by encoding invariants in types").
 
 **Command flow (`src/`):**
 1. `main.rs` — clap CLI, calls into `lib.rs`
