@@ -240,6 +240,58 @@ mod tests {
     }
 
     #[test]
+    fn update_config_files_registers_allowed_signers_when_non_empty() {
+        // Reaches the Some-arm of the let-else in update_config_files and
+        // the trailing config_files.add call (existing tests only exercise
+        // the empty-config early-return branch).
+        let cfg = StoredSshConfig {
+            allowed_signers: vec![AllowedSignerEntry::Manual {
+                principal: SmolStr::new_static("bob@example.com"),
+                key_type: SmolStr::new_static("ssh-ed25519"),
+                key: SmolStr::new_static("AAAAKEY"),
+            }],
+        };
+        let dirs = ConfigFileDirs::load(std::path::PathBuf::from("/tmp/zenops-test-home"));
+        let mut config_files = ConfigFiles::new(&dirs);
+
+        cfg.update_config_files(&mut config_files, &PanicFetcher)
+            .expect("non-empty manual config should register a generated file");
+    }
+
+    struct ErrorFetcher;
+
+    impl GithubKeyFetcher for ErrorFetcher {
+        fn fetch(&self, username: &str) -> Result<Vec<String>, Error> {
+            let sh = xshell::Shell::new().unwrap();
+            let source = xshell::cmd!(sh, "false").quiet().run().unwrap_err();
+            Err(SshError::GithubKeyFetchFailed {
+                username: SmolStr::new(username),
+                source,
+            }
+            .into())
+        }
+    }
+
+    #[test]
+    fn build_body_propagates_fetcher_error_for_github_entry() {
+        // Exercises the `?` error branch on the `for line in fetcher.fetch(...)?`
+        // loop in `build_body` — the existing tests only feed it Ok responses.
+        let cfg = StoredSshConfig {
+            allowed_signers: vec![AllowedSignerEntry::Github {
+                principal: SmolStr::new_static("octocat@example.com"),
+                username: SmolStr::new_static("octocat"),
+            }],
+        };
+        let err = cfg.build_body(&ErrorFetcher).unwrap_err();
+        match err {
+            Error::Ssh(SshError::GithubKeyFetchFailed { username, .. }) => {
+                assert_eq!(username, "octocat");
+            }
+            other => panic!("expected GithubKeyFetchFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn mixed_entries_preserve_order_and_only_call_fetcher_for_github() {
         let cfg = StoredSshConfig {
             allowed_signers: vec![

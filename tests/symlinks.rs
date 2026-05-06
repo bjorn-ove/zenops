@@ -652,3 +652,114 @@ fn apply_replaces_wrong_symlink() {
     let resolved = std::fs::read_link(&symlink.full).expect("read_link");
     assert_eq!(resolved, real.full.as_ref());
 }
+
+#[test]
+fn apply_dry_run_skips_create_symlink_with_parent() {
+    // DstDirIsMissing + dry-run: prompter declines both the parent-dir
+    // create and the symlink create. apply must emit no events and leave
+    // disk untouched. Covers the `continue` arm in the
+    // `CreateSymlinkWithParent` apply branch.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [pkg.dummy-util]
+        enable = "on"
+        [pkg.dummy-util.install_hint.brew]
+        packages = []
+        [[pkg.dummy-util.configs]]
+        type = ".config"
+        source = "configs/dummy-util"
+        symlinks = ["dummy-util.toml"]
+    "#,
+    );
+    env.write_zenops_file(
+        srpath!("configs/dummy-util/dummy-util.toml"),
+        "# hello",
+        Some("Added dummy-util.toml"),
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: false,
+            dry_run: true,
+            allow_dirty: true,
+        }),
+        Ok(Output { entries: vec![] }),
+    );
+
+    // Neither the parent dir nor the symlink should have been created.
+    let parent = env.resolve_path(paths::CONFIG_DIR.safe_join(srpath!("dummy-util")));
+    assert!(
+        parent.symlink_metadata().is_err(),
+        "dry-run must not create parent dir {parent:?}"
+    );
+}
+
+#[test]
+fn apply_dry_run_skips_replace_wrong_symlink() {
+    // WrongLink + dry-run: prompter declines the replace. apply must emit
+    // nothing and leave the wrong symlink in place. Covers the `continue`
+    // arm in the `ReplaceWrongSymlink` apply branch.
+    let env = test_env::TestEnv::load();
+    let symlink_rel = paths::HOME_DIR.safe_join(srpath!(".dummy/dummy.toml"));
+
+    env.init_config(
+        r#"
+        [pkg.dummy]
+        enable = "on"
+        [pkg.dummy.install_hint.brew]
+        packages = []
+        [[pkg.dummy.configs]]
+        type = "home"
+        dir = ".dummy"
+        source = "configs/dummy"
+        symlinks = ["dummy.toml"]
+    "#,
+    );
+    env.write_zenops_file(
+        srpath!("configs/dummy/dummy.toml"),
+        "# real\n",
+        Some("Add dummy.toml"),
+    );
+    let wrong_target = std::path::Path::new("/tmp/zenops-wrong-target-does-not-exist");
+    env.create_dangling_symlink(wrong_target, &symlink_rel);
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: false,
+            dry_run: true,
+            allow_dirty: true,
+        }),
+        Ok(Output { entries: vec![] }),
+    );
+
+    // Symlink still points at the wrong target — dry-run did not replace it.
+    let symlink_full = env.resolve_path(&symlink_rel);
+    let resolved = std::fs::read_link(&symlink_full).expect("read_link");
+    assert_eq!(resolved, wrong_target);
+}
+
+#[test]
+fn apply_is_a_noop_when_symlink_already_correct() {
+    // Status = SymlinkStatus::Ok and apply emits no AppliedAction events.
+    // Covers the `SymlinkStatus::Ok` no-op arm in apply_changes.
+    let (env, symlink_full, _real, _symlink) = init_single_symlink_env();
+
+    // Pre-create the symlink so it lines up with what the config wants.
+    env.create_symlink(
+        paths::ZENOPS_DIR.safe_join(srpath!("configs/dummy-util/dummy-util.toml")),
+        &symlink_full,
+    );
+
+    assert_eq!(
+        env.run(&Cmd::Apply {
+            pull_config: false,
+            yes: true,
+            dry_run: false,
+            allow_dirty: true,
+        }),
+        Ok(Output { entries: vec![] }),
+    );
+}

@@ -1,10 +1,11 @@
+use xshell::{Shell, cmd};
 use zenops::{
     Cmd,
     output::{PkgStatus, Status},
 };
 use zenops_safe_relative_path::srpath;
 
-use test_env::{Entry, Output};
+use test_env::{Entry, Output, paths};
 
 mod test_env;
 
@@ -557,6 +558,47 @@ fn doctor_reports_zenops_dir_not_a_git_repo() {
     assert!(
         has_no_git,
         "expected a Warn git repo:no row, got: {:?}",
+        out.entries,
+    );
+}
+
+#[test]
+fn doctor_omits_branch_row_on_detached_head() {
+    use zenops::output::{DoctorCheck, DoctorSection};
+
+    // After init_config, the zenops repo is on a normal branch. Detach HEAD
+    // by checking out the commit's SHA directly. doctor's `repo_block`
+    // filters `git rev-parse --abbrev-ref HEAD == "HEAD"` and skips the
+    // `branch:` info row entirely — covers the false arm of the
+    // `if let Some(b) = branch` filter.
+    let env = test_env::TestEnv::load();
+    env.init_config("");
+
+    let zenops = env.resolve_path(paths::ZENOPS_DIR);
+    let sh = Shell::new().unwrap();
+    let _dir = sh.push_dir(&zenops);
+    let head_sha = cmd!(sh, "git rev-parse HEAD").read().unwrap();
+    cmd!(sh, "git checkout --detach {head_sha}")
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .unwrap();
+    drop(_dir);
+
+    let out = env.run(&Cmd::Doctor).expect("doctor must succeed");
+    let any_branch_row = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::Doctor(DoctorCheck::Check {
+                section: DoctorSection::Repo,
+                label,
+                ..
+            }) if label == "branch:"
+        )
+    });
+    assert!(
+        !any_branch_row,
+        "detached HEAD must not emit a branch: row, got: {:?}",
         out.entries,
     );
 }

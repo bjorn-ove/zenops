@@ -348,6 +348,13 @@ fn applied_actions_render_expected_lines() {
         "✓  ~/dst → ~/src  linked\n",
     );
     assert_eq!(
+        render_action(AppliedAction::ReplacedSymlink {
+            real: home_path("src"),
+            symlink: home_path("dst"),
+        }),
+        "✓  ~/dst → ~/src  relinked\n",
+    );
+    assert_eq!(
         render_action(AppliedAction::CreatedDir(home_path("subdir"))),
         "✓  ~/subdir  mkdir\n",
     );
@@ -863,6 +870,96 @@ fn doctor_check_with_detail_indents_each_line_under_row() {
     );
     assert!(got.contains("    /path/to/config.toml\n"), "{got:?}");
     assert!(got.contains("    expected `]`\n"), "{got:?}");
+}
+
+#[test]
+fn bootstrap_summary_renders_all_fields_when_set() {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+        r.push(Event::BootstrapSummary(BootstrapSummary {
+            repo_path: PathBuf::from("/home/test/.config/zenops"),
+            shell: Some("zsh".into()),
+            name: Some("Bob".into()),
+            email: Some("bob@example.com".into()),
+        }))
+        .unwrap();
+        r.finalize().unwrap();
+    }
+    let got = String::from_utf8(buf).unwrap();
+    assert!(
+        got.contains("Initialized fresh zenops repo at /home/test/.config/zenops"),
+        "{got:?}",
+    );
+    assert!(got.contains("shell:  zsh"), "{got:?}");
+    assert!(got.contains("name:   Bob"), "{got:?}");
+    assert!(got.contains("email:  bob@example.com"), "{got:?}");
+    assert!(
+        got.contains("Next: edit config.toml, then run `zenops apply`."),
+        "{got:?}",
+    );
+}
+
+#[test]
+fn bootstrap_summary_renders_placeholders_when_fields_unset() {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let mut r = TerminalRenderer::new(&mut buf, false, false, false);
+        r.push(Event::BootstrapSummary(BootstrapSummary {
+            repo_path: PathBuf::from("/home/test/.config/zenops"),
+            shell: None,
+            name: None,
+            email: None,
+        }))
+        .unwrap();
+        r.finalize().unwrap();
+    }
+    let got = String::from_utf8(buf).unwrap();
+    assert!(got.contains("shell:  (none configured)"), "{got:?}");
+    assert!(got.contains("name:   (not set)"), "{got:?}");
+    assert!(got.contains("email:  (not set)"), "{got:?}");
+}
+
+#[test]
+fn pkg_entry_with_description_renders_dim_description_after_name() {
+    let got = render_pkg_entries(
+        vec![PkgEntry::Pkg {
+            name: SmolStr::new_static("starship"),
+            key: SmolStr::new_static("starship"),
+            description: Some("cross-shell prompt".into()),
+            state: PkgEntryState::Installed,
+            matched_detect: None,
+            install_hints: PkgInstallHints::default(),
+        }],
+        false,
+    );
+    assert!(got.contains("starship"), "{got:?}");
+    assert!(got.contains("cross-shell prompt"), "{got:?}");
+}
+
+#[test]
+fn pkg_entry_with_matched_detect_renders_indented_detect_line() {
+    let got = render_pkg_entries(
+        vec![PkgEntry::Pkg {
+            name: SmolStr::new_static("foo"),
+            key: SmolStr::new_static("foo"),
+            description: None,
+            state: PkgEntryState::Installed,
+            matched_detect: Some("foo (PATH)".into()),
+            install_hints: PkgInstallHints::default(),
+        }],
+        false,
+    );
+    let lines: Vec<&str> = got.lines().collect();
+    let detect_line = lines
+        .iter()
+        .find(|l| l.contains("detect:"))
+        .unwrap_or_else(|| panic!("expected a detect: line, got: {got:?}"));
+    assert!(detect_line.contains("foo (PATH)"), "{got:?}");
+    assert!(
+        detect_line.starts_with("    "),
+        "detect line should be indented under the pkg row: {got:?}",
+    );
 }
 
 #[test]

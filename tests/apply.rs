@@ -538,6 +538,53 @@ fn apply_dry_run_does_not_rewrite_modified_files() {
 }
 
 #[test]
+fn apply_dry_run_skips_create_file() {
+    // Fresh apply with no pre-existing shell config. dry_run=true makes
+    // every `confirm` return false, so the CreateFile branch must hit its
+    // `continue` arm: no UpdatedFile / CreatedFile and the file stays off
+    // disk.
+    use zenops::output::AppliedAction;
+
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+        [shell]
+        type = "bash"
+        [shell.environment]
+        [shell.alias]
+    "#,
+    );
+
+    let out = env
+        .run(&Cmd::Apply {
+            pull_config: false,
+            yes: false,
+            dry_run: true,
+            allow_dirty: true,
+        })
+        .expect("dry-run apply must succeed");
+
+    let any_create = out.entries.iter().any(|e| {
+        matches!(
+            e,
+            Entry::AppliedAction(AppliedAction::CreatedFile(_))
+                | Entry::AppliedAction(AppliedAction::UpdatedFile(_))
+        )
+    });
+    assert!(
+        !any_create,
+        "dry-run apply must not emit CreatedFile/UpdatedFile, got: {:?}",
+        out.entries,
+    );
+
+    let target = env.resolve_path(srpath!("home/bob/.zenops_bash_profile"));
+    assert!(
+        target.symlink_metadata().is_err(),
+        "dry-run must not create {target:?}"
+    );
+}
+
+#[test]
 fn entry_status_propagates_unreadable_generated_file() {
     // A managed shell config wants to land at ~/.zenops_bash_profile, but a
     // directory occupies that path. read_to_string fails with IsADirectory;
