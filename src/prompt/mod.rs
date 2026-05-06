@@ -328,8 +328,11 @@ fn render_single_hunk(
     ops: &[DiffOp],
     color: bool,
 ) -> io::Result<()> {
-    let first = ops.first().expect("hunk has at least one op");
-    let last = ops.last().expect("hunk has at least one op");
+    let (first, last) = match ops {
+        [] => return Ok(()),
+        [only] => (only, only),
+        [first, .., last] => (first, last),
+    };
     let old_start = first.old_range().start;
     let old_len = last.old_range().end - old_start;
     let new_start = first.new_range().start;

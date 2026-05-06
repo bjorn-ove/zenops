@@ -557,8 +557,13 @@ fn reconstruct(old: &str, new: &str, groups: &[Vec<DiffOp>], approvals: &[bool])
     let mut old_idx = 0;
 
     for (group, &approved) in groups.iter().zip(approvals) {
-        let group_old_start = group.first().expect("non-empty group").old_range().start;
-        let group_old_end = group.last().expect("non-empty group").old_range().end;
+        let (first, last) = match group.as_slice() {
+            [] => continue,
+            [only] => (only, only),
+            [first, .., last] => (first, last),
+        };
+        let group_old_start = first.old_range().start;
+        let group_old_end = last.old_range().end;
 
         while old_idx < group_old_start {
             out.push_str(old_lines[old_idx]);
