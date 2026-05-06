@@ -6,7 +6,10 @@ use crate::{
 
 mod bash;
 mod common;
+mod error;
 mod zsh;
+
+pub use error::Error as ConfigShellError;
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

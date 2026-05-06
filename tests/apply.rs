@@ -23,10 +23,10 @@ fn missing_config() {
             diff: false,
             all: false
         }),
-        Err(Error::OpenDb(
+        Err(Error::Config(zenops::ConfigError::OpenDb(
             env.resolve_path(paths::ZENOPS_CONFIG),
             std::io::ErrorKind::NotFound.into()
-        ))
+        )))
     );
 
     // Check it works with a config file, but no .git repository

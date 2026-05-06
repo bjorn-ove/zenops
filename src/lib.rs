@@ -35,6 +35,8 @@ use std::io::IsTerminal;
 use clap::Subcommand;
 use xshell::Shell;
 
+pub use crate::config::ConfigError;
+
 use crate::{
     config::Config,
     config_files::{ConfigFileDirs, ConfigFiles},

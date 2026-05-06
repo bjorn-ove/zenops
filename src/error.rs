@@ -13,8 +13,6 @@
 
 use std::path::PathBuf;
 
-use smol_str::SmolStr;
-
 use crate::output::OutputError;
 
 /// Crate-wide error. Each variant's user-facing string lives on its
@@ -22,12 +20,9 @@ use crate::output::OutputError;
 /// adds the trigger context the message can't carry.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// I/O error opening `config.toml` (e.g. missing file, permission denied).
-    #[error("Failed to open the database file {0:?}: {1}")]
-    OpenDb(PathBuf, #[source] std::io::Error),
-    /// `config.toml` parsed but failed TOML deserialization or schema validation.
-    #[error("Failed to parse the database from file {0:?}: {1}")]
-    ParseDb(PathBuf, #[source] toml::de::Error),
+    /// Wraps [`crate::config::ConfigError`].
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
     /// A subprocess invoked through `xshell` failed (non-zero exit, signal,
     /// I/O error). The wrapped error carries the command and stderr.
     #[error("Failed to execute command")]
@@ -39,23 +34,9 @@ pub enum Error {
     /// [`zenops_safe_relative_path`].
     #[error(transparent)]
     SafeRelativePath(#[from] zenops_safe_relative_path::error::Error),
-    /// A pkg's template referenced an input that's not declared anywhere
-    /// (no system input, no `[pkg.<name>.inputs]` entry).
-    #[error(
-        "Package {pkg} references undefined input {input}; mark the action optional or set [pkg.{pkg}.inputs].{input}"
-    )]
-    UnresolvedInput {
-        /// The pkg whose template failed to resolve.
-        pkg: SmolStr,
-        /// The input name that wasn't found.
-        input: SmolStr,
-    },
-    /// A pkg template contains a `${` with no matching `}`.
-    #[error("Package {pkg} has an unterminated `${{` in a template")]
-    TemplateUnterminated {
-        /// The pkg whose template failed to parse.
-        pkg: SmolStr,
-    },
+    /// Wraps [`crate::config::shell::ConfigShellError`].
+    #[error(transparent)]
+    ConfigShell(#[from] crate::config::shell::ConfigShellError),
     /// `apply` was invoked without a TTY and without `--yes`/`--dry-run`,
     /// so there's no way to confirm prompts.
     #[error(
@@ -69,13 +50,9 @@ pub enum Error {
         "zenops config repo at {0:?} has uncommitted changes. Commit them first, or re-run with --allow-dirty to apply anyway."
     )]
     DirtyRepoRequiresAllowDirty(PathBuf),
-    /// I/O error reading a yes/no answer from stdin.
-    #[error("Failed to read confirmation from stdin: {0}")]
-    PromptRead(#[source] std::io::Error),
-    /// User pressed Ctrl-C at an interactive prompt. Distinct from a
-    /// closed stdin or Ctrl-D so callers can abort the whole run.
-    #[error("Interrupted")]
-    PromptInterrupted,
+    /// Wraps [`crate::prompt::PromptError`].
+    #[error(transparent)]
+    Prompt(#[from] crate::prompt::PromptError),
     /// An [`Output`](crate::output::Output) implementation failed to write
     /// (rendering or JSON serialization error).
     #[error(transparent)]
@@ -99,47 +76,26 @@ pub enum Error {
     /// home directory. Bubbled out of `main` rather than panicking.
     #[error("Could not determine the user's home directory")]
     NoHomeDir,
-    /// Failed to stat a candidate brew install prefix while detecting the
-    /// system package manager.
-    #[error("Failed to probe for brew at {0:?}: {1}")]
-    BrewProbeFailed(PathBuf, #[source] std::io::Error),
 }
 
 impl PartialEq for Error {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::OpenDb(l0, l1), Self::OpenDb(r0, r1)) => l0 == r0 && l1.kind() == r1.kind(),
-            (Self::ParseDb(l0, l1), Self::ParseDb(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Config(l), Self::Config(r)) => l == r,
             (Self::Shell(l0), Self::Shell(r0)) => l0.to_string() == r0.to_string(),
             (Self::ConfigFiles(l0), Self::ConfigFiles(r0)) => l0 == r0,
             (Self::SafeRelativePath(l0), Self::SafeRelativePath(r0)) => l0 == r0,
-            (
-                Self::UnresolvedInput {
-                    pkg: l_pkg,
-                    input: l_input,
-                },
-                Self::UnresolvedInput {
-                    pkg: r_pkg,
-                    input: r_input,
-                },
-            ) => l_pkg == r_pkg && l_input == r_input,
-            (Self::TemplateUnterminated { pkg: l }, Self::TemplateUnterminated { pkg: r }) => {
-                l == r
-            }
+            (Self::ConfigShell(l), Self::ConfigShell(r)) => l == r,
             (Self::ApplyNeedsYesOrTty, Self::ApplyNeedsYesOrTty) => true,
             (Self::DirtyRepoRequiresAllowDirty(l0), Self::DirtyRepoRequiresAllowDirty(r0)) => {
                 l0 == r0
             }
-            (Self::PromptRead(l0), Self::PromptRead(r0)) => l0.kind() == r0.kind(),
-            (Self::PromptInterrupted, Self::PromptInterrupted) => true,
+            (Self::Prompt(l), Self::Prompt(r)) => l == r,
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::Init(l0), Self::Init(r0)) => l0 == r0,
             (Self::Ssh(l0), Self::Ssh(r0)) => l0 == r0,
             (Self::Schema(l), Self::Schema(r)) => l == r,
             (Self::NoHomeDir, Self::NoHomeDir) => true,
-            (Self::BrewProbeFailed(l0, l1), Self::BrewProbeFailed(r0, r1)) => {
-                l0 == r0 && l1.kind() == r1.kind()
-            }
             _ => false,
         }
     }
@@ -180,23 +136,29 @@ mod tests {
     }
 
     #[test]
-    fn open_db_eq_compares_path_and_io_kind() {
-        let a = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
-        let b = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound));
-        let c = Error::OpenDb(PathBuf::from("/y"), io(io::ErrorKind::NotFound));
-        let d = Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::PermissionDenied));
+    fn config_wrap_eq_delegates_to_inner() {
+        let a = Error::Config(crate::config::ConfigError::OpenDb(
+            PathBuf::from("/x"),
+            io(io::ErrorKind::NotFound),
+        ));
+        let b = Error::Config(crate::config::ConfigError::OpenDb(
+            PathBuf::from("/x"),
+            io(io::ErrorKind::NotFound),
+        ));
+        let c = Error::Config(crate::config::ConfigError::OpenDb(
+            PathBuf::from("/y"),
+            io(io::ErrorKind::NotFound),
+        ));
         assert_eq!(a, b);
         assert_ne!(a, c);
-        assert_ne!(a, d);
     }
 
     #[test]
-    fn parse_db_eq_compares_path_and_inner_error() {
-        let toml_err = toml::from_str::<toml::Value>("not = valid = toml").unwrap_err();
-        let toml_err2 = toml::from_str::<toml::Value>("not = valid = toml").unwrap_err();
-        let a = Error::ParseDb(PathBuf::from("/x"), toml_err);
-        let b = Error::ParseDb(PathBuf::from("/x"), toml_err2);
-        assert_eq!(a, b);
+    fn from_config_error_wraps_in_config_variant() {
+        let inner =
+            crate::config::ConfigError::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::Other));
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Config(_)));
     }
 
     #[test]
@@ -248,66 +210,39 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_input_eq_and_ne() {
-        let a = Error::UnresolvedInput {
-            pkg: SmolStr::new_static("p"),
-            input: SmolStr::new_static("i"),
-        };
-        let b = Error::UnresolvedInput {
-            pkg: SmolStr::new_static("p"),
-            input: SmolStr::new_static("i"),
-        };
-        let c = Error::UnresolvedInput {
-            pkg: SmolStr::new_static("p"),
-            input: SmolStr::new_static("other"),
-        };
+    fn config_shell_wrap_eq_delegates_to_inner() {
+        let a = Error::ConfigShell(
+            crate::config::shell::ConfigShellError::TemplateUnterminated {
+                pkg: smol_str::SmolStr::new_static("p"),
+            },
+        );
+        let b = Error::ConfigShell(
+            crate::config::shell::ConfigShellError::TemplateUnterminated {
+                pkg: smol_str::SmolStr::new_static("p"),
+            },
+        );
+        let c = Error::ConfigShell(
+            crate::config::shell::ConfigShellError::TemplateUnterminated {
+                pkg: smol_str::SmolStr::new_static("q"),
+            },
+        );
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
-    fn template_unterminated_eq_and_ne() {
-        let a = Error::TemplateUnterminated {
-            pkg: SmolStr::new_static("p"),
+    fn from_config_shell_error_wraps_in_config_shell_variant() {
+        let inner = crate::config::shell::ConfigShellError::TemplateUnterminated {
+            pkg: smol_str::SmolStr::new_static("p"),
         };
-        let b = Error::TemplateUnterminated {
-            pkg: SmolStr::new_static("p"),
-        };
-        let c = Error::TemplateUnterminated {
-            pkg: SmolStr::new_static("q"),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::ConfigShell(_)));
     }
 
     #[test]
     fn unit_variants_compare_equal_to_themselves() {
         assert_eq!(Error::ApplyNeedsYesOrTty, Error::ApplyNeedsYesOrTty);
-        assert_eq!(Error::PromptInterrupted, Error::PromptInterrupted);
         assert_eq!(Error::NoHomeDir, Error::NoHomeDir);
-    }
-
-    #[test]
-    fn brew_probe_failed_eq_and_ne() {
-        let a = Error::BrewProbeFailed(
-            PathBuf::from("/opt/homebrew/bin/brew"),
-            io(io::ErrorKind::PermissionDenied),
-        );
-        let b = Error::BrewProbeFailed(
-            PathBuf::from("/opt/homebrew/bin/brew"),
-            io(io::ErrorKind::PermissionDenied),
-        );
-        let c = Error::BrewProbeFailed(
-            PathBuf::from("/usr/local/bin/brew"),
-            io(io::ErrorKind::PermissionDenied),
-        );
-        let d = Error::BrewProbeFailed(
-            PathBuf::from("/opt/homebrew/bin/brew"),
-            io(io::ErrorKind::NotFound),
-        );
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-        assert_ne!(a, d);
     }
 
     #[test]
@@ -320,12 +255,19 @@ mod tests {
     }
 
     #[test]
-    fn prompt_read_eq_compares_io_kind() {
-        let a = Error::PromptRead(io(io::ErrorKind::UnexpectedEof));
-        let b = Error::PromptRead(io(io::ErrorKind::UnexpectedEof));
-        let c = Error::PromptRead(io(io::ErrorKind::Other));
+    fn prompt_wrap_eq_delegates_to_inner() {
+        let a = Error::Prompt(crate::prompt::PromptError::Interrupted);
+        let b = Error::Prompt(crate::prompt::PromptError::Interrupted);
+        let c = Error::Prompt(crate::prompt::PromptError::Read(io(io::ErrorKind::Other)));
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn from_prompt_error_wraps_in_prompt_variant() {
+        let inner = crate::prompt::PromptError::Interrupted;
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Prompt(_)));
     }
 
     #[test]
@@ -387,10 +329,10 @@ mod tests {
 
     #[test]
     fn cross_variant_compare_returns_false() {
-        assert_ne!(Error::ApplyNeedsYesOrTty, Error::PromptInterrupted);
+        assert_ne!(Error::ApplyNeedsYesOrTty, Error::NoHomeDir);
         assert_ne!(
             Error::NoHomeDir,
-            Error::OpenDb(PathBuf::from("/x"), io(io::ErrorKind::NotFound))
+            Error::DirtyRepoRequiresAllowDirty(PathBuf::from("/x")),
         );
         let _ = srpath!("dummy"); // keep srpath import in use
     }

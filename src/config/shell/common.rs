@@ -4,10 +4,9 @@ use std::fmt::Write as _;
 
 use zenops_expand::{ExpandError, ExpandLookup};
 
-use crate::{
-    config::pkg::{ActionKind, PkgConfig, ShellInitAction},
-    error::Error,
-};
+use crate::config::pkg::{ActionKind, PkgConfig, ShellInitAction};
+
+use super::error::Error;
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub(in super::super) struct StoredShellConfig {

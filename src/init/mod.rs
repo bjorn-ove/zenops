@@ -72,7 +72,9 @@ fn run_clone(
     Git::clone_to(url, dirs.zenops(), branch, sh)?;
 
     let config = Config::load(dirs, sh, false).map_err(|e| match e {
-        Error::OpenDb(_, io_err) if io_err.kind() == std::io::ErrorKind::NotFound => {
+        Error::Config(crate::config::ConfigError::OpenDb(_, io_err))
+            if io_err.kind() == std::io::ErrorKind::NotFound =>
+        {
             InitError::NoConfigToml(dirs.zenops().to_path_buf()).into()
         }
         other => other,
@@ -105,7 +107,7 @@ fn run_bootstrap(
     let detected_name = detect_git_config(sh, "user.name")?;
     let detected_email = detect_git_config(sh, "user.email")?;
 
-    let mut prompter = RustylinePrompter::new().map_err(Error::PromptRead)?;
+    let mut prompter = RustylinePrompter::new().map_err(crate::prompt::PromptError::Read)?;
 
     let shell = prompt_shell(&mut prompter, detected_shell)?;
     let name = prompt_with_default(&mut prompter, "Name", detected_name.as_deref())?;
@@ -272,12 +274,15 @@ fn read_trimmed_line(
     prompter: &mut dyn LinePrompter,
     prompt: &str,
 ) -> Result<Option<String>, Error> {
-    match prompter.read_line(prompt).map_err(Error::PromptRead)? {
+    match prompter
+        .read_line(prompt)
+        .map_err(crate::prompt::PromptError::Read)?
+    {
         // EOF — treat as blank input so the caller falls back to its
         // default; the TTY check at entry should normally prevent us
         // from getting here at all.
         LineOutcome::Eof => Ok(None),
-        LineOutcome::Interrupted => Err(Error::PromptInterrupted),
+        LineOutcome::Interrupted => Err(crate::prompt::PromptError::Interrupted.into()),
         LineOutcome::Line(line) => {
             let trimmed = line.trim().to_string();
             if trimmed.is_empty() {
@@ -324,7 +329,7 @@ fn prompt_shell(
             Some(_) => {
                 prompter
                     .writeln("Please answer bash, zsh, or none.")
-                    .map_err(Error::PromptRead)?;
+                    .map_err(crate::prompt::PromptError::Read)?;
             }
         }
     }

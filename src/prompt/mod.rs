@@ -11,6 +11,10 @@
 //! - [`DryRunPrompter`] — shows the same diff the terminal prompter would,
 //!   but always answers "no", used for `--dry-run`.
 
+mod error;
+
+pub use error::Error as PromptError;
+
 use std::io::{self, Write};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
@@ -156,7 +160,7 @@ impl TerminalPrompter {
     /// Build a prompter that uses ANSI color when `color` is true. Fails
     /// if rustyline can't open the controlling terminal.
     pub fn new(color: bool) -> Result<Self, Error> {
-        let line = RustylinePrompter::new().map_err(Error::PromptRead)?;
+        let line = RustylinePrompter::new().map_err(PromptError::Read)?;
         Ok(Self { color, line })
     }
 }
@@ -166,7 +170,7 @@ impl Prompter for TerminalPrompter {
         {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
+            render_change(&mut out, &change, self.color).map_err(PromptError::Read)?;
         }
         loop {
             let Some(line) = ask_line(&mut self.line, "[Y/n] ")? else {
@@ -178,7 +182,7 @@ impl Prompter for TerminalPrompter {
                 _ => {
                     self.line
                         .writeln("Please answer y or n.")
-                        .map_err(Error::PromptRead)?;
+                        .map_err(PromptError::Read)?;
                 }
             }
         }
@@ -201,7 +205,7 @@ impl Prompter for TerminalPrompter {
                 None => {
                     self.line
                         .writeln("Please answer c, y, or n.")
-                        .map_err(Error::PromptRead)?;
+                        .map_err(PromptError::Read)?;
                 }
             }
         }
@@ -209,21 +213,21 @@ impl Prompter for TerminalPrompter {
 }
 
 /// Read one line from `prompter`, mapping `Eof` to `Ok(None)` and
-/// `Interrupted` to `Err(Error::PromptInterrupted)`. Centralizes the
+/// `Interrupted` to `Err(PromptError::Interrupted)`. Centralizes the
 /// "outer plumbing" of the read-loop in `confirm`, `confirm_pre_apply`,
 /// and `read_commit_message`; each caller keeps its own retry policy.
-fn ask_line(prompter: &mut dyn LinePrompter, prompt: &str) -> Result<Option<String>, Error> {
-    match prompter.read_line(prompt).map_err(Error::PromptRead)? {
+fn ask_line(prompter: &mut dyn LinePrompter, prompt: &str) -> Result<Option<String>, PromptError> {
+    match prompter.read_line(prompt).map_err(PromptError::Read)? {
         LineOutcome::Line(s) => Ok(Some(s)),
         LineOutcome::Eof => Ok(None),
-        LineOutcome::Interrupted => Err(Error::PromptInterrupted),
+        LineOutcome::Interrupted => Err(PromptError::Interrupted),
     }
 }
 
-fn read_commit_message(prompter: &mut dyn LinePrompter) -> Result<String, Error> {
+fn read_commit_message(prompter: &mut dyn LinePrompter) -> Result<String, PromptError> {
     loop {
         let Some(line) = ask_line(prompter, "Commit message: ")? else {
-            return Err(Error::PromptRead(io::Error::new(
+            return Err(PromptError::Read(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "no commit message provided",
             )));
@@ -232,7 +236,7 @@ fn read_commit_message(prompter: &mut dyn LinePrompter) -> Result<String, Error>
         if trimmed.is_empty() {
             prompter
                 .writeln("Commit message cannot be empty.")
-                .map_err(Error::PromptRead)?;
+                .map_err(PromptError::Read)?;
             continue;
         }
         return Ok(trimmed);
@@ -256,8 +260,8 @@ impl Prompter for DryRunPrompter {
     fn confirm(&mut self, change: PendingChange<'_>) -> Result<bool, Error> {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        render_change(&mut out, &change, self.color).map_err(Error::PromptRead)?;
-        writeln!(out, "[Y/n] (dry-run: skipping)").map_err(Error::PromptRead)?;
+        render_change(&mut out, &change, self.color).map_err(PromptError::Read)?;
+        writeln!(out, "[Y/n] (dry-run: skipping)").map_err(PromptError::Read)?;
         Ok(false)
     }
 
@@ -645,7 +649,7 @@ mod tests {
         let mut p = ScriptedPrompter::new(vec![LineOutcome::Eof]);
         let err = read_commit_message(&mut p).unwrap_err();
         match err {
-            Error::PromptRead(io_err) => {
+            PromptError::Read(io_err) => {
                 assert_eq!(io_err.kind(), io::ErrorKind::UnexpectedEof);
             }
             other => panic!("expected PromptRead, got {other:?}"),
@@ -656,7 +660,7 @@ mod tests {
     fn read_commit_message_interrupted_returns_prompt_interrupted() {
         let mut p = ScriptedPrompter::new(vec![LineOutcome::Interrupted]);
         let err = read_commit_message(&mut p).unwrap_err();
-        assert_eq!(err, Error::PromptInterrupted);
+        assert_eq!(err, PromptError::Interrupted);
     }
 
     #[test]

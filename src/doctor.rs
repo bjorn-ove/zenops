@@ -246,7 +246,9 @@ fn load_config_or_report<'d>(
             em.ok("status:", "loaded")?;
             Ok(Some(config))
         }
-        Err(Error::OpenDb(path, io)) if io.kind() == std::io::ErrorKind::NotFound => {
+        Err(Error::Config(crate::config::ConfigError::OpenDb(path, io)))
+            if io.kind() == std::io::ErrorKind::NotFound =>
+        {
             em.bad(
                 "status:",
                 "missing",
@@ -257,7 +259,7 @@ fn load_config_or_report<'d>(
             )?;
             Ok(None)
         }
-        Err(Error::OpenDb(path, io)) => {
+        Err(Error::Config(crate::config::ConfigError::OpenDb(path, io))) => {
             em.bad(
                 "status:",
                 "unreadable",
@@ -265,7 +267,7 @@ fn load_config_or_report<'d>(
             )?;
             Ok(None)
         }
-        Err(Error::ParseDb(path, toml_err)) => {
+        Err(Error::Config(crate::config::ConfigError::ParseDb(path, toml_err))) => {
             // The toml crate's Display already carries line/column and a
             // caret span; ship those as `detail` lines so the renderer
             // can indent them under the row.
