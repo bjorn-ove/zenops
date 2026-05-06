@@ -72,6 +72,9 @@ pub enum Error {
     /// Wraps [`crate::utils::which::Error`].
     #[error(transparent)]
     Which(#[from] crate::utils::which::Error),
+    /// Wraps [`crate::git::GitError`].
+    #[error(transparent)]
+    Git(#[from] crate::git::GitError),
     /// `home::home_dir()` returned `None` — couldn't determine the user's
     /// home directory. Bubbled out of `main` rather than panicking.
     #[error("Could not determine the user's home directory")]
@@ -95,6 +98,7 @@ impl PartialEq for Error {
             (Self::Init(l0), Self::Init(r0)) => l0 == r0,
             (Self::Ssh(l0), Self::Ssh(r0)) => l0 == r0,
             (Self::Schema(l), Self::Schema(r)) => l == r,
+            (Self::Git(l), Self::Git(r)) => l == r,
             (Self::NoHomeDir, Self::NoHomeDir) => true,
             _ => false,
         }
@@ -325,6 +329,34 @@ mod tests {
         let inner = crate::schema::SchemaError::Write(io(io::ErrorKind::BrokenPipe));
         let e: Error = inner.into();
         assert!(matches!(e, Error::Schema(_)));
+    }
+
+    #[test]
+    fn git_wrap_eq_delegates_to_inner() {
+        let a = Error::Git(crate::git::GitError::PorcelainParse {
+            line: "1 M.".to_string(),
+            reason: "truncated",
+        });
+        let b = Error::Git(crate::git::GitError::PorcelainParse {
+            line: "1 M.".to_string(),
+            reason: "truncated",
+        });
+        let c = Error::Git(crate::git::GitError::PorcelainParse {
+            line: "1 ..".to_string(),
+            reason: "truncated",
+        });
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn from_git_error_wraps_in_git_variant() {
+        let inner = crate::git::GitError::PorcelainParse {
+            line: "1 M.".to_string(),
+            reason: "truncated",
+        };
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Git(_)));
     }
 
     #[test]

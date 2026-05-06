@@ -9,6 +9,8 @@
 //! `git`'s own stdio is streamed through so SSH-passphrase and
 //! HTTPS-credential-helper prompts still reach the user's TTY.
 
+pub mod error;
+
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -16,6 +18,8 @@ use serde::Serialize;
 use smol_str::SmolStr;
 use xshell::{Shell, cmd};
 use zenops_safe_relative_path::{SafeRelativePath, SafeRelativePathBuf};
+
+pub use error::Error as GitError;
 
 use crate::error::Error;
 
