@@ -67,47 +67,49 @@ fn parse_is_inside_work_tree(raw: &str) -> bool {
 }
 
 /// Parse the raw stdout of `git status --porcelain=v2` into per-file
-/// entries. Pure function — no I/O — so the unreachable-from-real-git
-/// rejection arms (`!` ignored marker, unknown line tag, paths that
-/// fail [`SafeRelativePath::from_relative_path`]) can be unit-tested
-/// without driving real git into states it doesn't naturally produce.
-/// Success-path coverage stays in `tests/git_status.rs` against real
-/// git output.
+/// entries. Pure function — no I/O — so truncated lines, unknown line
+/// tags, and paths that fail [`SafeRelativePath::from_relative_path`]
+/// can be unit-tested without driving real git into states it doesn't
+/// naturally produce. Success-path coverage stays in
+/// `tests/git_status.rs` against real git output.
 fn parse_porcelain_v2(out: &str) -> Result<Vec<GitFileStatus>, Error> {
     let mut ret = Vec::new();
     for line in out.lines() {
         let mut cur = line;
-        let mut next_arg = || {
+        let mut next_arg = || -> Result<&str, GitError> {
             if cur.is_empty() {
-                return None;
+                return Err(GitError::PorcelainParse {
+                    line: line.to_string(),
+                    reason: "truncated",
+                });
             }
-            let (ret, remain) = cur.split_once(' ').unwrap_or((cur, ""));
+            let (head, remain) = cur.split_once(' ').unwrap_or((cur, ""));
             cur = remain;
-            Some(ret)
+            Ok(head)
         };
-        match next_arg().unwrap() {
+        match next_arg()? {
             "1" => {
-                let xy_status = next_arg().unwrap();
-                let _submodule_state = next_arg().unwrap();
-                let _mode_head = next_arg().unwrap();
-                let _mode_index = next_arg().unwrap();
-                let _mode_worktree = next_arg().unwrap();
-                let _hash_head = next_arg().unwrap();
-                let _hash_index = next_arg().unwrap();
+                let xy_status = next_arg()?;
+                let _submodule_state = next_arg()?;
+                let _mode_head = next_arg()?;
+                let _mode_index = next_arg()?;
+                let _mode_worktree = next_arg()?;
+                let _hash_head = next_arg()?;
+                let _hash_index = next_arg()?;
                 let path = SafeRelativePath::from_relative_path(cur)?.into();
                 ret.push(status_from_xy(xy_status, path));
             }
             "2" => {
                 // Rename/copy: `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI>
                 // <X><score> <path>\t<origPath>`. We surface the new path.
-                let xy_status = next_arg().unwrap();
-                let _submodule_state = next_arg().unwrap();
-                let _mode_head = next_arg().unwrap();
-                let _mode_index = next_arg().unwrap();
-                let _mode_worktree = next_arg().unwrap();
-                let _hash_head = next_arg().unwrap();
-                let _hash_index = next_arg().unwrap();
-                let _rename_score = next_arg().unwrap();
+                let xy_status = next_arg()?;
+                let _submodule_state = next_arg()?;
+                let _mode_head = next_arg()?;
+                let _mode_index = next_arg()?;
+                let _mode_worktree = next_arg()?;
+                let _hash_head = next_arg()?;
+                let _hash_index = next_arg()?;
+                let _rename_score = next_arg()?;
                 let new_path = cur.split_once('\t').map(|(p, _)| p).unwrap_or(cur);
                 let path = SafeRelativePath::from_relative_path(new_path)?.into();
                 ret.push(status_from_xy(xy_status, path));
@@ -116,11 +118,11 @@ fn parse_porcelain_v2(out: &str) -> Result<Vec<GitFileStatus>, Error> {
                 // Unmerged: `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2>
                 // <h3> <path>`. We don't distinguish unmerged states; just
                 // surface it as Other so the user sees it.
-                let xy_status = next_arg().unwrap();
+                let xy_status = next_arg()?;
                 // 8 metadata fields between XY and path: sub, m1, m2, m3,
                 // mW, h1, h2, h3.
                 for _ in 0..8 {
-                    let _ = next_arg().unwrap();
+                    next_arg()?;
                 }
                 let path = SafeRelativePath::from_relative_path(cur)?.into();
                 ret.push(GitFileStatus::Other {
@@ -415,6 +417,26 @@ mod tests {
         assert!(
             matches!(err, Error::SafeRelativePath(_)),
             "expected SafeRelativePath error, got: {err:?}",
+        );
+    }
+
+    #[test]
+    fn parse_porcelain_v2_rejects_truncated_line() {
+        // A `1` line with only the XY column — real git always emits the
+        // full 7-metadata-column run before the path, so a short line
+        // means the producer wasn't actually git (or the output got
+        // mangled). Surface as a typed parse error rather than panicking.
+        let out = "1 .M\n";
+        let err = parse_porcelain_v2(out).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Git(GitError::PorcelainParse {
+                    reason: "truncated",
+                    ..
+                })
+            ),
+            "expected GitError::PorcelainParse, got: {err:?}",
         );
     }
 
