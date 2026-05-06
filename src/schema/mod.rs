@@ -6,10 +6,14 @@
 //! bundle; the schema shape is treated as part of the crate's public API and
 //! versioned under the same SemVer promise.
 
+pub mod error;
+
 use std::io::Write;
 
 use schemars::schema_for;
 use serde_json::json;
+
+pub use error::Error as SchemaError;
 
 use crate::{config::StoredConfig, error::Error, output::Event};
 
@@ -32,8 +36,8 @@ pub fn run(stdout: &mut dyn Write) -> Result<(), Error> {
         }
     });
 
-    let mut rendered = serde_json::to_vec_pretty(&bundle).map_err(Error::SchemaEmit)?;
+    let mut rendered = serde_json::to_vec_pretty(&bundle).map_err(SchemaError::Emit)?;
     rendered.push(b'\n');
-    stdout.write_all(&rendered).map_err(Error::SchemaWrite)?;
+    stdout.write_all(&rendered).map_err(SchemaError::Write)?;
     Ok(())
 }

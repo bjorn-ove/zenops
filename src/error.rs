@@ -86,12 +86,9 @@ pub enum Error {
     /// Wraps [`crate::config::ssh::SshError`].
     #[error(transparent)]
     Ssh(#[from] crate::config::ssh::SshError),
-    /// `serde_json` failed to serialise the bundled JSON Schema.
-    #[error("Failed to emit schema: {0}")]
-    SchemaEmit(#[source] serde_json::Error),
-    /// I/O error writing the serialised schema to stdout.
-    #[error("Failed to write schema to stdout: {0}")]
-    SchemaWrite(#[source] std::io::Error),
+    /// Wraps [`crate::schema::SchemaError`].
+    #[error(transparent)]
+    Schema(#[from] crate::schema::SchemaError),
     /// Wraps [`crate::config::pkg::Error`].
     #[error(transparent)]
     PkgError(#[from] crate::config::pkg::Error),
@@ -138,8 +135,7 @@ impl PartialEq for Error {
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::Init(l0), Self::Init(r0)) => l0 == r0,
             (Self::Ssh(l0), Self::Ssh(r0)) => l0 == r0,
-            (Self::SchemaEmit(l), Self::SchemaEmit(r)) => l.to_string() == r.to_string(),
-            (Self::SchemaWrite(l), Self::SchemaWrite(r)) => l.kind() == r.kind(),
+            (Self::Schema(l), Self::Schema(r)) => l == r,
             (Self::NoHomeDir, Self::NoHomeDir) => true,
             (Self::BrewProbeFailed(l0, l1), Self::BrewProbeFailed(r0, r1)) => {
                 l0 == r0 && l1.kind() == r1.kind()
@@ -181,10 +177,6 @@ mod tests {
         // which is what `PartialEq` compares for `Self::Shell(_)`.
         let sh = Shell::new().unwrap();
         cmd!(sh, "false").quiet().run().unwrap_err()
-    }
-
-    fn json_err() -> serde_json::Error {
-        serde_json::from_str::<serde_json::Value>("{").unwrap_err()
     }
 
     #[test]
@@ -374,19 +366,23 @@ mod tests {
     }
 
     #[test]
-    fn schema_emit_eq_compares_display_string() {
-        let a = Error::SchemaEmit(json_err());
-        let b = Error::SchemaEmit(json_err());
+    fn schema_wrap_eq_delegates_to_inner() {
+        let a = Error::Schema(crate::schema::SchemaError::Write(io(
+            io::ErrorKind::BrokenPipe,
+        )));
+        let b = Error::Schema(crate::schema::SchemaError::Write(io(
+            io::ErrorKind::BrokenPipe,
+        )));
+        let c = Error::Schema(crate::schema::SchemaError::Write(io(io::ErrorKind::Other)));
         assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]
-    fn schema_write_eq_compares_io_kind() {
-        let a = Error::SchemaWrite(io(io::ErrorKind::BrokenPipe));
-        let b = Error::SchemaWrite(io(io::ErrorKind::BrokenPipe));
-        let c = Error::SchemaWrite(io(io::ErrorKind::Other));
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn from_schema_error_wraps_in_schema_variant() {
+        let inner = crate::schema::SchemaError::Write(io(io::ErrorKind::BrokenPipe));
+        let e: Error = inner.into();
+        assert!(matches!(e, Error::Schema(_)));
     }
 
     #[test]
