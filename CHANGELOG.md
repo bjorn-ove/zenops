@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0] - 2026-05-07
+
+### Added
+- `zenops import` subcommand: take an existing on-disk `~/.config/<x>/` or `~/.<x>` config under zenops management. Copies the files into `configs/<key>/`, replaces the originals with symlinks, and appends a `[[pkg.<key>.configs]]` block to `config.toml`. Shows a typed plan and prompts for confirmation before mutating; supports `--pkg`, `--source`, `--brew`, `--no-install-hint`, `--yes`, and `--dry-run`.
+- New public modules `crate::import` (with `ImportError`), `crate::prompt` (with `PromptError`), and `crate::schema` (with `SchemaError`); plus new public types `crate::config::ConfigError`, `crate::config::shell::ConfigShellError`, and `crate::git::GitError`. Each owns the failure modes previously held as flat variants on `Error`.
+
+### Changed
+- **Breaking (library):** Continued the per-module error split. The variants `OpenDb`, `ParseDb`, `UnresolvedInput`, `TemplateUnterminated`, `PromptRead`, `PromptInterrupted`, `SchemaEmit`, `SchemaWrite`, and `BrewProbeFailed` have been removed from the crate-level `Error` enum and folded into wrapper variants `Error::Config(ConfigError)`, `Error::ConfigShell(ConfigShellError)`, `Error::Prompt(PromptError)`, and `Error::Schema(SchemaError)`. Callers matching on the old variants must match on the new wrapper or its inner enum.
+
+### Fixed
+- Malformed `git status --porcelain` output is now surfaced as a typed `Error::Git(GitError::PorcelainParse)` with the offending line and reason, instead of being silently misinterpreted as a clean entry.
+
 ## [0.13.0] - 2026-05-05
 
 ### Changed
