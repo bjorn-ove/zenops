@@ -60,6 +60,9 @@ pub enum Error {
     /// Wraps [`crate::init::InitError`].
     #[error(transparent)]
     Init(#[from] crate::init::InitError),
+    /// Wraps [`crate::import::ImportError`].
+    #[error(transparent)]
+    Import(#[from] crate::import::ImportError),
     /// Wraps [`crate::config::ssh::SshError`].
     #[error(transparent)]
     Ssh(#[from] crate::config::ssh::SshError),
@@ -96,6 +99,7 @@ impl PartialEq for Error {
             (Self::Prompt(l), Self::Prompt(r)) => l == r,
             (Self::Output(l0), Self::Output(r0)) => l0.to_string() == r0.to_string(),
             (Self::Init(l0), Self::Init(r0)) => l0 == r0,
+            (Self::Import(l0), Self::Import(r0)) => l0 == r0,
             (Self::Ssh(l0), Self::Ssh(r0)) => l0 == r0,
             (Self::Schema(l), Self::Schema(r)) => l == r,
             (Self::Git(l), Self::Git(r)) => l == r,

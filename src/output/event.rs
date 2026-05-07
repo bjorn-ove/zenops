@@ -182,6 +182,51 @@ pub struct InitSummary {
     pub pkg_count: usize,
 }
 
+/// Layout shape inferred from the imported path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportType {
+    /// `~/.config/<x>` — adds a `[[pkg.<key>.configs]]` entry of `type =
+    /// ".config"`.
+    DotConfig,
+    /// `~/.<x>` — adds a `[[pkg.<key>.configs]]` entry of `type = "home"`.
+    Home,
+}
+
+/// One entry skipped during `zenops import`. `path` is relative to the
+/// imported source root; `reason` is a stable snake_case tag (e.g.
+/// `"symlink"`, `"other"`) so JSON consumers can switch on it.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ImportSkip {
+    /// File or directory skipped, relative to the import source.
+    pub path: PathBuf,
+    /// Stable reason tag.
+    pub reason: SmolStr,
+}
+
+/// Outcome of `zenops import`. Emitted before the apply phase as a
+/// pre-change plan — the moves and symlinks themselves are reported via
+/// the regular [`AppliedAction`] stream.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ImportSummary {
+    /// Pkg key the import landed under (`[pkg.<key>]`).
+    pub pkg: SmolStr,
+    /// `true` when this import created the `[pkg.<key>]` block; `false`
+    /// when an existing pkg was extended with another `[[pkg.<key>.configs]]`.
+    pub created_pkg: bool,
+    /// Layout shape used for the new `[[pkg.<key>.configs]]` entry.
+    pub r#type: ImportType,
+    /// Where the files were imported from (absolute, post-canonicalize).
+    pub source: PathBuf,
+    /// Where the files now live in the zenops repo (absolute).
+    pub repo_dest: PathBuf,
+    /// Files moved into the repo, relative to `source`.
+    pub files: Vec<PathBuf>,
+    /// Entries skipped during the walk (existing symlinks, non-regular files).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<ImportSkip>,
+}
+
 /// Result of a successful `zenops init` bootstrap (no URL). Reports the
 /// fresh repo path plus whatever identity the user chose at the prompts;
 /// each identity field is `None` when the user accepted the empty default.

@@ -30,8 +30,8 @@ use serde::Serialize;
 
 pub use event::{
     AppliedAction, BootstrapSummary, DoctorCheck, DoctorSection, DoctorSeverity, FileStatus,
-    InitSummary, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus, ResolvedConfigFilePath,
-    Status, SymlinkStatus,
+    ImportSkip, ImportSummary, ImportType, InitSummary, PkgEntry, PkgEntryState, PkgInstallHints,
+    PkgStatus, ResolvedConfigFilePath, Status, SymlinkStatus,
 };
 pub use json::JsonOutput;
 pub use terminal::TerminalRenderer;
@@ -70,6 +70,9 @@ pub enum Event {
     InitSummary(InitSummary),
     /// Outcome of `zenops init` bootstrap (no URL).
     BootstrapSummary(BootstrapSummary),
+    /// Plan summary emitted by `zenops import` before the apply phase. The
+    /// per-file moves and symlinks are reported via [`AppliedAction`].
+    ImportSummary(ImportSummary),
 }
 
 /// The structured-output channel a command emits through. See the

@@ -222,6 +222,11 @@ impl ConfigFileDirs {
         &self.home
     }
 
+    /// Absolute path of `$HOME/.config`.
+    pub fn config(&self) -> &Path {
+        &self.config
+    }
+
     /// Absolute path of the cloned zenops config repo
     /// (`$HOME/.config/zenops`).
     pub fn zenops(&self) -> &Path {

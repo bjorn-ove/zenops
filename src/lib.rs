@@ -21,6 +21,7 @@ pub mod config_files;
 mod doctor;
 pub mod error;
 pub mod git;
+pub mod import;
 pub mod init;
 pub mod line_prompter;
 pub mod output;
@@ -179,6 +180,41 @@ pub enum Cmd {
         #[clap(long, short = 'y', requires = "apply")]
         yes: bool,
     },
+    /// Take an existing on-disk config under `~/.config/<x>/` or `~/.<x>`
+    /// into the zenops repo: copy the files into `configs/<key>/`, replace
+    /// the originals with symlinks, and append a `[[pkg.<key>.configs]]`
+    /// block to `config.toml`. Strict path classification — anything other
+    /// than the two supported shapes is rejected.
+    Import {
+        /// Path to take over. Absolute, cwd-relative, or shell-expanded
+        /// (e.g. `~/.config/foo`). Must canonicalize to either
+        /// `~/.config/<x>` or `~/.<x>`.
+        #[clap(value_name = "PATH")]
+        path: std::path::PathBuf,
+        /// Override the derived pkg key. Defaults to `<x>` (with the
+        /// leading dot stripped for `~/.<x>` shapes).
+        #[clap(long)]
+        pkg: Option<String>,
+        /// Override the in-repo destination, relative to `~/.config/zenops`.
+        /// Defaults to `configs/<pkg-key>`.
+        #[clap(long)]
+        source: Option<String>,
+        /// Brew package(s) to record under `install_hint.brew.packages`.
+        /// Repeatable. Required for new pkgs unless `--no-install-hint`.
+        #[clap(long, value_name = "PKG")]
+        brew: Vec<String>,
+        /// For new pkgs, write `install_hint.brew.packages = []` instead
+        /// of prompting for a brew package.
+        #[clap(long, conflicts_with = "brew")]
+        no_install_hint: bool,
+        /// Accept every prompt with its default; required to run without
+        /// a TTY when prompts would otherwise be needed.
+        #[clap(long, short = 'y', conflicts_with = "dry_run")]
+        yes: bool,
+        /// Show the planned import without writing anything.
+        #[clap(long, short = 'n')]
+        dry_run: bool,
+    },
     /// Diagnose the local environment: config dir, git, shell, package
     /// manager, and package health. Read-only; keeps running even when
     /// `config.toml` is missing or fails to parse, so it stays useful on a
@@ -261,6 +297,26 @@ pub fn real_main(
             branch.as_deref(),
             *apply,
             *yes,
+            dirs,
+            args,
+            output,
+        ),
+        Cmd::Import {
+            path,
+            pkg,
+            source,
+            brew,
+            no_install_hint,
+            yes,
+            dry_run,
+        } => import::run(
+            path,
+            pkg.as_deref(),
+            source.as_deref(),
+            brew,
+            *no_install_hint,
+            *yes,
+            *dry_run,
             dirs,
             args,
             output,

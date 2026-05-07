@@ -14,8 +14,8 @@ use crate::{ansi::Styler, config_files::ConfigFilePath, git::GitFileStatus};
 
 use super::{
     AppliedAction, BootstrapSummary, DoctorCheck, DoctorSection, DoctorSeverity, Event, FileStatus,
-    InitSummary, Output, OutputError, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus,
-    ResolvedConfigFilePath, Status, SymlinkStatus,
+    ImportSummary, ImportType, InitSummary, Output, OutputError, PkgEntry, PkgEntryState,
+    PkgInstallHints, PkgStatus, ResolvedConfigFilePath, Status, SymlinkStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,6 +656,39 @@ impl TerminalRenderer<'_> {
         Ok(())
     }
 
+    fn render_import_summary(&mut self, summary: &ImportSummary) -> Result<(), OutputError> {
+        let kind = match summary.r#type {
+            ImportType::DotConfig => ".config",
+            ImportType::Home => "home",
+        };
+        let action = if summary.created_pkg {
+            "Imported new pkg"
+        } else {
+            "Extended pkg"
+        };
+        writeln!(
+            self.out,
+            "{action} `{}` ({kind}): {} file(s) moved into {}",
+            summary.pkg,
+            summary.files.len(),
+            summary.repo_dest.display(),
+        )?;
+        for skip in &summary.skipped {
+            writeln!(
+                self.out,
+                "  skipped {} ({})",
+                skip.path.display(),
+                skip.reason,
+            )?;
+        }
+        writeln!(
+            self.out,
+            "Next: review `git diff` in ~/.config/zenops, then `zenops repo commit -m \"import: add pkg.{}\"`",
+            summary.pkg,
+        )?;
+        Ok(())
+    }
+
     fn render_bootstrap_summary(&mut self, summary: &BootstrapSummary) -> Result<(), OutputError> {
         writeln!(
             self.out,
@@ -765,6 +798,10 @@ impl Output for TerminalRenderer<'_> {
             Event::BootstrapSummary(summary) => {
                 self.enter(Pending::None)?;
                 self.render_bootstrap_summary(&summary)
+            }
+            Event::ImportSummary(summary) => {
+                self.enter(Pending::None)?;
+                self.render_import_summary(&summary)
             }
         }
     }
