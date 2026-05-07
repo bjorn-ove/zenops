@@ -193,38 +193,101 @@ pub enum ImportType {
     Home,
 }
 
-/// One entry skipped during `zenops import`. `path` is relative to the
-/// imported source root; `reason` is a stable snake_case tag (e.g.
-/// `"symlink"`, `"other"`) so JSON consumers can switch on it.
+/// One filesystem-side intent in an [`ImportPlan`]. Each variant
+/// describes a single decision the apply phase will (or will not) act on;
+/// new variants land here as `import` grows new shapes (per-file
+/// include/exclude, replacing an already-managed file, etc.) without
+/// reshaping the surrounding plan/event flow.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub struct ImportSkip {
-    /// File or directory skipped, relative to the import source.
-    pub path: PathBuf,
-    /// Stable reason tag.
-    pub reason: SmolStr,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImportFileAction {
+    /// Move a file into the zenops repo and replace the original with a
+    /// symlink pointing at the new location. `rel` is the path relative
+    /// to [`ImportPlan::source`]; the in-repo destination is
+    /// [`ImportPlan::repo_dest`] joined with the same tail.
+    MoveAndSymlink {
+        /// Path relative to the imported source root.
+        rel: PathBuf,
+    },
+    /// Encountered during the walk but intentionally not touched (existing
+    /// symlink, non-regular file, future: user-excluded). `path` is
+    /// relative to [`ImportPlan::source`]; `reason` is a stable
+    /// snake_case tag JSON consumers can switch on.
+    Skip {
+        /// Path relative to the imported source root.
+        path: PathBuf,
+        /// Stable reason tag (`"symlink"`, `"other"`, …).
+        reason: SmolStr,
+    },
 }
 
-/// Outcome of `zenops import`. Emitted before the apply phase as a
-/// pre-change plan — the moves and symlinks themselves are reported via
-/// the regular [`AppliedAction`] stream.
+/// One config.toml-side intent in an [`ImportPlan`]. Same extensibility
+/// model as [`ImportFileAction`]: future shapes (extending an existing
+/// configs entry, replacing one outright, …) land as new variants without
+/// touching the surrounding flow.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub struct ImportSummary {
-    /// Pkg key the import landed under (`[pkg.<key>]`).
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ImportTomlChange {
+    /// Insert a new `[pkg.<key>]` block. `block_preview` is a copy-paste
+    /// representation of the lines the apply phase will write.
+    CreatePkg {
+        /// Pkg key the new block lives under.
+        pkg: SmolStr,
+        /// Brew packages baked into the new block's `install_hint` (empty
+        /// when the user passed `--no-install-hint`).
+        brew_packages: Vec<String>,
+        /// TOML snippet representing the new block (header + body).
+        block_preview: String,
+    },
+    /// Append a new `[[pkg.<key>.configs]]` table entry. `entry_preview`
+    /// is the body of the entry (the `type`/`source`/`symlinks`/… fields)
+    /// without the `[[pkg.<key>.configs]]` header line.
+    AppendConfigsEntry {
+        /// Pkg key the entry is appended under.
+        pkg: SmolStr,
+        /// TOML snippet representing the entry's body.
+        entry_preview: String,
+    },
+}
+
+/// Pre-apply plan for `zenops import`. Emitted before any mutation runs
+/// so the user (and JSON consumers) can review every intended change
+/// before the confirmation prompt.
+///
+/// `file_actions` and `toml_changes` are lists of typed actions so new
+/// import shapes (single-file extend, reconcile-existing-entry, …) can
+/// land as new variants without restructuring the event itself.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ImportPlan {
+    /// Pkg key the import will land under (`[pkg.<key>]`).
     pub pkg: SmolStr,
-    /// `true` when this import created the `[pkg.<key>]` block; `false`
-    /// when an existing pkg was extended with another `[[pkg.<key>.configs]]`.
+    /// `true` when this plan creates the `[pkg.<key>]` block; `false`
+    /// when extending an existing pkg.
     pub created_pkg: bool,
-    /// Layout shape used for the new `[[pkg.<key>.configs]]` entry.
+    /// Layout shape that drove path classification.
     pub r#type: ImportType,
-    /// Where the files were imported from (absolute, post-canonicalize).
+    /// Where the files are being imported from (absolute,
+    /// post-canonicalize). Per-file actions list paths relative to this.
     pub source: PathBuf,
-    /// Where the files now live in the zenops repo (absolute).
+    /// Where the files will live in the zenops repo (absolute). Per-file
+    /// actions list repo-side paths relative to this.
     pub repo_dest: PathBuf,
-    /// Files moved into the repo, relative to `source`.
-    pub files: Vec<PathBuf>,
-    /// Entries skipped during the walk (existing symlinks, non-regular files).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub skipped: Vec<ImportSkip>,
+    /// Filesystem-side intents (one per source file, including skips).
+    pub file_actions: Vec<ImportFileAction>,
+    /// `config.toml`-side intents.
+    pub toml_changes: Vec<ImportTomlChange>,
+}
+
+/// Post-apply confirmation event for `zenops import`. Emitted after
+/// `config.toml` has been updated and the filesystem moves have landed,
+/// so the renderer can print a "next steps" hint that wouldn't make
+/// sense pre-apply (or under `--dry-run`).
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct ImportApplied {
+    /// Pkg key the import landed under.
+    pub pkg: SmolStr,
 }
 
 /// Result of a successful `zenops init` bootstrap (no URL). Reports the

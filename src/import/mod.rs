@@ -30,7 +30,10 @@ use crate::{
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
     line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
-    output::{AppliedAction, Event, ImportSkip, ImportSummary, ImportType, Output},
+    output::{
+        AppliedAction, Event, ImportApplied, ImportFileAction, ImportPlan, ImportTomlChange,
+        ImportType, Output,
+    },
 };
 
 /// Entry point for `zenops import`. Builds a [`LinePrompter`] when one is
@@ -115,16 +118,12 @@ pub fn run_with_prompter(
         &mut prompter,
     )?;
 
-    let summary = ImportSummary {
-        pkg: plan.pkg_key.clone(),
+    output.push(Event::ImportPlan(plan_to_event(
+        &plan,
         created_pkg,
-        r#type: plan.r#type,
-        source: plan.source.clone(),
-        repo_dest: plan.repo_dest.clone(),
-        files: plan.files.iter().map(|f| f.rel.clone()).collect(),
-        skipped: plan.skipped.clone(),
-    };
-    output.push(Event::ImportSummary(summary))?;
+        no_install_hint,
+        &brew_packages,
+    )))?;
 
     if dry_run {
         return Ok(());
@@ -132,7 +131,7 @@ pub fn run_with_prompter(
 
     if !yes
         && let Some(p) = prompter.as_mut()
-        && !confirm(*p, "Apply import?")?
+        && !confirm(*p, "Apply this plan?")?
     {
         return Err(ImportError::Aborted.into());
     }
@@ -147,6 +146,10 @@ pub fn run_with_prompter(
     )?;
 
     fs::write(&cfg_path, doc.to_string()).map_err(|e| Error::from(ImportError::Io(cfg_path, e)))?;
+
+    output.push(Event::ImportApplied(ImportApplied {
+        pkg: plan.pkg_key.clone(),
+    }))?;
 
     Ok(())
 }
@@ -175,9 +178,21 @@ struct Plan {
     /// `repo_dest.join(repo_rel)`.
     files: Vec<PlannedFile>,
     /// Entries skipped during the walk.
-    skipped: Vec<ImportSkip>,
+    skipped: Vec<SkippedEntry>,
     /// Layout-specific metadata used when rendering the TOML entry.
     toml: TomlPlan,
+}
+
+/// One entry the source walk decided not to touch (existing symlink,
+/// non-regular file). Internal counterpart to [`ImportFileAction::Skip`];
+/// we keep this internal type so changes to the wire variant don't ripple
+/// through the planner.
+#[derive(Debug, Clone)]
+struct SkippedEntry {
+    /// Path relative to the imported source root.
+    path: PathBuf,
+    /// Stable reason tag, lifted onto the wire variant verbatim.
+    reason: SmolStr,
 }
 
 struct PlannedFile {
@@ -451,7 +466,7 @@ struct CollectedEntry {
 fn walk_dir(
     abs: &Path,
     files: &mut Vec<CollectedEntry>,
-    skipped: &mut Vec<ImportSkip>,
+    skipped: &mut Vec<SkippedEntry>,
     rel_prefix: &Path,
 ) -> Result<(), Error> {
     let entries = fs::read_dir(abs).map_err(|e| ImportError::Io(abs.to_path_buf(), e))?;
@@ -467,7 +482,7 @@ fn walk_dir(
             .file_type()
             .map_err(|e| ImportError::Io(entry.path(), e))?;
         if meta.is_symlink() {
-            skipped.push(ImportSkip {
+            skipped.push(SkippedEntry {
                 path: rel,
                 reason: SmolStr::new_static("symlink"),
             });
@@ -479,7 +494,7 @@ fn walk_dir(
         } else if meta.is_dir() {
             walk_dir(&entry.path(), files, skipped, &rel)?;
         } else {
-            skipped.push(ImportSkip {
+            skipped.push(SkippedEntry {
                 path: rel,
                 reason: SmolStr::new_static("other"),
             });
@@ -763,37 +778,8 @@ fn update_doc(
         .as_table_mut()
         .expect("pkg.<key> should be a table");
 
-    if created_pkg && !no_install_hint {
-        let install_hint = key_table
-            .entry("install_hint")
-            .or_insert_with(|| Item::Table(Table::new()))
-            .as_table_mut()
-            .expect("install_hint should be a table");
-        let brew_t = install_hint
-            .entry("brew")
-            .or_insert_with(|| Item::Table(Table::new()))
-            .as_table_mut()
-            .expect("brew should be a table");
-        let mut arr = Array::new();
-        for pkg in brew {
-            arr.push(pkg.as_str());
-        }
-        brew_t["packages"] = value(arr);
-    } else if created_pkg && no_install_hint {
-        // The deserializer requires install_hint, so emit an explicit empty
-        // record. The user opted into "no install_hint info" by passing the
-        // flag, so this is honest.
-        let install_hint = key_table
-            .entry("install_hint")
-            .or_insert_with(|| Item::Table(Table::new()))
-            .as_table_mut()
-            .expect("install_hint should be a table");
-        let brew_t = install_hint
-            .entry("brew")
-            .or_insert_with(|| Item::Table(Table::new()))
-            .as_table_mut()
-            .expect("brew should be a table");
-        brew_t["packages"] = value(Array::new());
+    if created_pkg {
+        populate_install_hint(key_table, brew, no_install_hint);
     }
 
     let configs_item = key_table
@@ -803,6 +789,40 @@ fn update_doc(
         .as_array_of_tables_mut()
         .expect("configs should be an array of tables");
 
+    configs.push(build_configs_entry_table(plan));
+
+    Ok(())
+}
+
+/// Populate `key_table` with the `install_hint` sub-table for a freshly-
+/// created `[pkg.<key>]` block. Always writes a `packages` array so the
+/// deserializer's required-field invariant holds; the array is empty under
+/// `--no-install-hint`. Pure helper shared by [`update_doc`] and the
+/// TOML-preview path so the displayed plan matches the eventual write.
+fn populate_install_hint(key_table: &mut Table, brew: &[String], no_install_hint: bool) {
+    let install_hint = key_table
+        .entry("install_hint")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("install_hint should be a table");
+    let brew_t = install_hint
+        .entry("brew")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("brew should be a table");
+    let mut arr = Array::new();
+    if !no_install_hint {
+        for pkg in brew {
+            arr.push(pkg.as_str());
+        }
+    }
+    brew_t["packages"] = value(arr);
+}
+
+/// Build the `[[pkg.<key>.configs]]` entry table. Pure helper used by
+/// both [`update_doc`] (writes into the live document) and the
+/// TOML-preview path (renders the entry body for the plan event).
+fn build_configs_entry_table(plan: &Plan) -> Table {
     let mut entry = Table::new();
     match &plan.toml {
         TomlPlan::DotConfig {
@@ -831,9 +851,98 @@ fn update_doc(
             entry["symlinks"] = value(arr);
         }
     }
-    configs.push(entry);
+    entry
+}
 
-    Ok(())
+/// Translate the internal [`Plan`] into the wire-level [`ImportPlan`]
+/// event broadcast through [`Output`]. The two enums on
+/// [`ImportPlan`]'s body — [`ImportFileAction`] and
+/// [`ImportTomlChange`] — are extension points: as `import` grows new
+/// shapes (per-file include/exclude, reconcile-against-existing, …)
+/// new variants land here and in the renderer without touching the
+/// surrounding flow.
+fn plan_to_event(
+    plan: &Plan,
+    created_pkg: bool,
+    no_install_hint: bool,
+    brew_packages: &[String],
+) -> ImportPlan {
+    let mut file_actions = Vec::with_capacity(plan.files.len() + plan.skipped.len());
+    for f in &plan.files {
+        file_actions.push(ImportFileAction::MoveAndSymlink { rel: f.rel.clone() });
+    }
+    for s in &plan.skipped {
+        file_actions.push(ImportFileAction::Skip {
+            path: s.path.clone(),
+            reason: s.reason.clone(),
+        });
+    }
+
+    let mut toml_changes = Vec::new();
+    if created_pkg {
+        toml_changes.push(ImportTomlChange::CreatePkg {
+            pkg: plan.pkg_key.clone(),
+            brew_packages: brew_packages.to_vec(),
+            block_preview: render_pkg_block_preview(&plan.pkg_key, brew_packages, no_install_hint),
+        });
+    }
+    toml_changes.push(ImportTomlChange::AppendConfigsEntry {
+        pkg: plan.pkg_key.clone(),
+        entry_preview: render_configs_entry_preview(plan),
+    });
+
+    ImportPlan {
+        pkg: plan.pkg_key.clone(),
+        created_pkg,
+        r#type: plan.r#type,
+        source: plan.source.clone(),
+        repo_dest: plan.repo_dest.clone(),
+        file_actions,
+        toml_changes,
+    }
+}
+
+/// Copy-paste-ready snippet showing the new `[pkg.<key>]` block. The
+/// preview uses the same `populate_install_hint` helper that
+/// [`update_doc`] runs, so the displayed body is byte-equivalent to
+/// what eventually lands. Intermediate `install_hint` /
+/// `install_hint.brew` sub-tables are marked implicit so they collapse
+/// into a single dotted-key line, which matches the spirit of how the
+/// merged document reads even if the live `update_doc` write keeps the
+/// sub-table headers (those exist anyway in the on-disk file).
+fn render_pkg_block_preview(pkg_key: &str, brew: &[String], no_install_hint: bool) -> String {
+    let mut doc = DocumentMut::new();
+    let pkg_root = doc
+        .entry("pkg")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("pkg should be a table");
+    pkg_root.set_implicit(true);
+    let key_table = pkg_root
+        .entry(pkg_key)
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("pkg.<key> should be a table");
+    populate_install_hint(key_table, brew, no_install_hint);
+    if let Some(ih) = key_table
+        .get_mut("install_hint")
+        .and_then(Item::as_table_mut)
+    {
+        ih.set_implicit(true);
+        if let Some(brew_t) = ih.get_mut("brew").and_then(Item::as_table_mut) {
+            brew_t.set_implicit(true);
+        }
+    }
+    doc.to_string().trim_end_matches('\n').to_string()
+}
+
+/// Body of the new `[[pkg.<key>.configs]]` entry, exactly as
+/// [`update_doc`] would emit it. The header line itself is supplied by
+/// the renderer so the snippet can be indented under a "configs entry"
+/// heading without re-formatting.
+fn render_configs_entry_preview(plan: &Plan) -> String {
+    let entry = build_configs_entry_table(plan);
+    entry.to_string().trim_end_matches('\n').to_string()
 }
 
 #[cfg(test)]

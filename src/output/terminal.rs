@@ -14,8 +14,9 @@ use crate::{ansi::Styler, config_files::ConfigFilePath, git::GitFileStatus};
 
 use super::{
     AppliedAction, BootstrapSummary, DoctorCheck, DoctorSection, DoctorSeverity, Event, FileStatus,
-    ImportSummary, ImportType, InitSummary, Output, OutputError, PkgEntry, PkgEntryState,
-    PkgInstallHints, PkgStatus, ResolvedConfigFilePath, Status, SymlinkStatus,
+    ImportApplied, ImportFileAction, ImportPlan, ImportTomlChange, ImportType, InitSummary, Output,
+    OutputError, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus, ResolvedConfigFilePath,
+    Status, SymlinkStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,35 +657,83 @@ impl TerminalRenderer<'_> {
         Ok(())
     }
 
-    fn render_import_summary(&mut self, summary: &ImportSummary) -> Result<(), OutputError> {
-        let kind = match summary.r#type {
+    fn render_import_plan(&mut self, plan: &ImportPlan) -> Result<(), OutputError> {
+        let kind = match plan.r#type {
             ImportType::DotConfig => ".config",
             ImportType::Home => "home",
         };
-        let action = if summary.created_pkg {
-            "Imported new pkg"
+        let header_action = if plan.created_pkg {
+            "import new pkg"
         } else {
-            "Extended pkg"
+            "extend pkg"
         };
         writeln!(
             self.out,
-            "{action} `{}` ({kind}): {} file(s) moved into {}",
-            summary.pkg,
-            summary.files.len(),
-            summary.repo_dest.display(),
+            "Plan: {header_action} `{pkg}` ({kind})",
+            pkg = plan.pkg,
         )?;
-        for skip in &summary.skipped {
+        writeln!(self.out, "  source:    {}", plan.source.display())?;
+        writeln!(self.out, "  repo dest: {}", plan.repo_dest.display())?;
+
+        if !plan.file_actions.is_empty() {
+            writeln!(self.out)?;
+            writeln!(self.out, "File actions ({}):", plan.file_actions.len(),)?;
+            for action in &plan.file_actions {
+                self.render_file_action(action)?;
+            }
+        }
+
+        if !plan.toml_changes.is_empty() {
+            writeln!(self.out)?;
             writeln!(
                 self.out,
-                "  skipped {} ({})",
-                skip.path.display(),
-                skip.reason,
+                "config.toml changes ({}):",
+                plan.toml_changes.len(),
             )?;
+            for change in &plan.toml_changes {
+                self.render_toml_change(change)?;
+            }
         }
+        Ok(())
+    }
+
+    fn render_file_action(&mut self, action: &ImportFileAction) -> Result<(), OutputError> {
+        match action {
+            ImportFileAction::MoveAndSymlink { rel } => {
+                writeln!(self.out, "  move + symlink   {}", rel.display(),)?
+            }
+            ImportFileAction::Skip { path, reason } => writeln!(
+                self.out,
+                "  skip             {}  ({reason})",
+                path.display(),
+            )?,
+        }
+        Ok(())
+    }
+
+    fn render_toml_change(&mut self, change: &ImportTomlChange) -> Result<(), OutputError> {
+        match change {
+            ImportTomlChange::CreatePkg { block_preview, .. } => {
+                writeln!(self.out, "  add pkg block:")?;
+                for line in block_preview.lines() {
+                    writeln!(self.out, "      {line}")?;
+                }
+            }
+            ImportTomlChange::AppendConfigsEntry { pkg, entry_preview } => {
+                writeln!(self.out, "  append [[pkg.{pkg}.configs]]:")?;
+                for line in entry_preview.lines() {
+                    writeln!(self.out, "      {line}")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn render_import_applied(&mut self, applied: &ImportApplied) -> Result<(), OutputError> {
         writeln!(
             self.out,
             "Next: review `git diff` in ~/.config/zenops, then `zenops repo commit -m \"import: add pkg.{}\"`",
-            summary.pkg,
+            applied.pkg,
         )?;
         Ok(())
     }
@@ -799,9 +848,13 @@ impl Output for TerminalRenderer<'_> {
                 self.enter(Pending::None)?;
                 self.render_bootstrap_summary(&summary)
             }
-            Event::ImportSummary(summary) => {
+            Event::ImportPlan(plan) => {
                 self.enter(Pending::None)?;
-                self.render_import_summary(&summary)
+                self.render_import_plan(&plan)
+            }
+            Event::ImportApplied(applied) => {
+                self.enter(Pending::None)?;
+                self.render_import_applied(&applied)
             }
         }
     }

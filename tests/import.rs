@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 
 use similar_asserts::assert_eq;
-use zenops::{Cmd, error::Error, import::ImportError, output::ImportType};
+use zenops::{
+    Cmd,
+    error::Error,
+    import::ImportError,
+    output::{ImportFileAction, ImportType},
+};
 use zenops_safe_relative_path::srpath;
 
 use test_env::{Entry, TestEnv};
@@ -332,21 +337,26 @@ fn import_skips_existing_symlinks_in_source() {
         env.resolve_path(srpath!("home/bob/elsewhere/cache.dat")),
     );
 
-    // Summary mentions the skip.
-    let summary = out
+    // Plan mentions the skip.
+    let plan = out
         .entries
         .iter()
         .find_map(|e| match e {
-            Entry::Import(s) => Some(s),
+            Entry::ImportPlan(p) => Some(p),
             _ => None,
         })
-        .expect("expected ImportSummary");
-    assert_eq!(summary.skipped.len(), 1);
-    assert_eq!(
-        summary.skipped[0].path,
-        std::path::PathBuf::from("cache.dat")
-    );
-    assert_eq!(summary.skipped[0].reason.as_str(), "symlink");
+        .expect("expected ImportPlan");
+    let skips: Vec<_> = plan
+        .file_actions
+        .iter()
+        .filter_map(|a| match a {
+            ImportFileAction::Skip { path, reason } => Some((path, reason)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(skips.len(), 1);
+    assert_eq!(*skips[0].0, std::path::PathBuf::from("cache.dat"));
+    assert_eq!(skips[0].1.as_str(), "symlink");
 
     // config.toml only lists the regular file.
     let cfg = read_config(&env);
@@ -459,17 +469,24 @@ fn import_dry_run_writes_nothing() {
             .unwrap();
     assert_eq!(after, original_config_text);
 
-    // ImportSummary still emitted so JSON consumers see the plan.
-    let summary = out
+    // ImportPlan still emitted so JSON consumers see the plan; no
+    // ImportApplied event since dry-run skips the apply phase.
+    let plan = out
         .entries
         .iter()
         .find_map(|e| match e {
-            Entry::Import(s) => Some(s),
+            Entry::ImportPlan(p) => Some(p),
             _ => None,
         })
-        .expect("expected ImportSummary");
-    assert_eq!(summary.r#type, ImportType::DotConfig);
-    assert_eq!(summary.pkg.as_str(), "myapp");
+        .expect("expected ImportPlan");
+    assert_eq!(plan.r#type, ImportType::DotConfig);
+    assert_eq!(plan.pkg.as_str(), "myapp");
+    assert!(
+        out.entries
+            .iter()
+            .all(|e| !matches!(e, Entry::ImportApplied(_))),
+        "dry-run should not emit ImportApplied",
+    );
 }
 
 #[test]

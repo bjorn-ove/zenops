@@ -13,8 +13,8 @@ use zenops::{
     config_files::{ConfigFileDirs, ConfigFilePath},
     error::Error,
     output::{
-        AppliedAction, BootstrapSummary, DoctorCheck, Event, ImportSummary, InitSummary,
-        OutputError, PkgEntry, ResolvedConfigFilePath, Status,
+        AppliedAction, BootstrapSummary, DoctorCheck, Event, ImportApplied, ImportPlan,
+        InitSummary, OutputError, PkgEntry, ResolvedConfigFilePath, Status,
     },
     pkg_list,
 };
@@ -397,7 +397,8 @@ pub enum Entry {
     Doctor(DoctorCheck),
     Init(InitSummary),
     Bootstrap(BootstrapSummary),
-    Import(ImportSummary),
+    ImportPlan(ImportPlan),
+    ImportApplied(ImportApplied),
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -414,7 +415,8 @@ impl zenops::output::Output for Output {
             Event::DoctorCheck(check) => Entry::Doctor(check),
             Event::InitSummary(summary) => Entry::Init(summary),
             Event::BootstrapSummary(summary) => Entry::Bootstrap(summary),
-            Event::ImportSummary(summary) => Entry::Import(summary),
+            Event::ImportPlan(plan) => Entry::ImportPlan(plan),
+            Event::ImportApplied(applied) => Entry::ImportApplied(applied),
         });
         Ok(())
     }
