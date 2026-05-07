@@ -51,8 +51,8 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
         }))?;
     }
 
-    let home = config.home();
-    let configured_shell = config.shell();
+    let ctx = config.host_context(None)?;
+    let conditions = config.conditions();
     let needles: Vec<String> = opts.pattern.iter().map(|p| p.to_lowercase()).collect();
     // Entries carry (display_label, key, pkg). The map key stays distinct
     // from the display label so JSON consumers can correlate even when
@@ -60,10 +60,7 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
     let mut entries: Vec<(&str, &smol_str::SmolStr, &PkgConfig)> = Vec::new();
 
     for (key, pkg) in config.pkgs() {
-        if (opts.all || !pkg.is_disabled())
-            && pkg.supports_current_os()?
-            && pkg.supports_shell(configured_shell)
-        {
+        if (opts.all || !pkg.is_disabled()) && pkg.evaluate_when(conditions, &ctx)? {
             let label = pkg.name.as_deref().unwrap_or(key.as_str());
             if needles.is_empty()
                 || needles.iter().any(|n| {
@@ -81,15 +78,14 @@ pub fn push(config: &Config, opts: Options, output: &mut dyn Output) -> Result<(
     for (label, key, pkg) in entries {
         let state = if pkg.is_disabled() {
             PkgEntryState::Disabled
-        } else if pkg.is_installed(home, config.system_inputs())? {
+        } else if pkg.is_installed(conditions, &ctx)? {
             PkgEntryState::Installed
         } else {
             PkgEntryState::Missing
         };
 
         let matched_detect = if opts.verbose {
-            pkg.matched_detect(home, config.system_inputs())?
-                .map(|d| d.to_string())
+            pkg.matched_detect(conditions, &ctx)?.map(|d| d.to_string())
         } else {
             None
         };

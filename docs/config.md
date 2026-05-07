@@ -7,6 +7,7 @@ The top-level sections are:
 
 - [`[user]`](#user) — identity (name, email)
 - [`[shell]`](#shell) — shell environment, aliases
+- [`[conditions]`](#conditions) — named host predicates referenced by `pkg.*.when`
 - [`[pkg.*]`](#pkg) — package definitions (detect, install_hint, shell hooks, dotfiles)
 - [`[ssh]`](#ssh) — allowed signers for SSH commit signing
 - [`[git]`](#git) — `~/.gitconfig` management, including signing
@@ -63,6 +64,60 @@ Per-pkg shell hooks (env init, login init, interactive init) are configured unde
 
 ---
 
+## `[conditions]`
+
+Named host predicates. Defined once under `[conditions]`, referenced from a
+pkg's `when` field (or from another condition) by name. Lets you express
+"this pkg only applies when X" without repeating the predicate at every
+use site.
+
+```toml
+[conditions]
+work_host  = { hostname = "^work-.*" }
+work_macos = { all = ["macos", "work_host"] }   # built-in `macos` + user-defined `work_host`
+not_zsh    = { not = "zsh" }
+```
+
+Each entry is a TOML table with **exactly one** of the following keys —
+the key both names the predicate kind and carries its argument, so an
+entry self-documents what it checks. Unknown keys, multiple keys, and
+empty tables are rejected at load.
+
+| Key           | Argument                              | Matches when… |
+| ------------- | ------------------------------------- | ------------- |
+| `os`          | `"linux"` or `"macos"`                | the current OS matches |
+| `shell`       | `"bash"` or `"zsh"`                   | the configured `[shell].type` matches |
+| `hostname`    | regex (string)                        | the regex matches the host's hostname |
+| `file_exists` | path (with `~` and `${...}` support)  | the path exists on disk |
+| `all`         | array of names or inline conditions   | every child matches |
+| `any`         | array of names or inline conditions   | some child matches |
+| `not`         | a name or inline condition            | the child does not match |
+
+Children of `all` / `any` / `not` (and the value of `pkg.*.when`) are
+either a **string** (a name from `[conditions]`) or an **inline table**
+(an unnamed condition).
+
+### Built-in conditions
+
+These names are always available and can be referenced without declaring
+them. User entries with the same name override.
+
+| Name    | Equivalent to              |
+| ------- | -------------------------- |
+| `linux` | `{ os = "linux" }`         |
+| `macos` | `{ os = "macos" }`         |
+| `bash`  | `{ shell = "bash" }`       |
+| `zsh`   | `{ shell = "zsh" }`        |
+
+### Validation
+
+References resolve at load time: an unknown name or a cycle in the
+reference graph fails the load with a message naming the offender.
+Hostname regexes are compiled at load too — a malformed pattern fails
+loudly rather than at first evaluation.
+
+---
+
 ## `[pkg.*]`
 
 A pkg is a tool zenops knows about: how to install it, how to detect whether
@@ -84,14 +139,13 @@ binary = "hx"
 
 | Field              | Type                              | Default | Notes |
 | ------------------ | --------------------------------- | ------- | ----- |
-| `name`             | string                            | map key | Display label. Useful when two OS-gated entries (e.g. `brew-linux` / `brew-macos`) should share a single user-facing name. |
+| `name`             | string                            | map key | Display label. Useful when two condition-gated entries (e.g. `brew-linux` / `brew-macos`) should share a single user-facing name. |
 | `description`      | string                            | none    | Free-form human description. |
 | `enable`           | `"on"` / `"detect"` / `"disabled"` | `"on"`  | See [enable states](#enable-states). |
+| `when`             | condition name or inline table    | none    | Host-level gate: a name from `[conditions]` or an inline condition. Absent means "applies on every host". See [conditions](#conditions). |
 | `detect`           | detect strategy                   | none    | See [detect strategies](#detect-strategies). |
 | `install_hint`     | object                            | **required** | See [install hints](#install-hints). |
 | `inputs`           | map of string → string            | `{}`    | Template variables scoped to this pkg. Shadow system inputs with the same key. See [template variables](#template-variables). |
-| `supported_os`     | array of `"linux"` / `"macos"`   | `[]`    | Empty means any OS. Otherwise the pkg is treated as not-installed on OSes not in the list. |
-| `supported_shells` | array of `"bash"` / `"zsh"`      | `[]`    | Empty means any shell. Relevance filter — hides the pkg's init actions when the user's configured shell isn't listed. Doesn't affect `is_installed`. |
 | `shell`            | object                            | `{}`    | Shell init hooks. See [shell hooks](#shell-hooks). |
 | `configs`          | array                             | `[]`    | Dotfiles owned by this pkg. See [configs](#configs). |
 
@@ -113,9 +167,9 @@ installed — either detect matches on the current host, or there's no
 ### Detect strategies
 
 `detect` expresses "is this pkg present on this host?" with four kinds.
-Every strategy accepts an optional `os` array that short-circuits the check
-to "not installed" when the current OS isn't listed — useful for composing
-OS-specific checks inside combinators.
+Host-level gating (OS, shell, hostname, …) belongs on the pkg's `when`
+field; `detect` is purely about whether the pkg is installed on the host
+the check is running against.
 
 **`which`** — binary is on `PATH`:
 
@@ -169,9 +223,6 @@ of = [
 ]
 ```
 
-OS gating nests naturally — a child strategy gated with `os = ["linux"]`
-inside an `any` participates only on Linux.
-
 ### Install hints
 
 `install_hint` tells `zenops pkg` (and the "<pkg> is missing" warning) how
@@ -194,8 +245,9 @@ under `install_hint`.
 ### Shell hooks
 
 Shell init actions, grouped by stage and keyed by shell. Only emitted when
-the pkg is installed *and* the user's shell is in `supported_shells` (or
-`supported_shells` is empty).
+the pkg is considered installed (i.e. `when` evaluates true and `detect`
+matches if present) and the user's configured shell has actions registered
+for the given stage.
 
 ```toml
 [pkg.starship]

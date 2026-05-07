@@ -4,7 +4,7 @@
 
 [pkg.bash-completion]
 enable = "detect"
-supported_shells = ["bash"]
+when = "bash"
 description = "Brew-managed bash completion loader."
 
 [pkg.bash-completion.install_hint.brew]

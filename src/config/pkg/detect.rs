@@ -1,7 +1,8 @@
 //! The `detect` configuration language: leaf checks (`File`, `Which`) and
-//! combinators (`Any`, `All`) that compose them, with optional per-strategy
-//! OS gating. Used by [`super::PkgConfig`] to decide whether a configured
-//! pkg is installed on the current host.
+//! combinators (`Any`, `All`) that compose them. Used by [`super::PkgConfig`]
+//! to decide whether a configured pkg is installed on the current host.
+//! Host-level gating (OS, shell, hostname, …) lives in `pkg.*.when` and the
+//! shared `[conditions]` registry — not here.
 
 use std::path::Path;
 
@@ -9,15 +10,13 @@ use zenops_expand::{ExpandLookup, ExpandStr};
 
 use super::error::Error;
 
-use super::Os;
-
-/// A detect strategy wraps a concrete check (`kind`) with an optional OS gate.
-/// When `os` is non-empty and doesn't include the current OS, `check()`
-/// short-circuits to `false` — the strategy is treated as a miss on that host.
+/// A detect strategy. Wraps a concrete check (`kind`); the wrapper exists
+/// to keep the door open for future per-strategy metadata without breaking
+/// the TOML shape. `deny_unknown_fields` lives on [`DetectKind`] (the
+/// flattened inner enum), not here — combining it with `#[serde(flatten)]`
+/// on the wrapper rejects the kind discriminator itself.
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 pub struct DetectStrategy {
-    #[serde(default)]
-    pub os: Vec<Os>,
     #[serde(flatten)]
     pub kind: DetectKind,
 }
@@ -26,7 +25,7 @@ pub struct DetectStrategy {
 /// combinators that let a single `detect` field express arbitrary boolean
 /// logic by nesting other strategies.
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DetectKind {
     File {
         path: ExpandStr,
@@ -47,12 +46,9 @@ pub enum DetectKind {
 }
 
 impl DetectStrategy {
-    /// Apply the OS gate first, then delegate to the kind. Unresolved
-    /// `${var}` placeholders inside the leaf checks also yield `false`.
+    /// Run the wrapped check. Unresolved `${var}` placeholders inside leaf
+    /// checks yield `false` rather than an error.
     pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> Result<bool, Error> {
-        if !self.os.is_empty() && !self.os.contains(&Os::current()?) {
-            return Ok(false);
-        }
         self.kind.check(home, lookup)
     }
 }
@@ -92,17 +88,6 @@ impl DetectKind {
 
 impl std::fmt::Display for DetectStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.os.is_empty() {
-            let names: Vec<&'static str> = self
-                .os
-                .iter()
-                .map(|o| match o {
-                    Os::Linux => "linux",
-                    Os::Macos => "macos",
-                })
-                .collect();
-            write!(f, "[os={}] ", names.join(","))?;
-        }
         write!(f, "{}", self.kind)
     }
 }

@@ -1,7 +1,10 @@
+use std::path::Path;
+
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 
 use super::*;
+use crate::config::condition::{ConditionOrRef, Conditions, HostContext};
 
 fn inputs(pairs: &[(&str, &str)]) -> IndexMap<SmolStr, SmolStr> {
     pairs
@@ -12,6 +15,52 @@ fn inputs(pairs: &[(&str, &str)]) -> IndexMap<SmolStr, SmolStr> {
 
 fn system_empty() -> IndexMap<SmolStr, SmolStr> {
     IndexMap::new()
+}
+
+/// The standard built-in registry: `linux`, `macos`, `bash`, `zsh`. Mirrors
+/// what `Config::load` deep-merges so unit tests behave like real loads.
+fn builtin_conditions() -> Conditions {
+    let toml_src = r#"
+        [conditions]
+        linux = { os = "linux" }
+        macos = { os = "macos" }
+        bash  = { shell = "bash" }
+        zsh   = { shell = "zsh" }
+    "#;
+    #[derive(serde::Deserialize)]
+    struct Holder {
+        conditions: IndexMap<SmolStr, crate::config::condition::Condition>,
+    }
+    let h: Holder = toml::from_str(toml_src).unwrap();
+    Conditions::compile(h.conditions).unwrap()
+}
+
+fn ctx<'a>(
+    home: &'a Path,
+    sys: &'a IndexMap<SmolStr, SmolStr>,
+    shell: Option<Shell>,
+) -> HostContext<'a> {
+    HostContext {
+        os: Os::current().expect("tests run on supported OS"),
+        shell,
+        hostname: "test-host",
+        home,
+        system_inputs: sys,
+    }
+}
+
+fn current_os_str() -> &'static str {
+    match Os::current().expect("tests run on supported OS") {
+        Os::Linux => "linux",
+        Os::Macos => "macos",
+    }
+}
+
+fn other_os_str() -> &'static str {
+    match Os::current().expect("tests run on supported OS") {
+        Os::Linux => "macos",
+        Os::Macos => "linux",
+    }
 }
 
 #[test]
@@ -51,12 +100,11 @@ fn detect_strategy_with_unresolved_input_reports_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-    assert!(
-        pkg.matched_detect(tmp.path(), &system_empty())
-            .unwrap()
-            .is_none()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
+    assert!(pkg.matched_detect(&conds, &c).unwrap().is_none());
 }
 
 #[test]
@@ -75,8 +123,10 @@ fn detect_strategy_resolves_system_input_and_checks_file() {
             "#,
     )
     .unwrap();
+    let conds = builtin_conditions();
     let sys = inputs(&[("root", tmp.path().to_str().unwrap())]);
-    assert!(pkg.is_installed(tmp.path(), &sys).unwrap());
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -98,8 +148,10 @@ fn pkg_inputs_shadow_system_inputs_at_detect() {
         tmp.path().display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let conds = builtin_conditions();
     let sys = inputs(&[("name", "b")]);
-    assert!(pkg.is_installed(tmp.path(), &sys).unwrap());
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -119,10 +171,10 @@ fn enable_on_with_matching_detect_is_silent() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(
-        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
-            .unwrap()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.enable_on_but_detect_missing(&conds, &c).unwrap());
 }
 
 #[test]
@@ -139,10 +191,10 @@ fn enable_on_with_missing_detect_flags_health_signal() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(
-        pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
-            .unwrap()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.enable_on_but_detect_missing(&conds, &c).unwrap());
 }
 
 #[test]
@@ -159,10 +211,10 @@ fn enable_on_with_empty_detect_is_silent() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(
-        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
-            .unwrap()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.enable_on_but_detect_missing(&conds, &c).unwrap());
 }
 
 #[test]
@@ -180,10 +232,10 @@ fn enable_detect_miss_is_silent() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(
-        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
-            .unwrap()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.enable_on_but_detect_missing(&conds, &c).unwrap());
 }
 
 #[test]
@@ -203,7 +255,10 @@ fn enable_on_with_matching_detect_is_installed() {
         marker.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -223,7 +278,10 @@ fn enable_on_with_missing_detect_is_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -237,7 +295,10 @@ fn enable_on_with_empty_detect_is_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -253,13 +314,12 @@ fn empty_detect_with_enable_detect_means_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
     // No detect ran, so `matched_detect` still has nothing to return.
-    assert!(
-        pkg.matched_detect(tmp.path(), &system_empty())
-            .unwrap()
-            .is_none()
-    );
+    assert!(pkg.matched_detect(&conds, &c).unwrap().is_none());
 }
 
 #[test]
@@ -273,56 +333,54 @@ fn disabled_pkg_is_never_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
     assert!(pkg.is_disabled());
 }
 
 #[test]
-fn supported_os_gates_installation() {
-    // Pick the OS that is not current so the pkg must be filtered out.
-    let other = match Os::current().expect("tests run on supported OS") {
-        Os::Linux => "macos",
-        Os::Macos => "linux",
-    };
+fn when_named_other_os_gates_installation() {
+    let other = other_os_str();
     let toml_src = format!(
         r#"
             enable = "on"
-            supported_os = ["{other}"]
+            when = "{other}"
             [install_hint.brew]
             packages = []
             "#
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-    assert!(
-        pkg.matched_detect(tmp.path(), &system_empty())
-            .unwrap()
-            .is_none()
-    );
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
+    assert!(pkg.matched_detect(&conds, &c).unwrap().is_none());
 }
 
 #[test]
-fn supported_os_allows_installation_when_current_os_listed() {
-    let current = match Os::current().expect("tests run on supported OS") {
-        Os::Linux => "linux",
-        Os::Macos => "macos",
-    };
+fn when_named_current_os_allows_installation() {
+    let current = current_os_str();
     let toml_src = format!(
         r#"
             enable = "on"
-            supported_os = ["{current}"]
+            when = "{current}"
             [install_hint.brew]
             packages = []
             "#
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
-fn empty_supported_os_means_any_os() {
+fn absent_when_means_unconditional() {
     let pkg: PkgConfig = toml::from_str(
         r#"
             enable = "on"
@@ -332,49 +390,52 @@ fn empty_supported_os_means_any_os() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
-fn supported_shells_round_trips_from_toml() {
+fn when_inline_table_works_without_registry_entry() {
+    let current = current_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "on"
+            when = {{ os = "{current}" }}
+            [install_hint.brew]
+            packages = []
+            "#
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let conds = Conditions::compile(IndexMap::new()).unwrap();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn when_named_shell_gates_relevance_when_shell_set() {
     let pkg: PkgConfig = toml::from_str(
         r#"
-            supported_shells = ["bash", "zsh"]
+            when = "bash"
             [install_hint.brew]
             packages = []
             "#,
     )
     .unwrap();
-    assert_eq!(pkg.supported_shells, vec![Shell::Bash, Shell::Zsh]);
-}
-
-#[test]
-fn supports_shell_empty_list_means_any() {
-    let pkg: PkgConfig = toml::from_str(
-        r#"
-            [install_hint.brew]
-            packages = []
-            "#,
-    )
-    .unwrap();
-    assert!(pkg.supports_shell(Some(Shell::Bash)));
-    assert!(pkg.supports_shell(Some(Shell::Zsh)));
-    assert!(pkg.supports_shell(None));
-}
-
-#[test]
-fn supports_shell_filters_by_list() {
-    let pkg: PkgConfig = toml::from_str(
-        r#"
-            supported_shells = ["bash"]
-            [install_hint.brew]
-            packages = []
-            "#,
-    )
-    .unwrap();
-    assert!(pkg.supports_shell(Some(Shell::Bash)));
-    assert!(!pkg.supports_shell(Some(Shell::Zsh)));
-    assert!(!pkg.supports_shell(None));
+    let tmp = tempfile::tempdir().unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c_bash = ctx(tmp.path(), &sys, Some(Shell::Bash));
+    let c_zsh = ctx(tmp.path(), &sys, Some(Shell::Zsh));
+    let c_none = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c_bash).unwrap());
+    assert!(!pkg.is_installed(&conds, &c_zsh).unwrap());
+    // Unset shell can't satisfy `shell = "bash"` — same as the old empty
+    // `supported_shells` semantics for `Shell::None`.
+    assert!(!pkg.is_installed(&conds, &c_none).unwrap());
 }
 
 #[test]
@@ -422,7 +483,10 @@ fn any_combinator_matches_when_any_child_matches() {
         present.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -448,11 +512,14 @@ fn all_combinator_requires_every_child() {
         b.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
 
     std::fs::write(&b, "").unwrap();
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -482,121 +549,10 @@ fn nested_combinators_compose() {
         b.display()
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-}
-
-#[test]
-fn per_strategy_os_skips_when_os_mismatches() {
-    let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join(".marker");
-    std::fs::write(&marker, "").unwrap();
-    let other = match Os::current().expect("tests run on supported OS") {
-        Os::Linux => "macos",
-        Os::Macos => "linux",
-    };
-    let toml_src = format!(
-        r#"
-            enable = "detect"
-            [install_hint.brew]
-            packages = []
-            [detect]
-            type = "file"
-            path = "{}"
-            os = ["{other}"]
-            "#,
-        marker.display()
-    );
-    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    // The file exists, but the strategy is gated to the other OS — skip.
-    assert!(!pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-}
-
-#[test]
-fn per_strategy_os_allows_when_os_matches() {
-    let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join(".marker");
-    std::fs::write(&marker, "").unwrap();
-    let current = match Os::current().expect("tests run on supported OS") {
-        Os::Linux => "linux",
-        Os::Macos => "macos",
-    };
-    let toml_src = format!(
-        r#"
-            enable = "detect"
-            [install_hint.brew]
-            packages = []
-            [detect]
-            type = "file"
-            path = "{}"
-            os = ["{current}"]
-            "#,
-        marker.display()
-    );
-    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-}
-
-#[test]
-fn empty_os_list_means_any_os() {
-    // An `os = []` (or field omitted) strategy is applicable on every OS.
-    let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join(".marker");
-    std::fs::write(&marker, "").unwrap();
-    let toml_src = format!(
-        r#"
-            enable = "detect"
-            [install_hint.brew]
-            packages = []
-            [detect]
-            type = "file"
-            path = "{}"
-            os = []
-            "#,
-        marker.display()
-    );
-    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-}
-
-#[test]
-fn absent_detect_field_is_installed_and_silent() {
-    // No `detect` field at all → nothing to check → installed, no health
-    // signal even under `enable = "on"`. This is the "always-on meta-pkg"
-    // shape (bashrc-chain, local-bin, zenops).
-    let pkg: PkgConfig = toml::from_str(
-        r#"
-            enable = "on"
-            [install_hint.brew]
-            packages = []
-            "#,
-    )
-    .unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
-    assert!(
-        !pkg.enable_on_but_detect_missing(tmp.path(), &system_empty())
-            .unwrap()
-    );
-}
-
-#[test]
-fn all_with_empty_of_matches_vacuously() {
-    // An empty `all` is vacuously true. Documented so we don't quietly
-    // change this later; in practice, users should omit `detect` entirely
-    // if they mean "no check required".
-    let pkg: PkgConfig = toml::from_str(
-        r#"
-            enable = "detect"
-            [install_hint.brew]
-            packages = []
-            [detect]
-            type = "all"
-            of = []
-            "#,
-    )
-    .unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(pkg.is_installed(tmp.path(), &system_empty()).unwrap());
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
 }
 
 #[test]
@@ -668,32 +624,6 @@ fn detect_strategy_displays_nested_combinators() {
 }
 
 #[test]
-fn detect_strategy_displays_os_prefix_single() {
-    let s: super::detect::DetectStrategy = toml::from_str(
-        r#"
-            type = "file"
-            path = "/opt/x"
-            os = ["macos"]
-        "#,
-    )
-    .unwrap();
-    assert_eq!(s.to_string(), "[os=macos] /opt/x");
-}
-
-#[test]
-fn detect_strategy_displays_os_prefix_multiple() {
-    let s: super::detect::DetectStrategy = toml::from_str(
-        r#"
-            type = "which"
-            binary = "rg"
-            os = ["linux", "macos"]
-        "#,
-    )
-    .unwrap();
-    assert_eq!(s.to_string(), "[os=linux,macos] which rg");
-}
-
-#[test]
 fn detect_which_with_unresolved_input_reports_not_installed() {
     // Hits the `Err(_) => false` arm in `DetectKind::check` for `Which`:
     // an unresolved `${var}` in the binary template can't be expanded, so
@@ -710,7 +640,10 @@ fn detect_which_with_unresolved_input_reports_not_installed() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    match pkg.is_installed(tmp.path(), &system_empty()).unwrap_err() {
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    match pkg.is_installed(&conds, &c).unwrap_err() {
         Error::Which(crate::utils::which::Error::ExpandError(
             value,
             zenops_expand::ExpandError::Unresolved(var),
@@ -742,4 +675,98 @@ fn path_action_kinds_round_trip_from_toml() {
     assert_eq!(actions.len(), 2);
     assert!(matches!(actions[0].kind, ActionKind::PathPrepend { .. }));
     assert!(matches!(actions[1].kind, ActionKind::PathAppend { .. }));
+}
+
+// ----------- migration / loud-failure -----------
+
+#[test]
+fn legacy_supported_os_field_fails_to_load() {
+    let err = toml::from_str::<PkgConfig>(
+        r#"
+            supported_os = ["linux"]
+            [install_hint.brew]
+            packages = []
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("supported_os"),
+        "expected error to name 'supported_os', got: {err}"
+    );
+}
+
+#[test]
+fn legacy_supported_shells_field_fails_to_load() {
+    let err = toml::from_str::<PkgConfig>(
+        r#"
+            supported_shells = ["bash"]
+            [install_hint.brew]
+            packages = []
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("supported_shells"),
+        "expected error to name 'supported_shells', got: {err}"
+    );
+}
+
+#[test]
+fn legacy_detect_os_field_fails_to_load() {
+    let err = toml::from_str::<PkgConfig>(
+        r#"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "which"
+            binary = "x"
+            os = ["linux"]
+        "#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("`os`") || err.contains("'os'"),
+        "expected error to name `os`, got: {err}"
+    );
+}
+
+#[test]
+fn when_evaluating_to_false_silences_health_signal() {
+    // A pkg gated to the other OS via `when` should not surface a missing
+    // signal, mirroring the old `supported_os` behavior.
+    let other = other_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "on"
+            when = "{other}"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            type = "file"
+            path = "/definitely/does/not/exist/zenops-test"
+            "#
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.enable_on_but_detect_missing(&conds, &c).unwrap());
+}
+
+#[test]
+fn when_with_inline_condition_drops_into_unconditional_registry() {
+    // Sanity: `when = { ... }` doesn't need a [conditions] entry to work.
+    let pkg: PkgConfig = toml::from_str(
+        r#"
+            when = { not = "zsh" }
+            [install_hint.brew]
+            packages = []
+        "#,
+    )
+    .unwrap();
+    matches!(pkg.when, Some(ConditionOrRef::Inline(_)));
 }

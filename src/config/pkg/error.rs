@@ -6,4 +6,6 @@ pub enum Error {
     ExistsFailed(String, std::io::Error),
     #[error(transparent)]
     Which(#[from] crate::utils::which::Error),
+    #[error(transparent)]
+    Condition(#[from] crate::config::condition::Error),
 }

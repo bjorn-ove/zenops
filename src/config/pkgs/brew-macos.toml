@@ -5,13 +5,13 @@
 #   macOS zsh → .zprofile (login shells)
 #   Linux zsh → .zshrc    (interactive shells)
 # Bash emits the same shellenv line on both OSes; duplicated here since only
-# one of the two pkgs is active on any given host (`supported_os` gates it).
+# one of the two pkgs is active on any given host (`when` gates it).
 #
 
 [pkg.brew-macos]
 enable = "detect"
 name = "brew"
-supported_os = ["macos"]
+when = "macos"
 description = "Homebrew shellenv initialization (macOS convention: login profile)."
 
 [pkg.brew-macos.install_hint.brew]

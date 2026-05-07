@@ -20,6 +20,9 @@ pub enum Error {
     /// system package manager.
     #[error("Failed to probe for brew at {0:?}: {1}")]
     BrewProbeFailed(PathBuf, #[source] std::io::Error),
+    /// `[conditions]` had an unknown reference or a cycle.
+    #[error("Failed to compile [conditions]: {0}")]
+    CompileConditions(#[source] super::condition::Error),
 }
 
 impl PartialEq for Error {
@@ -30,6 +33,7 @@ impl PartialEq for Error {
             (Self::BrewProbeFailed(l0, l1), Self::BrewProbeFailed(r0, r1)) => {
                 l0 == r0 && l1.kind() == r1.kind()
             }
+            (Self::CompileConditions(l), Self::CompileConditions(r)) => l == r,
             _ => false,
         }
     }

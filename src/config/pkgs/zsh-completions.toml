@@ -3,7 +3,7 @@
 #
 
 [pkg.zsh-completions]
-supported_shells = ["zsh"]
+when = "zsh"
 description = "Zsh completion system initialization (compinit)."
 
 [pkg.zsh-completions.install_hint.brew]

@@ -354,7 +354,7 @@ fn apply_no_pkg_missing_when_detect_is_empty() {
 }
 
 #[test]
-fn apply_filters_pkg_by_supported_shells() {
+fn apply_filters_pkg_by_when_shell() {
     let env = test_env::TestEnv::load();
     env.init_config(
         r#"
@@ -365,7 +365,7 @@ fn apply_filters_pkg_by_supported_shells() {
 
         [pkg.alien-shell]
         enable = "on"
-        supported_shells = ["bash"]
+        when = "bash"
         [pkg.alien-shell.install_hint.brew]
         packages = []
         [[pkg.alien-shell.shell.interactive_init.zsh]]
@@ -386,12 +386,12 @@ fn apply_filters_pkg_by_supported_shells() {
         .expect("zshrc should exist");
     assert!(
         !zshrc.contains("echo wrong-shell"),
-        "pkg gated by supported_shells must not contribute on the wrong shell, got:\n{zshrc}"
+        "pkg gated by when=\"bash\" must not contribute on the wrong shell, got:\n{zshrc}"
     );
 }
 
 #[test]
-fn apply_filters_pkg_by_supported_os() {
+fn apply_filters_pkg_by_when_os() {
     // A pkg that targets the other OS must be suppressed: its env_init action
     // must not reach .zshenv.
     let other_os = if cfg!(target_os = "macos") {
@@ -409,7 +409,7 @@ fn apply_filters_pkg_by_supported_os() {
 
         [pkg.alien]
         enable = "on"
-        supported_os = ["{other_os}"]
+        when = "{other_os}"
         [pkg.alien.install_hint.brew]
         packages = []
         [[pkg.alien.shell.env_init.zsh]]
@@ -430,7 +430,7 @@ fn apply_filters_pkg_by_supported_os() {
         .expect("zshenv should exist");
     assert!(
         !zshenv.contains("echo wrong-os"),
-        "pkg gated by supported_os must not contribute on the wrong OS, got:\n{zshenv}"
+        "pkg gated by when=\"<other-os>\" must not contribute on the wrong OS, got:\n{zshenv}"
     );
 }
 

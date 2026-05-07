@@ -17,11 +17,10 @@ mod install;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
-
 use indexmap::IndexMap;
 use smol_str::SmolStr;
 
+use super::condition::{ConditionOrRef, Conditions, HostContext};
 use super::pkg_config_files::PkgConfigFiles;
 
 pub(crate) use action::PkgShellConfig;
@@ -37,7 +36,7 @@ pub use install::InstallHint;
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Shell {
+pub enum Shell {
     Bash,
     Zsh,
 }
@@ -81,6 +80,7 @@ pub(crate) enum PkgEnable {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PkgConfig {
     #[serde(default)]
     pub(super) enable: PkgEnable,
@@ -88,20 +88,16 @@ pub struct PkgConfig {
     pub(super) detect: Option<DetectStrategy>,
     #[serde(default)]
     pub(super) inputs: IndexMap<SmolStr, SmolStr>,
-    /// When non-empty, the pkg is only considered installed on the listed
-    /// operating systems — an empty list means "any OS".
+    /// Gating predicate: a name from `[conditions]` (string) or an inline
+    /// condition table. Absent means the pkg is unconditional. When the
+    /// condition evaluates `false`, the pkg is treated as not installed,
+    /// silently — same as an OS-mismatched pkg under the previous
+    /// `supported_os` field.
     #[serde(default)]
-    pub(super) supported_os: Vec<Os>,
-    /// When non-empty, the pkg only applies when the user has configured
-    /// one of the listed shells — empty means "any shell". Unlike
-    /// `supported_os`, this is a relevance filter rather than an
-    /// "installed on the system" filter; it gates list visibility and
-    /// init-action emission but not `is_installed`.
-    #[serde(default)]
-    pub(super) supported_shells: Vec<Shell>,
+    pub(super) when: Option<ConditionOrRef>,
     /// Optional display label, used by `pkg_list` instead of the map key.
-    /// Lets two OS-gated entries (e.g. `brew-linux` / `brew-macos`) share a
-    /// single user-facing name while keeping distinct config keys.
+    /// Lets two condition-gated entries (e.g. `brew-linux` / `brew-macos`)
+    /// share a single user-facing name while keeping distinct config keys.
     #[serde(default)]
     pub name: Option<SmolStr>,
     #[serde(default)]
@@ -119,10 +115,10 @@ pub struct PkgConfig {
 impl PkgConfig {
     pub fn is_installed(
         &self,
-        home: &Path,
-        system_inputs: &IndexMap<SmolStr, SmolStr>,
+        conditions: &Conditions,
+        ctx: &HostContext<'_>,
     ) -> Result<bool, Error> {
-        if !self.supports_current_os()? {
+        if !self.evaluate_when(conditions, ctx)? {
             return Ok(false);
         }
         match self.enable {
@@ -136,8 +132,8 @@ impl PkgConfig {
                 let Some(detect) = self.detect.as_ref() else {
                     return Ok(true);
                 };
-                let lookup = [&self.inputs, system_inputs];
-                detect.check(home, &lookup)
+                let lookup = [&self.inputs, ctx.system_inputs];
+                detect.check(ctx.home, &lookup)
             }
             PkgEnable::Disabled => Ok(false),
         }
@@ -147,24 +143,24 @@ impl PkgConfig {
     /// `enable = "on"` with a detect strategy that doesn't match on the
     /// current host. Rendering layers use this to push a user-facing
     /// "pkg is missing" signal via `Output`. Returns `false` for `detect`
-    /// (miss is silent), `disabled`, OS-gated-out pkgs, and `on` pkgs with
-    /// absent or matching detect.
+    /// (miss is silent), `disabled`, condition-gated-out pkgs, and `on`
+    /// pkgs with absent or matching detect.
     pub fn enable_on_but_detect_missing(
         &self,
-        home: &Path,
-        system_inputs: &IndexMap<SmolStr, SmolStr>,
+        conditions: &Conditions,
+        ctx: &HostContext<'_>,
     ) -> Result<bool, Error> {
         if !matches!(self.enable, PkgEnable::On) {
             return Ok(false);
         }
-        if !self.supports_current_os()? {
+        if !self.evaluate_when(conditions, ctx)? {
             return Ok(false);
         }
         let Some(detect) = self.detect.as_ref() else {
             return Ok(false);
         };
-        let lookup = [&self.inputs, system_inputs];
-        detect.check(home, &lookup).map(|r| !r)
+        let lookup = [&self.inputs, ctx.system_inputs];
+        detect.check(ctx.home, &lookup).map(|r| !r)
     }
 
     /// Complement of [`Self::enable_on_but_detect_missing`] within `enable =
@@ -175,23 +171,23 @@ impl PkgConfig {
     /// looked at. Absent-detect pkgs (e.g. meta/scaffolding configs like
     /// `bashrc-chain`) stay silent: "no detect" means "nothing to report
     /// as verified." Like its counterpart, silent for `detect` /
-    /// `disabled` / OS-gated-out pkgs.
+    /// `disabled` / condition-gated-out pkgs.
     pub fn enable_on_and_detect_matches(
         &self,
-        home: &Path,
-        system_inputs: &IndexMap<SmolStr, SmolStr>,
+        conditions: &Conditions,
+        ctx: &HostContext<'_>,
     ) -> Result<bool, Error> {
         if !matches!(self.enable, PkgEnable::On) {
             return Ok(false);
         }
-        if !self.supports_current_os()? {
+        if !self.evaluate_when(conditions, ctx)? {
             return Ok(false);
         }
         let Some(detect) = self.detect.as_ref() else {
             return Ok(false);
         };
-        let lookup = [&self.inputs, system_inputs];
-        detect.check(home, &lookup)
+        let lookup = [&self.inputs, ctx.system_inputs];
+        detect.check(ctx.home, &lookup)
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -204,17 +200,17 @@ impl PkgConfig {
     /// walk `.kind` themselves.
     pub fn matched_detect(
         &self,
-        home: &Path,
-        system_inputs: &IndexMap<SmolStr, SmolStr>,
+        conditions: &Conditions,
+        ctx: &HostContext<'_>,
     ) -> Result<Option<&DetectStrategy>, Error> {
-        if !self.supports_current_os()? {
+        if !self.evaluate_when(conditions, ctx)? {
             return Ok(None);
         }
         match self.enable {
             PkgEnable::On | PkgEnable::Detect => {
                 if let Some(detect) = self.detect.as_ref() {
-                    let lookup = [&self.inputs, system_inputs];
-                    detect.check(home, &lookup).map(|r| r.then_some(detect))
+                    let lookup = [&self.inputs, ctx.system_inputs];
+                    detect.check(ctx.home, &lookup).map(|r| r.then_some(detect))
                 } else {
                     Ok(None)
                 }
@@ -223,13 +219,18 @@ impl PkgConfig {
         }
     }
 
-    pub(crate) fn supports_current_os(&self) -> Result<bool, Error> {
-        Ok(self.supported_os.is_empty() || self.supported_os.contains(&Os::current()?))
-    }
-
-    pub(crate) fn supports_shell(&self, shell: Option<Shell>) -> bool {
-        self.supported_shells.is_empty()
-            || shell.is_some_and(|s| self.supported_shells.contains(&s))
+    /// Returns `true` when `when` is unset or evaluates true; `false` when
+    /// it evaluates false. The single gate that replaces `supported_os` and
+    /// `supported_shells`.
+    pub(crate) fn evaluate_when(
+        &self,
+        conditions: &Conditions,
+        ctx: &HostContext<'_>,
+    ) -> Result<bool, Error> {
+        match self.when.as_ref() {
+            None => Ok(true),
+            Some(cor) => Ok(conditions.evaluate(cor, ctx)?),
+        }
     }
 
     pub(crate) fn inputs(&self) -> &IndexMap<SmolStr, SmolStr> {

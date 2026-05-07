@@ -1,0 +1,5 @@
+[conditions]
+linux = { os = "linux" }
+macos = { os = "macos" }
+bash = { shell = "bash" }
+zsh = { shell = "zsh" }

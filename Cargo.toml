@@ -15,9 +15,11 @@ repository.workspace = true
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.3"
 env_logger = "0.11.10"
+gethostname = "1.0.2"
 home = "0.5.12"
 indexmap.workspace = true
 log = "0.4.29"
+regex = "1.11.3"
 rustyline = "18.0.0"
 zenops-expand = { workspace = true, features = ["indexmap", "schemars"] }
 zenops-safe-relative-path = { workspace = true, features = ["schemars"] }

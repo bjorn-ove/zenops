@@ -262,7 +262,7 @@ fn pkg_list_hides_pkgs_gated_to_other_os() {
         r#"
         [pkg.alien]
         enable = "on"
-        supported_os = ["{other_os}"]
+        when = "{other_os}"
         description = "Only applies on the other OS."
         [pkg.alien.install_hint.brew]
         packages = []
@@ -295,7 +295,7 @@ fn pkg_list_hides_pkgs_gated_to_other_shell() {
 
         [pkg.bash-only]
         enable = "on"
-        supported_shells = ["bash"]
+        when = "bash"
         description = "Bash-only pkg."
         [pkg.bash-only.install_hint.brew]
         packages = []
@@ -328,7 +328,7 @@ fn pkg_list_shell_filter_is_independent_of_shell_actions() {
 
         [pkg.dual-actions]
         enable = "on"
-        supported_shells = ["zsh"]
+        when = "zsh"
         description = "Has both shell actions but gated to zsh."
         [pkg.dual-actions.install_hint.brew]
         packages = []

@@ -15,6 +15,7 @@
 //! [`zenops_expand`]-expand `${...}` placeholders inside generated
 //! config bodies.
 
+pub(crate) mod condition;
 mod error;
 mod git;
 pub(crate) mod pkg;
@@ -40,8 +41,9 @@ pub use crate::config::pkg::PkgConfig;
 
 use crate::{
     config::{
+        condition::{Condition, Conditions, HostContext},
         git::StoredGitConfig,
-        pkg::{Shell, ShellInitAction},
+        pkg::{Os, Shell, ShellInitAction},
         shell::StoredShellEnvironment,
         ssh::{CurlGithubKeyFetcher, StoredSshConfig},
         user::StoredUserConfig,
@@ -61,6 +63,7 @@ pub(crate) struct StoredConfig {
     ssh: StoredSshConfig,
     user: StoredUserConfig,
     git: StoredGitConfig,
+    conditions: IndexMap<SmolStr, Condition>,
 }
 
 pub struct Config<'dirs> {
@@ -68,6 +71,8 @@ pub struct Config<'dirs> {
     zenops_repo: ResolvedConfigFilePath,
     stored: StoredConfig,
     system_inputs: IndexMap<SmolStr, SmolStr>,
+    conditions: Conditions,
+    hostname: String,
 }
 
 fn detect_brew_prefix() -> Result<Option<PathBuf>, Error> {
@@ -123,6 +128,8 @@ static DEFAULT_PKGS: &[(&str, &str)] = &[
     ("llvm", include_str!("pkgs/llvm.toml")),
 ];
 
+static BUILTIN_CONDITIONS: &str = include_str!("condition_builtins.toml");
+
 fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
         (toml::Value::Table(b), toml::Value::Table(o)) => {
@@ -154,6 +161,10 @@ impl<'dirs> Config<'dirs> {
         let path = dirs.zenops().join("config.toml");
 
         let mut merged = toml::Value::Table(Default::default());
+        let builtin_conditions: toml::Value = toml::from_str(BUILTIN_CONDITIONS).map_err(|e| {
+            ConfigError::ParseDb(std::path::PathBuf::from("<defaults:conditions>"), e)
+        })?;
+        deep_merge(&mut merged, builtin_conditions);
         for (name, src) in DEFAULT_PKGS {
             let v: toml::Value = toml::from_str(src).map_err(|e| {
                 ConfigError::ParseDb(std::path::PathBuf::from(format!("<defaults:{name}>")), e)
@@ -171,6 +182,10 @@ impl<'dirs> Config<'dirs> {
             .try_into()
             .map_err(|e| ConfigError::ParseDb(path.to_path_buf(), e))?;
 
+        let conditions = Conditions::compile(stored.conditions.clone())
+            .map_err(ConfigError::CompileConditions)?;
+        let hostname = gethostname::gethostname().to_string_lossy().into_owned();
+
         let brew_prefix = detect_brew_prefix()?;
         let system_inputs = build_system_inputs(brew_prefix.as_deref(), &stored.user);
 
@@ -179,6 +194,8 @@ impl<'dirs> Config<'dirs> {
             zenops_repo,
             stored,
             system_inputs,
+            conditions,
+            hostname,
         })
     }
 
@@ -194,19 +211,36 @@ impl<'dirs> Config<'dirs> {
         &self.system_inputs
     }
 
+    pub(crate) fn conditions(&self) -> &Conditions {
+        &self.conditions
+    }
+
     pub(crate) fn shell(&self) -> Option<Shell> {
         self.stored.shell.shell()
+    }
+
+    /// Build a [`HostContext`] keyed to this `Config`'s host. The optional
+    /// `shell` override lets callers (e.g. shell-init emitters that need
+    /// per-shell evaluation) supply a shell different from `self.shell()`;
+    /// passing `None` falls back to the configured shell.
+    pub(crate) fn host_context(&self, shell: Option<Shell>) -> Result<HostContext<'_>, Error> {
+        Ok(HostContext {
+            os: Os::current()?,
+            shell: shell.or_else(|| self.shell()),
+            hostname: &self.hostname,
+            home: self.dirs.home(),
+            system_inputs: &self.system_inputs,
+        })
     }
 
     pub(crate) fn env_pkg_inits(
         &self,
         shell: Shell,
     ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let ctx = self.host_context(Some(shell))?;
         let mut inits = Vec::new();
         for (name, p) in &self.stored.pkg {
-            if p.is_installed(self.dirs.home(), &self.system_inputs)?
-                && p.supports_shell(Some(shell))
-            {
+            if p.is_installed(&self.conditions, &ctx)? {
                 for a in p.shell.env_init.for_shell(shell).iter() {
                     inits.push((name, p, a));
                 }
@@ -219,11 +253,10 @@ impl<'dirs> Config<'dirs> {
         &self,
         shell: Shell,
     ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let ctx = self.host_context(Some(shell))?;
         let mut inits = Vec::new();
         for (name, p) in &self.stored.pkg {
-            if p.is_installed(self.dirs.home(), &self.system_inputs)?
-                && p.supports_shell(Some(shell))
-            {
+            if p.is_installed(&self.conditions, &ctx)? {
                 for a in p.shell.login_init.for_shell(shell).iter() {
                     inits.push((name, p, a));
                 }
@@ -236,11 +269,10 @@ impl<'dirs> Config<'dirs> {
         &self,
         shell: Shell,
     ) -> Result<Vec<(&SmolStr, &PkgConfig, &ShellInitAction)>, Error> {
+        let ctx = self.host_context(Some(shell))?;
         let mut inits = Vec::new();
         for (name, p) in &self.stored.pkg {
-            if p.is_installed(self.dirs.home(), &self.system_inputs)?
-                && p.supports_shell(Some(shell))
-            {
+            if p.is_installed(&self.conditions, &ctx)? {
                 for a in p.shell.interactive_init.for_shell(shell).iter() {
                     inits.push((name, p, a));
                 }
@@ -263,8 +295,9 @@ impl<'dirs> Config<'dirs> {
             !self.stored.ssh.allowed_signers.is_empty(),
             config_files,
         )?;
+        let ctx = self.host_context(None)?;
         for (pkg_key, pkg) in &self.stored.pkg {
-            if !pkg.is_installed(self.dirs.home(), &self.system_inputs)? {
+            if !pkg.is_installed(&self.conditions, &ctx)? {
                 continue;
             }
             for cfg in pkg.configs() {
@@ -309,9 +342,10 @@ impl<'dirs> Config<'dirs> {
     /// from commands the user runs.
     pub fn push_pkg_health(&self, output: &mut dyn Output) -> Result<(), Error> {
         let manager = pkg_manager::detect()?;
+        let ctx = self.host_context(None)?;
         for (key, pkg) in &self.stored.pkg {
             let label = pkg.name.clone().unwrap_or_else(|| key.clone());
-            if pkg.enable_on_but_detect_missing(self.dirs.home(), &self.system_inputs)? {
+            if pkg.enable_on_but_detect_missing(&self.conditions, &ctx)? {
                 let install_command = manager.and_then(|m| {
                     let pkgs = m.packages_for(&pkg.install_hint);
                     (!pkgs.is_empty()).then(|| m.install_command(pkgs))
@@ -320,7 +354,7 @@ impl<'dirs> Config<'dirs> {
                     pkg: label,
                     status: PkgStatus::Missing { install_command },
                 }))?;
-            } else if pkg.enable_on_and_detect_matches(self.dirs.home(), &self.system_inputs)? {
+            } else if pkg.enable_on_and_detect_matches(&self.conditions, &ctx)? {
                 output.push(Event::Status(Status::Pkg {
                     pkg: label,
                     status: PkgStatus::Ok,
