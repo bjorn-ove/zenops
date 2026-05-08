@@ -22,9 +22,28 @@ pub enum Error {
     /// Source contained no regular files to import.
     #[error("Source path {0:?} contains no regular files to import")]
     SourceEmpty(PathBuf),
+    /// `.config/<x>` shape, but `<x>` is a regular file rather than a
+    /// directory. We don't support importing a single file via the
+    /// `.config` slot today.
+    #[error(
+        "Path {0:?} is a regular file; `~/.config/<x>` imports expect a directory. Use `~/.<file>` for single-file dotfiles, or move this into its own `~/.config/<x>/` directory first"
+    )]
+    ExpectedDirectory(PathBuf),
     /// Path resolved outside `$HOME` after canonicalization.
     #[error("Path {0:?} is not under $HOME")]
     PathNotUnderHome(PathBuf),
+    /// Source canonicalized to the zenops repo dir itself (or a subpath
+    /// of it) — importing it would copy the repo into itself.
+    #[error(
+        "Path {0:?} is the zenops repo (or inside it); refusing to import the repo into itself"
+    )]
+    CannotImportZenopsRepo(PathBuf),
+    /// Zenops config dir / `config.toml` is missing — the user hasn't run
+    /// `zenops init` yet.
+    #[error(
+        "No zenops config found at {0:?} — run `zenops init` first (or `zenops init <url>` to clone an existing one)"
+    )]
+    ZenopsRepoMissing(PathBuf),
     /// Resolved tail wasn't `.config/<x>` or `.<x>`. The string is the
     /// home-relative tail, included in the diagnostic.
     #[error(
@@ -76,6 +95,26 @@ pub enum Error {
         "pkg `{0}` is new — pass --brew <PKG>... to set the install hint, or --no-install-hint to skip"
     )]
     MissingInstallHint(String),
+    /// User passed `--brew ""` (or otherwise asked to record an empty
+    /// package name).
+    #[error("--brew package name must not be empty")]
+    EmptyBrewPackage,
+    /// `--source <REL>` resolved outside `~/.config/zenops`. We refuse
+    /// rather than risk landing files in arbitrary on-disk locations.
+    #[error(
+        "--source override {0:?} resolves outside the zenops repo; pass a path relative to ~/.config/zenops (e.g. `configs/<key>`)"
+    )]
+    SourceOverrideEscapesRepo(PathBuf),
+    /// The derived (or `--pkg`-supplied) pkg key already names an
+    /// existing pkg with at least one configs entry, and the imported
+    /// path isn't under any of those entries.
+    #[error(
+        "pkg `{pkg}` already exists with managed configs; pass --pkg <NEW-KEY> to import under a different name, or --source <REL> to add another config to the same pkg"
+    )]
+    PkgKeyTaken {
+        /// Pkg key that's already in use.
+        pkg: SmolStr,
+    },
     /// A prompt was needed but stdin isn't a TTY and `--yes` wasn't passed.
     #[error(
         "import requires a terminal for prompts; pass --yes (and --brew or --no-install-hint for new pkgs) to run non-interactively"
@@ -123,10 +162,16 @@ impl PartialEq for Error {
             (Self::SourceMissing(l), Self::SourceMissing(r)) => l == r,
             (Self::SourceIsSymlink(l), Self::SourceIsSymlink(r)) => l == r,
             (Self::SourceEmpty(l), Self::SourceEmpty(r)) => l == r,
+            (Self::ExpectedDirectory(l), Self::ExpectedDirectory(r)) => l == r,
             (Self::PathNotUnderHome(l), Self::PathNotUnderHome(r)) => l == r,
+            (Self::CannotImportZenopsRepo(l), Self::CannotImportZenopsRepo(r)) => l == r,
+            (Self::ZenopsRepoMissing(l), Self::ZenopsRepoMissing(r)) => l == r,
             (Self::UnsupportedLayout(l), Self::UnsupportedLayout(r)) => l == r,
             (Self::NoDerivablePkgKey(l), Self::NoDerivablePkgKey(r)) => l == r,
             (Self::DestExists(l), Self::DestExists(r)) => l == r,
+            (Self::EmptyBrewPackage, Self::EmptyBrewPackage) => true,
+            (Self::SourceOverrideEscapesRepo(l), Self::SourceOverrideEscapesRepo(r)) => l == r,
+            (Self::PkgKeyTaken { pkg: l }, Self::PkgKeyTaken { pkg: r }) => l == r,
             (
                 Self::AmbiguousConfigMatch {
                     path: l_path,

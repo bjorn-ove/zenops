@@ -100,9 +100,28 @@ pub fn run_with_prompter(
     output: &mut dyn Output,
     mut prompter: Option<&mut dyn LinePrompter>,
 ) -> Result<(), Error> {
+    if brew.iter().any(|s| s.is_empty()) {
+        return Err(ImportError::EmptyBrewPackage.into());
+    }
+    if let Some(over) = source_override {
+        let parsed = Path::new(over);
+        if parsed.is_absolute()
+            || parsed
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(ImportError::SourceOverrideEscapesRepo(parsed.to_path_buf()).into());
+        }
+    }
+
     let cfg_path = dirs.zenops().join("config.toml");
-    let cfg_text = fs::read_to_string(&cfg_path)
-        .map_err(|e| Error::from(ImportError::Io(cfg_path.clone(), e)))?;
+    let cfg_text = match fs::read_to_string(&cfg_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(ImportError::ZenopsRepoMissing(cfg_path).into());
+        }
+        Err(e) => return Err(ImportError::Io(cfg_path, e).into()),
+    };
     let mut doc: DocumentMut = cfg_text
         .parse()
         .map_err(|e| Error::from(ImportError::ConfigParse(cfg_path.clone(), e)))?;
@@ -362,6 +381,17 @@ fn build_plan(
         .canonicalize()
         .map_err(|e| ImportError::Io(dirs.home().to_path_buf(), e))?;
 
+    // Guard against importing the zenops repo into itself: if the path
+    // canonicalizes to (or under) `~/.config/zenops`, we'd otherwise walk
+    // every file in the repo (including `.git`) into `configs/zenops/`.
+    let canonical_zenops = dirs
+        .zenops()
+        .canonicalize()
+        .map_err(|e| ImportError::Io(dirs.zenops().to_path_buf(), e))?;
+    if canonical_source == canonical_zenops || canonical_source.starts_with(&canonical_zenops) {
+        return Err(ImportError::CannotImportZenopsRepo(canonical_source).into());
+    }
+
     let tail = canonical_source
         .strip_prefix(&canonical_home)
         .map_err(|_| ImportError::PathNotUnderHome(canonical_source.clone()))?;
@@ -391,13 +421,23 @@ fn build_plan(
     let is_dir = canonical_source.is_dir();
     let pkg_key = derive_pkg_key(&layout, pkg_override)?;
 
+    // Refuse a brand-new pkg block when the key collides with an
+    // already-populated pkg. (We're past `find_managed_root` /
+    // `find_matching_config` already, so reaching this point with a
+    // pkg block that already has configs entries means the user is
+    // importing a different on-disk root under the same name — that's
+    // almost always the wrong choice.)
+    if pkg_has_configs_entries(doc, pkg_key.as_str()) {
+        return Err(ImportError::PkgKeyTaken { pkg: pkg_key }.into());
+    }
+
     let repo_rel = source_override
         .map(str::to_string)
         .unwrap_or_else(|| format!("configs/{pkg_key}"));
     let repo_dest = dirs.zenops().join(&repo_rel);
 
     let (source_root, toml_plan_kind) = match (&layout, is_dir) {
-        (Layout::DotConfig { dir }, _) => {
+        (Layout::DotConfig { dir }, true) => {
             let root = canonical_home.join(".config").join(dir);
             let name_override = if dir == pkg_key.as_str() {
                 None
@@ -405,6 +445,9 @@ fn build_plan(
                 Some(dir.clone())
             };
             (root, TomlPlanKind::DotConfig { name_override })
+        }
+        (Layout::DotConfig { .. }, false) => {
+            return Err(ImportError::ExpectedDirectory(canonical_source).into());
         }
         (Layout::Home { name }, true) => {
             let root = canonical_home.join(name);
@@ -538,6 +581,9 @@ fn classify(tail: &Path) -> Result<Layout, ImportError> {
                 dir: (*dir).to_string(),
             })
         }
+        // `.config` on its own is the config root, not an importable
+        // dotfile — reject before the Home-shape arm matches it.
+        [".config"] => Err(ImportError::UnsupportedLayout(".config".to_string())),
         [name]
             if name.starts_with('.')
                 && name.len() > 1
@@ -616,6 +662,18 @@ fn walk_dir(
                 repo_rel: rel,
             });
         } else if meta.is_dir() {
+            // VCS metadata dirs (a `.git` checkout in a config dir is a
+            // common shape) get skipped wholesale rather than walked —
+            // recursing them would symlink thousands of pack files into
+            // the user's home tree.
+            let name_str = name.to_str().unwrap_or("");
+            if matches!(name_str, ".git" | ".hg" | ".svn") {
+                skipped.push(SkippedEntry {
+                    path: rel,
+                    reason: SmolStr::new_static("vcs"),
+                });
+                continue;
+            }
             walk_dir(&entry.path(), files, skipped, &rel)?;
         } else {
             skipped.push(SkippedEntry {
@@ -632,6 +690,21 @@ fn pkg_block_exists(doc: &DocumentMut, key: &str) -> bool {
         .and_then(|p| p.as_table())
         .and_then(|t| t.get(key))
         .is_some()
+}
+
+/// `true` if `[pkg.<key>]` has at least one `[[pkg.<key>.configs]]` entry
+/// already. Distinct from [`pkg_block_exists`] because a user can pre-seed
+/// `[pkg.<key>]` with metadata (description, install_hint) without any
+/// configs — that case still allows new-pkg-style import to land the first
+/// configs entry.
+fn pkg_has_configs_entries(doc: &DocumentMut, key: &str) -> bool {
+    doc.get("pkg")
+        .and_then(|p| p.as_table())
+        .and_then(|t| t.get(key))
+        .and_then(|p| p.as_table())
+        .and_then(|t| t.get("configs"))
+        .and_then(Item::as_array_of_tables)
+        .is_some_and(|aot| !aot.is_empty())
 }
 
 /// One existing `[[pkg.<key>.configs]]` entry whose on-disk root is a

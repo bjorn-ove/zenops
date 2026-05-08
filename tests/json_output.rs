@@ -150,3 +150,54 @@ fn apply_emits_applied_action_ndjson_to_stdout() {
         "minimal-config apply should emit at least one applied_action, got: {lines:?}",
     );
 }
+
+#[test]
+fn import_emits_import_plan_and_applied_ndjson_to_stdout() {
+    // Happy-path import: the JSON stream must surface both the
+    // ImportPlan event (so dry-run-style consumers can preview) and the
+    // ImportApplied event (so they can confirm the apply happened).
+    let env = test_env::TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(
+        zenops_safe_relative_path::srpath!("home/bob/.config/myapp/config.toml"),
+        b"foo = 1\n",
+    );
+    let home = env.resolve_path(test_env::paths::HOME_DIR);
+    let target = env
+        .resolve_path(zenops_safe_relative_path::srpath!("home/bob/.config/myapp"))
+        .to_string_lossy()
+        .into_owned();
+
+    let lines = run_json(&home, &["import", &target, "--brew", "myapp", "--yes"]);
+
+    let plans: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "import_plan")
+        .collect();
+    let applieds: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == "import_applied")
+        .collect();
+
+    assert_eq!(
+        plans.len(),
+        1,
+        "expected exactly one import_plan, got: {lines:?}"
+    );
+    assert_eq!(
+        applieds.len(),
+        1,
+        "expected exactly one import_applied, got: {lines:?}",
+    );
+
+    let plan = plans[0];
+    assert_eq!(plan["pkg"], "myapp", "plan: {plan}");
+    let applied = applieds[0];
+    assert_eq!(applied["pkg"], "myapp", "applied: {applied}");
+    // is_noop is `skip_serializing_if = !x`, so a non-noop apply omits the
+    // field entirely; treat both `false` and missing as the same signal.
+    assert!(
+        applied["is_noop"].is_null() || applied["is_noop"] == false,
+        "applied: {applied}",
+    );
+}

@@ -1449,3 +1449,779 @@ fn import_reconcile_detects_rename() {
     symlinks.sort();
     assert_eq!(symlinks, vec!["config.toml", "themes/dracula.toml"]);
 }
+
+// =====================================================================
+// "Willy-nilly" user scenarios: lock current good behavior + spec the
+// rough edges. Grouped by intent rather than by error variant so the
+// tests read as a tour of how a real user might reach for `import`.
+// =====================================================================
+
+// --- Tier 1: lock current good behavior --------------------------------
+
+#[test]
+fn import_rejects_nonexistent_path() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+
+    let typoed = env.resolve_path(srpath!("home/bob/.config/myapp-typoed"));
+    let cmd = import_cmd(typoed.clone());
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::SourceMissing(p))) => {
+            assert_eq!(p, typoed);
+        }
+        other => panic!("expected SourceMissing, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_accepts_trailing_slash() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"foo = 1\n");
+
+    // Append a trailing slash to the path the user passes in.
+    let resolved = env.resolve_path(srpath!("home/bob/.config/myapp"));
+    let with_slash = PathBuf::from(format!("{}/", resolved.display()));
+
+    let cmd = Cmd::Import {
+        path: with_slash,
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd)
+        .expect("trailing slash should not change behavior");
+
+    let original = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let cfg = read_config(&env);
+    assert_eq!(
+        cfg["pkg"]["myapp"]["configs"][0]["type"].as_str(),
+        Some(".config")
+    );
+}
+
+#[test]
+fn import_accepts_dotdot_canonicalizing_to_managed() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"foo = 1\n");
+    // Make sure the sibling we route through actually exists, so canonicalize
+    // can resolve `..`.
+    env.create_dir(srpath!("home/bob/.config/sibling"));
+
+    let detour = env
+        .resolve_path(srpath!("home/bob/.config/sibling"))
+        .join("..")
+        .join("myapp");
+
+    let cmd = Cmd::Import {
+        path: detour,
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd)
+        .expect("path with .. should canonicalize and import");
+
+    let cfg = read_config(&env);
+    assert_eq!(
+        cfg["pkg"]["myapp"]["configs"][0]["source"].as_str(),
+        Some("configs/myapp")
+    );
+}
+
+#[test]
+fn import_rejects_path_outside_home() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    // A managed-shape-looking path that lives outside the synthetic home.
+    env.write_file(srpath!("elsewhere/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = import_cmd(env.resolve_path(srpath!("elsewhere/.config/myapp")));
+    let result = env.run(&cmd);
+    assert!(
+        matches!(result, Err(Error::Import(ImportError::PathNotUnderHome(_)))),
+        "got {result:?}",
+    );
+}
+
+#[test]
+fn import_rejects_source_that_is_a_symlink() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    // Real config dir lives outside ~/.config; user has a symlink
+    // pointing at it from the standard location.
+    env.write_file(srpath!("home/bob/dotfiles/myapp/config.toml"), b"x\n");
+    env.create_symlink(
+        srpath!("home/bob/dotfiles/myapp"),
+        srpath!("home/bob/.config/myapp"),
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp")));
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::SourceIsSymlink(p))) => {
+            assert!(
+                p.ends_with(".config/myapp"),
+                "expected .config/myapp tail, got {p:?}",
+            );
+        }
+        other => panic!("expected SourceIsSymlink, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_rejects_single_file_for_new_pkg() {
+    // Pointing at a single file under a brand-new pkg dir falls through to
+    // the strict layout check and gets refused with a "point at the parent"
+    // hint.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp/config.toml")));
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::UnsupportedLayout(s))) => {
+            assert!(
+                s.contains(".config/myapp/config.toml"),
+                "tail should be in error: {s:?}",
+            );
+        }
+        other => panic!("expected UnsupportedLayout, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_rejects_empty_source_dir() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.create_dir(srpath!("home/bob/.config/myapp"));
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp")));
+    let result = env.run(&cmd);
+    assert!(
+        matches!(result, Err(Error::Import(ImportError::SourceEmpty(_)))),
+        "got {result:?}",
+    );
+}
+
+#[test]
+fn import_walks_subdirectories_recursively() {
+    // A user with a nested config tree (top-level files plus a themes/
+    // subdir) should see every regular file end up in the symlinks array,
+    // each with its forward-slash relative path.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/helix/top.toml"), b"top\n");
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/dark.toml"),
+        b"name = 'dark'\n",
+    );
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("recursive import should succeed");
+
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["themes/dark.toml", "top.toml"]);
+
+    // Each one is a real symlink in the home tree, pointing at its repo
+    // copy.
+    for rel in ["top.toml", "themes/dark.toml"] {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        let meta = std::fs::symlink_metadata(env.resolve_path(&home_rel)).unwrap();
+        assert!(meta.file_type().is_symlink(), "{rel} should be a symlink");
+    }
+}
+
+#[test]
+fn import_skips_dangling_symlink_in_source() {
+    // A common shape: source dir has a regular file plus a symlink to a
+    // path that no longer exists. The regular file imports normally; the
+    // dangling link gets surfaced as a Skip.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"real\n");
+    env.create_dangling_symlink(
+        std::path::Path::new("/tmp/zenops-test-nonexistent"),
+        srpath!("home/bob/.config/myapp/cache.dat"),
+    );
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let out = env.run(&cmd).expect("import should succeed");
+
+    // Real file got moved+symlinked.
+    let original = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // Dangling symlink left alone (and still dangling).
+    let cache = env.resolve_path(srpath!("home/bob/.config/myapp/cache.dat"));
+    assert!(
+        std::fs::symlink_metadata(&cache)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // Plan flagged a Skip with reason "symlink".
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected ImportPlan");
+    let dangling_skipped = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::Skip { path, reason } => {
+            path == std::path::Path::new("cache.dat") && reason == "symlink"
+        }
+        _ => false,
+    });
+    assert!(
+        dangling_skipped,
+        "expected dangling cache.dat to be skipped: {:?}",
+        plan.file_actions,
+    );
+
+    // config.toml only lists the regular file.
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["myapp"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml"]);
+}
+
+#[test]
+fn import_rejects_malformed_config_toml() {
+    let env = TestEnv::load();
+    env.init_config("not = valid =\n");
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp")));
+    let result = env.run(&cmd);
+    assert!(
+        matches!(result, Err(Error::Import(ImportError::ConfigParse(_, _)))),
+        "got {result:?}",
+    );
+}
+
+#[test]
+fn import_rejects_when_no_tty_and_no_yes() {
+    // TestEnv::default_args has stdin_is_terminal=false, so dropping --yes
+    // (without --dry-run) hits the NeedsTty refusal before any path check.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: false,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    assert!(
+        matches!(result, Err(Error::Import(ImportError::NeedsTty))),
+        "got {result:?}",
+    );
+}
+
+#[test]
+fn import_accepts_custom_source_override() {
+    // --source picks an alternative in-repo destination directory.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"foo = 1\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: Some("configs/custom-name".into()),
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("--source override should succeed");
+
+    // Repo copy lives under the overridden path.
+    let repo_copy = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/custom-name/config.toml"
+    ));
+    assert_eq!(std::fs::read(&repo_copy).unwrap(), b"foo = 1\n");
+
+    // Symlink target points there.
+    let symlink = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    assert_eq!(std::fs::read_link(&symlink).unwrap(), repo_copy);
+
+    // TOML records the overridden source.
+    let cfg = read_config(&env);
+    assert_eq!(
+        cfg["pkg"]["myapp"]["configs"][0]["source"].as_str(),
+        Some("configs/custom-name"),
+    );
+}
+
+#[test]
+fn import_rejects_custom_source_with_pre_existing_files() {
+    // --source pointing at a dir already populated with non-symlink files
+    // gets refused via the standard DestExists pathway.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_zenops_file(srpath!("configs/custom/config.toml"), b"old\n", None);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"new\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: Some("configs/custom".into()),
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    assert!(
+        matches!(result, Err(Error::Import(ImportError::DestExists(_)))),
+        "got {result:?}",
+    );
+}
+
+#[test]
+fn import_records_multiple_brew_packages() {
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["foo".into(), "bar".into(), "baz".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd)
+        .expect("import with multiple --brew should succeed");
+
+    let cfg = read_config(&env);
+    let packages: Vec<&str> = cfg["pkg"]["myapp"]["install_hint"]["brew"]["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(packages, vec!["foo", "bar", "baz"]);
+}
+
+// --- Tier 2: assert desired UX (some currently fail) -------------------
+
+#[test]
+fn import_refuses_when_zenops_repo_missing() {
+    // No init_config: the user hasn't run `zenops init` yet. Importing
+    // should refuse with a friendly message pointing at `zenops init`,
+    // not a bare I/O NotFound.
+    let env = TestEnv::load();
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal, got {result:?}");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("zenops init"),
+        "error should point at `zenops init`, got: {msg}",
+    );
+}
+
+#[test]
+fn import_refuses_to_import_zenops_repo_itself() {
+    // The user, exploring, points at their zenops repo dir. We can't
+    // recurse the repo into itself; refuse with a dedicated message.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/zenops")),
+        pkg: None,
+        source: None,
+        brew: vec!["zenops".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal, got {result:?}");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.to_ascii_lowercase().contains("zenops"),
+        "error should reference the zenops repo, got: {msg}",
+    );
+
+    // Critically: nothing got copied into the repo.
+    let configs_dir = env.resolve_path(srpath!("home/bob/.config/zenops/configs"));
+    assert!(
+        !configs_dir.exists() || std::fs::read_dir(&configs_dir).unwrap().next().is_none(),
+        "no files should have been copied into the zenops repo's configs/ dir",
+    );
+}
+
+#[test]
+fn import_rejects_regular_file_at_dot_config_slot() {
+    // ~/.config/<x> is sometimes a regular file (single-file configs).
+    // We don't support that shape today; refuse cleanly rather than
+    // leaking a raw NotADirectory IO error.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp"), b"# single-file config\n");
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp")));
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal, got {result:?}");
+    };
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+        msg.contains("director") || msg.contains("layout"),
+        "error should mention directory/layout, got: {msg}",
+    );
+}
+
+#[test]
+fn import_skips_vcs_subdir_in_source() {
+    // User points at a directory that happens to contain a `.git` subdir
+    // (e.g. they cloned their dotfiles into ~/.config/myapp). We must
+    // never recursively import the git repo — that copies thousands of
+    // pack files into the zenops repo.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x = 1\n");
+    env.write_file(
+        srpath!("home/bob/.config/myapp/.git/HEAD"),
+        b"ref: refs/heads/main\n",
+    );
+    env.write_file(srpath!("home/bob/.config/myapp/.git/config"), b"[core]\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let out = env.run(&cmd).expect("import should succeed; .git skipped");
+
+    // .git contents not symlinked into the home dir's `.git/` (the
+    // original tree is preserved, and no new `.git/HEAD -> ...` symlink
+    // appears that would break the repo).
+    let head = env.resolve_path(srpath!("home/bob/.config/myapp/.git/HEAD"));
+    let meta = std::fs::symlink_metadata(&head).unwrap();
+    assert!(
+        meta.file_type().is_file(),
+        ".git/HEAD must remain a regular file (not a symlink)",
+    );
+
+    // .git contents not in the repo copy.
+    let repo_git_dir = env.resolve_path(srpath!("home/bob/.config/zenops/configs/myapp/.git"));
+    assert!(
+        !repo_git_dir.exists(),
+        ".git must not be copied into the zenops repo",
+    );
+
+    // Plan reports the skip with a vcs reason (so json consumers see why
+    // we ignored it).
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let saw_vcs_skip = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::Skip { path, reason } => path.starts_with(".git") && reason == "vcs",
+        _ => false,
+    });
+    assert!(
+        saw_vcs_skip,
+        "expected a `.git` skip with reason=\"vcs\", got {:?}",
+        plan.file_actions,
+    );
+
+    // config.toml only mentions the regular file.
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["myapp"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml"]);
+}
+
+#[test]
+fn import_refuses_source_override_outside_repo() {
+    // --source must stay inside ~/.config/zenops. An absolute override or
+    // one that escapes via `..` could land files anywhere on disk —
+    // refuse it.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: Some("../escape".into()),
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal, got {result:?}");
+    };
+    let msg = err.to_string().to_ascii_lowercase();
+    assert!(
+        msg.contains("source") || msg.contains("outside") || msg.contains("escape"),
+        "error should mention --source / outside-repo, got: {msg}",
+    );
+
+    // Nothing landed outside the repo.
+    let escaped = env.resolve_path(srpath!("home/bob/.config/escape"));
+    assert!(
+        !escaped.exists(),
+        "no files should have escaped the zenops repo",
+    );
+}
+
+#[test]
+fn import_refuses_pkg_key_collision() {
+    // First import claims pkg `foo` for ~/.config/foo. Second import of
+    // ~/.foo (which would derive the same default pkg key) should refuse
+    // with a clear collision message rather than silently piling a second
+    // configs entry into [pkg.foo].
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/foo/config.toml"), b"a\n");
+    env.write_file(srpath!("home/bob/.foo/init"), b"b\n");
+
+    let first = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/foo")),
+        pkg: None,
+        source: None,
+        brew: vec!["foo".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&first).expect("first import should succeed");
+
+    let second = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.foo")),
+        pkg: None,
+        source: None,
+        brew: vec!["foo".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&second);
+    let Err(err) = result else {
+        panic!("expected refusal on default-key collision, got {result:?}");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("foo"),
+        "error should name the colliding pkg key `foo`, got: {msg}",
+    );
+    assert!(
+        msg.contains("--pkg")
+            || msg.contains("--source")
+            || msg.to_ascii_lowercase().contains("already"),
+        "error should suggest --pkg / --source or reference an existing pkg, got: {msg}",
+    );
+
+    // Second import didn't mutate state.
+    let dotfoo_init = env.resolve_path(srpath!("home/bob/.foo/init"));
+    assert!(
+        std::fs::symlink_metadata(&dotfoo_init)
+            .unwrap()
+            .file_type()
+            .is_file(),
+        "~/.foo/init should still be a regular file, not a symlink",
+    );
+}
+
+#[test]
+fn import_refuses_brew_with_empty_string() {
+    // `--brew ""` would land an empty string into install_hint.brew.packages,
+    // which is never useful. Refuse early.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    assert!(
+        result.is_err(),
+        "empty --brew value should be refused, got {result:?}",
+    );
+
+    // Confirm we didn't write a malformed install_hint to disk.
+    let cfg_text =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+    assert!(
+        !cfg_text.contains("packages = [\"\"]"),
+        "should not have written empty brew package, got config.toml:\n{cfg_text}",
+    );
+}
+
+#[test]
+fn import_rejects_config_root_itself() {
+    // ~/.config/ is an alias for "everything I configure". Importing it
+    // would recursively walk every app dir, including ~/.config/zenops
+    // itself. Refuse with a hint at the supported shapes.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    // Seed a couple of real config dirs so the would-be walk would have
+    // something to grab.
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+    env.write_file(srpath!("home/bob/.config/other/init"), b"y\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config")),
+        pkg: None,
+        source: None,
+        brew: vec!["whatever".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal for ~/.config/ root, got {result:?}");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains(".config/<x>")
+            || msg.contains(".<x>")
+            || msg.to_ascii_lowercase().contains("config root"),
+        "error should hint at supported shapes, got: {msg}",
+    );
+
+    // Source dirs untouched.
+    let myapp_cfg = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    assert!(
+        std::fs::symlink_metadata(&myapp_cfg)
+            .unwrap()
+            .file_type()
+            .is_file(),
+        "no nested file should have been symlinked",
+    );
+}
+
+// --- Tier 3: message-tweak / lower priority ---------------------------
+
+#[test]
+fn import_refuses_home_root_with_helpful_message() {
+    // ~/ is the deepest "I want everything" mistake. Today the layout
+    // check fires with an empty-tail UnsupportedLayout message; we want
+    // a friendlier, non-empty hint.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob")),
+        pkg: None,
+        source: None,
+        brew: vec!["whatever".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    let result = env.run(&cmd);
+    let Err(err) = result else {
+        panic!("expected refusal for ~/, got {result:?}");
+    };
+    let msg = err.to_string();
+    // The diagnostic must actually say something useful — the bare empty
+    // tail (`""`) on its own is not a helpful message.
+    let trimmed = msg.replace('"', "");
+    assert!(
+        trimmed.to_ascii_lowercase().contains("home")
+            || trimmed.contains(".config/<x>")
+            || trimmed.to_ascii_lowercase().contains("config dir"),
+        "error should give a clearer hint than an empty tail, got: {msg}",
+    );
+}
