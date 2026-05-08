@@ -31,8 +31,8 @@ use crate::{
     error::Error,
     line_prompter::{LineOutcome, LinePrompter, RustylinePrompter},
     output::{
-        AppliedAction, Event, ImportApplied, ImportFileAction, ImportPlan, ImportTomlChange,
-        ImportType, Output,
+        AppliedAction, Event, ImportApplied, ImportFileAction, ImportMode, ImportPlan,
+        ImportTomlChange, ImportType, Output,
     },
 };
 
@@ -109,7 +109,10 @@ pub fn run_with_prompter(
 
     let plan = build_plan(path, pkg_override, source_override, dirs, &doc)?;
 
-    if matches!(plan.toml, TomlPlan::ExtendExisting { .. }) {
+    if matches!(
+        plan.toml,
+        TomlPlan::ExtendExisting { .. } | TomlPlan::Reconcile { .. }
+    ) {
         let mut bad_flags: Vec<&'static str> = Vec::new();
         if pkg_override.is_some() {
             bad_flags.push("--pkg");
@@ -137,6 +140,17 @@ pub fn run_with_prompter(
         &mut prompter,
     )?;
 
+    let is_noop = plan.files.is_empty()
+        && plan.removed_files.is_empty()
+        && match &plan.toml {
+            TomlPlan::Reconcile {
+                added_symlinks,
+                removed_symlinks,
+                ..
+            } => added_symlinks.is_empty() && removed_symlinks.is_empty(),
+            _ => false,
+        };
+
     output.push(Event::ImportPlan(plan_to_event(
         &plan,
         created_pkg,
@@ -145,6 +159,16 @@ pub fn run_with_prompter(
     )))?;
 
     if dry_run {
+        return Ok(());
+    }
+
+    // Nothing to do — skip confirm + apply + write so a no-op reconcile
+    // doesn't reflow `config.toml` or pester the user for approval.
+    if is_noop {
+        output.push(Event::ImportApplied(ImportApplied {
+            pkg: plan.pkg_key.clone(),
+            is_noop: true,
+        }))?;
         return Ok(());
     }
 
@@ -168,6 +192,7 @@ pub fn run_with_prompter(
 
     output.push(Event::ImportApplied(ImportApplied {
         pkg: plan.pkg_key.clone(),
+        is_noop: false,
     }))?;
 
     Ok(())
@@ -198,6 +223,9 @@ struct Plan {
     files: Vec<PlannedFile>,
     /// Entries skipped during the walk.
     skipped: Vec<SkippedEntry>,
+    /// Repo-side files queued for deletion (reconcile mode only). Each
+    /// `rel` resolves under `repo_dest`. Empty for non-reconcile plans.
+    removed_files: Vec<RemovedFile>,
     /// Layout-specific metadata used when rendering the TOML entry.
     toml: TomlPlan,
 }
@@ -220,6 +248,13 @@ struct PlannedFile {
     rel: PathBuf,
     /// Relative path inside the in-repo destination tree. Same as `rel` in
     /// the typical case.
+    repo_rel: PathBuf,
+}
+
+/// One repo-side file slated for removal in reconcile mode. The repo path
+/// is `Plan::repo_dest.join(repo_rel)`.
+struct RemovedFile {
+    /// Path relative to `Plan::repo_dest`.
     repo_rel: PathBuf,
 }
 
@@ -256,6 +291,21 @@ enum TomlPlan {
         /// when the file rel was already listed; the array is then left
         /// untouched.
         added_symlinks: Vec<String>,
+    },
+    /// Reconcile an existing `[[pkg.<key>.configs]]` entry against its
+    /// home-side directory. Triggered when the imported path *is* an
+    /// already-managed on-disk root: walks the directory, proposes adds
+    /// for new files and removes for paths whose home-side counterpart
+    /// is gone.
+    Reconcile {
+        /// Index of the configs entry inside `[pkg.<key>].configs`.
+        config_index: usize,
+        /// Current contents of the entry's `symlinks` array.
+        existing_symlinks: Vec<String>,
+        /// Paths to append to the array (new files found on disk).
+        added_symlinks: Vec<String>,
+        /// Paths to drop from the array (no home-side counterpart).
+        removed_symlinks: Vec<String>,
     },
 }
 
@@ -299,11 +349,18 @@ fn build_plan(
         .strip_prefix(&canonical_home)
         .map_err(|_| ImportError::PathNotUnderHome(canonical_source.clone()))?;
 
+    // Reconcile mode: imported path *is* an already-managed on-disk
+    // root. Diff the directory against the entry's `symlinks` array.
+    // Checked before the strict-descendant `find_matching_config` so
+    // pointing at a subdir under a managed root still hits extend mode.
+    if let Some(root_match) = find_managed_root(doc, tail)? {
+        return build_reconcile_plan(root_match, canonical_source, &canonical_home, dirs);
+    }
+
     // Extend mode: input lives inside an already-managed config dir.
     // Append to that config's `symlinks` array instead of creating a new
     // pkg. Only triggers for strict descendants of an existing on-disk
-    // root, so passing the root itself (`~/.config/helix`) still flows
-    // through the new-pkg path below.
+    // root.
     if let Some(matched) = find_matching_config(doc, tail)? {
         let is_dir = canonical_source.is_dir();
         if is_dir {
@@ -435,6 +492,7 @@ fn build_plan(
         repo_rel,
         files,
         skipped,
+        removed_files: Vec::new(),
         toml,
     })
 }
@@ -579,6 +637,23 @@ struct ConfigMatch {
     existing_symlinks: Vec<String>,
 }
 
+/// One existing `[[pkg.<key>.configs]]` entry whose on-disk root *equals*
+/// the imported path. Returned by [`find_managed_root`] to drive
+/// reconcile mode.
+struct RootMatch {
+    pkg_key: SmolStr,
+    /// Index of the entry inside `[pkg.<key>].configs`.
+    config_index: usize,
+    r#type: ImportType,
+    /// Home-relative on-disk root (e.g. `.config/helix` or `.ssh`).
+    on_disk_root: String,
+    /// `source` field of the matched entry — repo-side dir relative to
+    /// `~/.config/zenops`.
+    source_rel: String,
+    /// Current `symlinks` array contents.
+    existing_symlinks: Vec<String>,
+}
+
 /// Walk every `[[pkg.<x>.configs]]` entry in `doc` and pick the one whose
 /// on-disk root is the longest strict ancestor of `home_tail`. Returns
 /// `Ok(None)` if no entry claims the path. Errors with
@@ -683,6 +758,96 @@ fn find_matching_config(
     Ok(best.into_iter().next())
 }
 
+/// Find the unique `[[pkg.<x>.configs]]` entry whose on-disk root *equals*
+/// `home_tail`. Returns `Ok(None)` when no entry matches; errors with
+/// [`ImportError::AmbiguousConfigMatch`] when two distinct entries claim
+/// the same root (a corrupt-config bug the user must resolve first).
+fn find_managed_root(
+    doc: &DocumentMut,
+    home_tail: &Path,
+) -> Result<Option<RootMatch>, ImportError> {
+    let pkg_table = match doc.get("pkg").and_then(Item::as_table) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    let tail_str = path_to_forward_slash(home_tail);
+    let mut matches: Vec<RootMatch> = Vec::new();
+
+    for (pkg_key_raw, pkg_item) in pkg_table.iter() {
+        let configs = match pkg_item
+            .as_table()
+            .and_then(|t| t.get("configs"))
+            .and_then(Item::as_array_of_tables)
+        {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for (idx, entry) in configs.iter().enumerate() {
+            let typ = match entry.get("type").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let (on_disk_root, import_type) = match typ {
+                ".config" => {
+                    let dir = entry
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(pkg_key_raw);
+                    (format!(".config/{dir}"), ImportType::DotConfig)
+                }
+                "home" => {
+                    let dir = match entry.get("dir").and_then(|v| v.as_str()) {
+                        Some(d) if !d.is_empty() => d,
+                        _ => continue,
+                    };
+                    (dir.to_string(), ImportType::Home)
+                }
+                _ => continue,
+            };
+
+            if on_disk_root != tail_str {
+                continue;
+            }
+
+            let source_rel = match entry.get("source").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+
+            let existing_symlinks = entry
+                .get("symlinks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            matches.push(RootMatch {
+                pkg_key: SmolStr::new(pkg_key_raw),
+                config_index: idx,
+                r#type: import_type,
+                on_disk_root,
+                source_rel,
+                existing_symlinks,
+            });
+        }
+    }
+
+    if matches.len() > 1 {
+        return Err(ImportError::AmbiguousConfigMatch {
+            path: PathBuf::from(tail_str),
+            candidates: matches.into_iter().map(|m| m.pkg_key).collect(),
+        });
+    }
+    Ok(matches.into_iter().next())
+}
+
 /// Build a [`Plan`] that extends an existing managed config by adding a
 /// single file. The file is staged into the matched entry's repo dir and
 /// its relative path is queued for append onto the entry's `symlinks`
@@ -738,6 +903,136 @@ fn build_extend_plan(
         repo_rel: matched.source_rel,
         files,
         skipped: Vec::new(),
+        removed_files: Vec::new(),
+        toml,
+    })
+}
+
+/// Build a [`Plan`] that reconciles an existing `[[pkg.<key>.configs]]`
+/// entry against the current state of its home-side directory. Walks
+/// the directory and diffs each entry against the array's `symlinks`:
+/// new files are queued for add, paths whose home-side counterpart is
+/// missing entirely are queued for remove. Already-managed files (proper
+/// symlinks at the right path) are no-ops.
+fn build_reconcile_plan(
+    matched: RootMatch,
+    canonical_source: PathBuf,
+    canonical_home: &Path,
+    dirs: &ConfigFileDirs,
+) -> Result<Plan, Error> {
+    if !canonical_source.is_dir() {
+        return Err(ImportError::UnsupportedLayout(matched.on_disk_root).into());
+    }
+    let source_root = canonical_home.join(&matched.on_disk_root);
+    let repo_dest = dirs.zenops().join(&matched.source_rel);
+
+    let mut walked = Vec::new();
+    let mut skipped = Vec::new();
+    walk_dir(&source_root, &mut walked, &mut skipped, Path::new(""))?;
+
+    let mut files: Vec<PlannedFile> = Vec::new();
+    let mut added_symlinks: Vec<String> = Vec::new();
+
+    for entry in walked {
+        let rel_str = path_to_forward_slash(&entry.rel);
+        let symlink_path = source_root.join(&entry.rel);
+        let dest_in_repo = repo_dest.join(&entry.repo_rel);
+        let already_in_array = matched.existing_symlinks.iter().any(|s| s == &rel_str);
+
+        let already_symlinked = symlink_path
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_symlink())
+            && fs::read_link(&symlink_path).is_ok_and(|t| t == dest_in_repo);
+
+        if already_symlinked {
+            // Existing zenops-managed symlink. If the array already lists
+            // it, fully in sync. If it doesn't, the array drifted — record
+            // the rel without re-copying (repo file is already in place).
+            if !already_in_array {
+                added_symlinks.push(rel_str);
+            }
+            continue;
+        }
+
+        if already_in_array {
+            // Rel is in the array but home-side is a regular file (not the
+            // expected symlink). Don't re-copy or unlink — `zenops apply`
+            // is the right tool. Surface the situation as a skip.
+            skipped.push(SkippedEntry {
+                path: entry.rel,
+                reason: SmolStr::new_static("present_but_not_linked"),
+            });
+            continue;
+        }
+
+        if dest_in_repo.try_exists().unwrap_or(false) {
+            // Repo destination is occupied by something we don't recognize
+            // (no matching symlink, not in the array). Refuse to clobber.
+            return Err(ImportError::DestExists(dest_in_repo).into());
+        }
+
+        files.push(PlannedFile {
+            rel: entry.rel.clone(),
+            repo_rel: entry.repo_rel,
+        });
+        added_symlinks.push(rel_str);
+    }
+
+    // Walk skips already-existing symlinks; classify those that point
+    // *outside* the repo so the user sees them in the plan.
+    let mut classified_skipped: Vec<SkippedEntry> = Vec::with_capacity(skipped.len());
+    for s in skipped {
+        if s.reason == "symlink" {
+            let abs = source_root.join(&s.path);
+            let target = fs::read_link(&abs).ok();
+            let in_repo = repo_dest.join(&s.path);
+            if target.as_deref() == Some(in_repo.as_path()) {
+                // Managed by us; don't surface (handled inline above for
+                // entries we encountered as files; this branch covers
+                // symlinks-of-symlinks edge cases). Drop it.
+                continue;
+            }
+            classified_skipped.push(SkippedEntry {
+                path: s.path,
+                reason: SmolStr::new_static("symlink_elsewhere"),
+            });
+        } else {
+            classified_skipped.push(s);
+        }
+    }
+
+    // Compute removals: paths in `existing_symlinks` whose home-side
+    // counterpart is gone (neither a symlink nor a regular file).
+    let mut removed_symlinks: Vec<String> = Vec::new();
+    let mut removed_files: Vec<RemovedFile> = Vec::new();
+    for rel in &matched.existing_symlinks {
+        let home_path = source_root.join(rel);
+        let exists = home_path.symlink_metadata().is_ok();
+        if !exists {
+            removed_symlinks.push(rel.clone());
+            removed_files.push(RemovedFile {
+                repo_rel: PathBuf::from(rel),
+            });
+        }
+    }
+
+    let toml = TomlPlan::Reconcile {
+        config_index: matched.config_index,
+        existing_symlinks: matched.existing_symlinks,
+        added_symlinks,
+        removed_symlinks,
+    };
+
+    Ok(Plan {
+        pkg_key: matched.pkg_key,
+        r#type: matched.r#type,
+        source: canonical_source,
+        source_root,
+        repo_dest,
+        repo_rel: matched.source_rel,
+        files,
+        skipped: classified_skipped,
+        removed_files,
         toml,
     })
 }
@@ -804,7 +1099,14 @@ fn confirm(p: &mut dyn LinePrompter, prompt: &str) -> Result<bool, Error> {
 /// Filesystem half of the apply phase: copy each source file into the
 /// repo, then walk the same list a second time to remove the originals
 /// and replace them with symlinks. Two passes so a copy failure leaves
-/// the originals untouched.
+/// the originals untouched. A third pass (reconcile mode only) deletes
+/// repo-side copies whose home-side counterpart is already gone.
+///
+/// Pass 3 is not rolled back on partial failure: the TOML write happens
+/// after this function, so a partial-Pass-3 / no-TOML-write state is
+/// still consistent with the on-disk array (entries we couldn't delete
+/// stay listed) and is recoverable by re-running `zenops import` on the
+/// same root.
 fn apply_files(plan: &Plan, dirs: &ConfigFileDirs, output: &mut dyn Output) -> Result<(), Error> {
     let mut undo = UndoLog::default();
 
@@ -870,6 +1172,37 @@ fn apply_files(plan: &Plan, dirs: &ConfigFileDirs, output: &mut dyn Output) -> R
             &plan.source_root,
             &f.rel,
         )?;
+    }
+
+    // Pass 3 (reconcile only): delete repo-side copies the user dropped
+    // from the home-side directory, then trim now-empty parent dirs back
+    // up to (but not including) `repo_dest`.
+    for r in &plan.removed_files {
+        let target = plan.repo_dest.join(&r.repo_rel);
+        if target.try_exists().unwrap_or(false) {
+            fs::remove_file(&target).map_err(|e| ImportError::Io(target.clone(), e))?;
+        }
+        push_removed_file_event(output, dirs, &plan.repo_rel, &r.repo_rel)?;
+
+        let mut parent = target.parent().map(Path::to_path_buf);
+        while let Some(p) = parent {
+            if p == plan.repo_dest || !p.starts_with(&plan.repo_dest) {
+                break;
+            }
+            match fs::read_dir(&p) {
+                Ok(mut iter) => {
+                    if iter.next().is_some() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            if fs::remove_dir(&p).is_err() {
+                break;
+            }
+            push_removed_dir_event_abs(output, dirs, &p)?;
+            parent = p.parent().map(Path::to_path_buf);
+        }
     }
 
     Ok(())
@@ -977,6 +1310,50 @@ fn push_symlink_event(
         .map_err(Into::into)
 }
 
+fn push_removed_file_event(
+    output: &mut dyn Output,
+    dirs: &ConfigFileDirs,
+    repo_rel: &str,
+    file_rel: &Path,
+) -> Result<(), Error> {
+    let joined = format!("{repo_rel}/{}", path_to_forward_slash(file_rel));
+    let path = ConfigFilePath::Zenops(
+        zenops_safe_relative_path::SafeRelativePath::from_relative_path(&joined)?.into(),
+    );
+    let resolved = crate::output::ResolvedConfigFilePath {
+        full: std::sync::Arc::from(path.resolved(dirs)),
+        path,
+    };
+    output
+        .push(Event::AppliedAction(AppliedAction::RemovedFile(resolved)))
+        .map_err(Into::into)
+}
+
+fn push_removed_dir_event_abs(
+    output: &mut dyn Output,
+    dirs: &ConfigFileDirs,
+    abs: &Path,
+) -> Result<(), Error> {
+    let zenops_root = dirs.zenops();
+    let rel = match abs.strip_prefix(zenops_root) {
+        Ok(r) => path_to_forward_slash(r),
+        Err(_) => return Ok(()),
+    };
+    if rel.is_empty() {
+        return Ok(());
+    }
+    let path = ConfigFilePath::Zenops(
+        zenops_safe_relative_path::SafeRelativePath::from_relative_path(&rel)?.into(),
+    );
+    let resolved = crate::output::ResolvedConfigFilePath {
+        full: std::sync::Arc::from(path.resolved(dirs)),
+        path,
+    };
+    output
+        .push(Event::AppliedAction(AppliedAction::RemovedDir(resolved)))
+        .map_err(Into::into)
+}
+
 fn path_to_forward_slash(p: &Path) -> String {
     let mut out = String::new();
     for (i, c) in p.components().enumerate() {
@@ -991,7 +1368,8 @@ fn path_to_forward_slash(p: &Path) -> String {
 /// Splice the new `[[pkg.<key>.configs]]` entry (and the surrounding
 /// `[pkg.<key>]` block, when this is a brand-new pkg) into the document.
 /// In extend mode, append the new paths to the matched entry's `symlinks`
-/// array instead.
+/// array. In reconcile mode, both append new paths and trim removed
+/// ones from the matched entry's array.
 fn update_doc(
     doc: &mut DocumentMut,
     plan: &Plan,
@@ -1006,6 +1384,18 @@ fn update_doc(
     } = &plan.toml
     {
         append_symlinks_to_configs_entry(doc, &plan.pkg_key, *config_index, added_symlinks);
+        return Ok(());
+    }
+
+    if let TomlPlan::Reconcile {
+        config_index,
+        added_symlinks,
+        removed_symlinks,
+        ..
+    } = &plan.toml
+    {
+        append_symlinks_to_configs_entry(doc, &plan.pkg_key, *config_index, added_symlinks);
+        remove_symlinks_from_configs_entry(doc, &plan.pkg_key, *config_index, removed_symlinks);
         return Ok(());
     }
 
@@ -1072,6 +1462,45 @@ fn append_symlinks_to_configs_entry(
     }
 }
 
+/// Drop `paths` from the `symlinks` array of `pkg.<pkg_key>.configs[config_index]`.
+/// No-op when `paths` is empty. Caller is expected to have validated
+/// `(pkg_key, config_index)` against the same document.
+fn remove_symlinks_from_configs_entry(
+    doc: &mut DocumentMut,
+    pkg_key: &str,
+    config_index: usize,
+    paths: &[String],
+) {
+    if paths.is_empty() {
+        return;
+    }
+    let entry = doc
+        .get_mut("pkg")
+        .and_then(|p| p.as_table_mut())
+        .and_then(|t| t.get_mut(pkg_key))
+        .and_then(|p| p.as_table_mut())
+        .and_then(|t| t.get_mut("configs"))
+        .and_then(Item::as_array_of_tables_mut)
+        .and_then(|aot| aot.get_mut(config_index))
+        .expect("matched configs entry should still exist");
+
+    let Some(arr) = entry.get_mut("symlinks").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut idx = 0;
+    while idx < arr.len() {
+        let drop = arr
+            .get(idx)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| paths.iter().any(|p| p == s));
+        if drop {
+            arr.remove(idx);
+        } else {
+            idx += 1;
+        }
+    }
+}
+
 /// Populate `key_table` with the `install_hint` sub-table for a freshly-
 /// created `[pkg.<key>]` block. Always writes a `packages` array so the
 /// deserializer's required-field invariant holds; the array is empty under
@@ -1131,8 +1560,10 @@ fn build_configs_entry_table(plan: &Plan) -> Table {
             }
             entry["symlinks"] = value(arr);
         }
-        TomlPlan::ExtendExisting { .. } => {
-            unreachable!("extend mode emits AppendSymlinks, not a new configs entry")
+        TomlPlan::ExtendExisting { .. } | TomlPlan::Reconcile { .. } => {
+            unreachable!(
+                "extend / reconcile modes emit AppendSymlinks / TrimSymlinks, not a new configs entry"
+            )
         }
     }
     entry
@@ -1151,9 +1582,15 @@ fn plan_to_event(
     no_install_hint: bool,
     brew_packages: &[String],
 ) -> ImportPlan {
-    let mut file_actions = Vec::with_capacity(plan.files.len() + plan.skipped.len());
+    let mut file_actions =
+        Vec::with_capacity(plan.files.len() + plan.skipped.len() + plan.removed_files.len());
     for f in &plan.files {
         file_actions.push(ImportFileAction::MoveAndSymlink { rel: f.rel.clone() });
+    }
+    for r in &plan.removed_files {
+        file_actions.push(ImportFileAction::RemoveFromRepo {
+            rel: r.repo_rel.clone(),
+        });
     }
     for s in &plan.skipped {
         file_actions.push(ImportFileAction::Skip {
@@ -1176,8 +1613,34 @@ fn plan_to_event(
                 array_after_preview: render_symlinks_array_preview(
                     existing_symlinks,
                     added_symlinks,
+                    &[],
                 ),
             });
+        }
+        TomlPlan::Reconcile {
+            config_index,
+            existing_symlinks,
+            added_symlinks,
+            removed_symlinks,
+        } => {
+            let after_preview =
+                render_symlinks_array_preview(existing_symlinks, added_symlinks, removed_symlinks);
+            if !added_symlinks.is_empty() {
+                toml_changes.push(ImportTomlChange::AppendSymlinks {
+                    pkg: plan.pkg_key.clone(),
+                    config_index: *config_index,
+                    paths: added_symlinks.clone(),
+                    array_after_preview: after_preview.clone(),
+                });
+            }
+            if !removed_symlinks.is_empty() {
+                toml_changes.push(ImportTomlChange::TrimSymlinks {
+                    pkg: plan.pkg_key.clone(),
+                    config_index: *config_index,
+                    paths: removed_symlinks.clone(),
+                    array_after_preview: after_preview,
+                });
+            }
         }
         TomlPlan::DotConfig { .. } | TomlPlan::Home { .. } => {
             if created_pkg {
@@ -1198,9 +1661,22 @@ fn plan_to_event(
         }
     }
 
+    let mode = match &plan.toml {
+        TomlPlan::Reconcile { .. } => ImportMode::Reconcile,
+        TomlPlan::ExtendExisting { .. } => ImportMode::Extend,
+        TomlPlan::DotConfig { .. } | TomlPlan::Home { .. } => {
+            if created_pkg {
+                ImportMode::NewPkg
+            } else {
+                ImportMode::Extend
+            }
+        }
+    };
+
     ImportPlan {
         pkg: plan.pkg_key.clone(),
         created_pkg,
+        mode,
         r#type: plan.r#type,
         source: plan.source.clone(),
         repo_dest: plan.repo_dest.clone(),
@@ -1209,12 +1685,23 @@ fn plan_to_event(
     }
 }
 
-/// Render the `symlinks` array as it will read after appending
-/// `added` to `existing` — used in the AppendSymlinks plan preview so
-/// the user sees the array in its post-edit form.
-fn render_symlinks_array_preview(existing: &[String], added: &[String]) -> String {
+/// Render the `symlinks` array as it will read after appending `added`
+/// and dropping `removed` from `existing` — used in the AppendSymlinks /
+/// TrimSymlinks plan previews so the user sees the array in its
+/// post-edit form. Pass an empty `removed` for non-reconcile callers.
+fn render_symlinks_array_preview(
+    existing: &[String],
+    added: &[String],
+    removed: &[String],
+) -> String {
     let mut arr = Array::new();
-    for s in existing.iter().chain(added.iter()) {
+    for s in existing {
+        if removed.iter().any(|r| r == s) {
+            continue;
+        }
+        arr.push(s.as_str());
+    }
+    for s in added {
         arr.push(s.as_str());
     }
     format!("symlinks = {arr}")

@@ -30,9 +30,9 @@ use serde::Serialize;
 
 pub use event::{
     AppliedAction, BootstrapSummary, DoctorCheck, DoctorSection, DoctorSeverity, FileStatus,
-    ImportApplied, ImportFileAction, ImportPlan, ImportTomlChange, ImportType, InitSummary,
-    PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus, ResolvedConfigFilePath, Status,
-    SymlinkStatus,
+    ImportApplied, ImportFileAction, ImportMode, ImportPlan, ImportTomlChange, ImportType,
+    InitSummary, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus, ResolvedConfigFilePath,
+    Status, SymlinkStatus,
 };
 pub use json::JsonOutput;
 pub use terminal::TerminalRenderer;

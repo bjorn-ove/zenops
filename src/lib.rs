@@ -185,6 +185,11 @@ pub enum Cmd {
     /// the originals with symlinks, and append a `[[pkg.<key>.configs]]`
     /// block to `config.toml`. Strict path classification — anything other
     /// than the two supported shapes is rejected.
+    ///
+    /// Re-running `import` on an already-managed root reconciles: new
+    /// files in the directory are added to the entry's `symlinks` array,
+    /// and array entries whose home-side counterpart is gone are dropped
+    /// (along with the repo-side copy).
     Import {
         /// Path to take over. Absolute, cwd-relative, or shell-expanded
         /// (e.g. `~/.config/foo`). Must canonicalize to either

@@ -7,7 +7,7 @@ use zenops::{
     import::ImportError,
     output::{ImportFileAction, ImportTomlChange, ImportType},
 };
-use zenops_safe_relative_path::srpath;
+use zenops_safe_relative_path::{SafeRelativePath, srpath};
 
 use test_env::{Entry, TestEnv};
 
@@ -780,14 +780,14 @@ fn import_extend_no_match_falls_back_to_layout_check() {
 
 #[test]
 fn import_idempotent_after_partial_run() {
-    // Re-running import after a successful import should be a no-op (no
-    // DestExists error). The plan calls this out as an explicit guarantee
-    // for partial-failure recovery.
+    // Re-running import on an already-managed root flips into reconcile
+    // mode. With everything in sync, reconcile is a no-op success — no
+    // DestExists or SourceEmpty errors escape.
     let env = TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
 
-    let cmd = Cmd::Import {
+    let first = Cmd::Import {
         path: env.resolve_path(srpath!("home/bob/.config/myapp")),
         pkg: None,
         source: None,
@@ -796,14 +796,513 @@ fn import_idempotent_after_partial_run() {
         yes: true,
         dry_run: false,
     };
-    env.run(&cmd).expect("first import should succeed");
+    env.run(&first).expect("first import should succeed");
 
-    // Second run: every file already imported. SourceEmpty fires because
-    // the planner short-circuits all already-imported files; no other
-    // failure should escape.
-    let result = env.run(&cmd);
-    assert!(
-        matches!(result, Err(Error::Import(ImportError::SourceEmpty(_)))),
-        "got {result:?}"
+    // Second run: pkg is now managed, so this reconciles. With nothing
+    // to add or remove, the plan is a no-op and applies cleanly.
+    let second = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: Vec::new(),
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&second).expect("reconcile no-op should succeed");
+}
+
+/// Seed an already-managed `[pkg.<key>]` whose `[[pkg.<key>.configs]]`
+/// entry manages `~/.config/<dir>/`, plus the on-disk repo copies and
+/// symlinks for each entry in `existing`. Mirrors a realistic state
+/// after a successful first import — reconcile tests use this to
+/// describe the starting point.
+fn seed_managed_dotconfig(
+    env: &TestEnv,
+    pkg_key: &str,
+    dir: Option<&str>,
+    existing: &[(&str, &[u8])],
+) {
+    let symlink_strs: Vec<&str> = existing.iter().map(|(rel, _)| *rel).collect();
+    let preset = dotconfig_preset(pkg_key, dir, &symlink_strs);
+    env.init_config(&preset);
+    let on_disk_dir = dir.unwrap_or(pkg_key);
+    for (rel, body) in existing {
+        let repo_rel = format!("home/bob/.config/zenops/configs/{pkg_key}/{rel}");
+        let home_rel = format!("home/bob/.config/{on_disk_dir}/{rel}");
+        env.write_file(
+            SafeRelativePath::from_relative_path(&repo_rel).unwrap(),
+            *body,
+        );
+        env.create_symlink(
+            SafeRelativePath::from_relative_path(&repo_rel).unwrap(),
+            SafeRelativePath::from_relative_path(&home_rel).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn import_reconcile_adds_new_files() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[("config.toml", b"theme = 'dracula'\n")],
     );
+    // A new file the user dropped into the managed dir without re-running.
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/dark.toml"),
+        b"name = 'dark'\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    // New file is now a symlink to the repo copy.
+    let original = env.resolve_path(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let repo_copy = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+    ));
+    assert_eq!(std::fs::read(&repo_copy).unwrap(), b"name = 'dark'\n");
+
+    // symlinks array now lists both paths.
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml", "themes/dark.toml"]);
+
+    // Plan event flags this as a non-noop apply with an AppendSymlinks
+    // change.
+    let applied = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportApplied(a) => Some(a),
+            _ => None,
+        })
+        .expect("ImportApplied expected");
+    assert!(!applied.is_noop);
+}
+
+#[test]
+fn import_reconcile_removes_missing_files() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[
+            ("config.toml", b"x\n"),
+            ("themes/dark.toml", b"name = 'dark'\n"),
+        ],
+    );
+    // User deleted the symlink AND the repo copy by hand.
+    env.delete_file(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    env.delete_file(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+    ));
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    env.run(&cmd).expect("reconcile should succeed");
+
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml"]);
+
+    // The empty `themes/` directory under the repo got pruned.
+    assert!(
+        !env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/themes"))
+            .exists()
+    );
+}
+
+#[test]
+fn import_reconcile_mixed_add_and_remove() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[
+            ("config.toml", b"x\n"),
+            ("themes/dark.toml", b"name = 'dark'\n"),
+        ],
+    );
+    // Drop one tracked file, add a new one.
+    env.delete_file(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    env.delete_file(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+    ));
+    env.write_file(
+        srpath!("home/bob/.config/helix/keymap.toml"),
+        b"q = 'quit'\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["config.toml", "keymap.toml"]);
+
+    // New file is a symlink; old repo copy and dir are gone.
+    let new_link =
+        std::fs::symlink_metadata(env.resolve_path(srpath!("home/bob/.config/helix/keymap.toml")))
+            .unwrap();
+    assert!(new_link.file_type().is_symlink());
+    assert!(
+        !env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+        ))
+        .exists()
+    );
+    assert!(
+        !env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/themes"))
+            .exists()
+    );
+
+    // Plan event reports both an append and a trim.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let kinds: Vec<_> = plan
+        .toml_changes
+        .iter()
+        .map(|c| match c {
+            ImportTomlChange::AppendSymlinks { .. } => "append",
+            ImportTomlChange::TrimSymlinks { .. } => "trim",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["append", "trim"]);
+}
+
+#[test]
+fn import_reconcile_no_op_marks_applied_noop() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "helix", None, &[("config.toml", b"x\n")]);
+    let cfg_before =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile no-op should succeed");
+
+    // Nothing in config.toml should have changed.
+    let cfg_after =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+    assert_eq!(cfg_after, cfg_before);
+
+    let applied = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportApplied(a) => Some(a),
+            _ => None,
+        })
+        .expect("ImportApplied expected");
+    assert!(applied.is_noop);
+}
+
+#[test]
+fn import_reconcile_dry_run_writes_nothing() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "helix", None, &[("config.toml", b"x\n")]);
+    env.write_file(
+        srpath!("home/bob/.config/helix/keymap.toml"),
+        b"q = 'quit'\n",
+    );
+    let cfg_before =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: Vec::new(),
+        no_install_hint: false,
+        yes: false,
+        dry_run: true,
+    };
+    let out = env.run(&cmd).expect("reconcile dry-run should succeed");
+
+    // Source still a regular file.
+    let src = env.resolve_path(srpath!("home/bob/.config/helix/keymap.toml"));
+    assert!(
+        std::fs::symlink_metadata(&src)
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    // No repo copy.
+    assert!(
+        !env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/keymap.toml"))
+            .exists()
+    );
+    // config.toml unchanged.
+    let cfg_after =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+    assert_eq!(cfg_after, cfg_before);
+    // Plan emitted, ImportApplied not.
+    assert!(
+        out.entries
+            .iter()
+            .any(|e| matches!(e, Entry::ImportPlan(_)))
+    );
+    assert!(
+        out.entries
+            .iter()
+            .all(|e| !matches!(e, Entry::ImportApplied(_)))
+    );
+}
+
+#[test]
+fn import_reconcile_rejects_new_pkg_flags() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "helix", None, &[("config.toml", b"x\n")]);
+    env.write_file(
+        srpath!("home/bob/.config/helix/keymap.toml"),
+        b"q = 'quit'\n",
+    );
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: Some("other".into()),
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::ExtendFlagsInvalid { flags })) => {
+            assert!(flags.contains(&"--pkg"));
+            assert!(flags.contains(&"--brew"));
+        }
+        other => panic!("expected ExtendFlagsInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_reconcile_skips_symlink_elsewhere() {
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "helix", None, &[("config.toml", b"x\n")]);
+    // A user-managed symlink pointing outside the repo.
+    env.write_file(srpath!("home/bob/elsewhere/cache.dat"), b"y\n");
+    env.create_symlink(
+        srpath!("home/bob/elsewhere/cache.dat"),
+        srpath!("home/bob/.config/helix/cache.dat"),
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    // Symlink left untouched.
+    let target =
+        std::fs::read_link(env.resolve_path(srpath!("home/bob/.config/helix/cache.dat"))).unwrap();
+    assert_eq!(
+        target,
+        env.resolve_path(srpath!("home/bob/elsewhere/cache.dat"))
+    );
+
+    // Array unchanged.
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml"]);
+
+    // Plan emits a Skip with reason "symlink_elsewhere".
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let has_skip = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::Skip { reason, .. } => reason == "symlink_elsewhere",
+        _ => false,
+    });
+    assert!(
+        has_skip,
+        "expected symlink_elsewhere skip, got {:?}",
+        plan.file_actions
+    );
+}
+
+#[test]
+fn import_reconcile_skips_present_but_not_linked() {
+    let env = TestEnv::load();
+    // Seed array with `config.toml` listed, but the home-side path is a
+    // regular file (no symlink) — `apply` would convert it; reconcile
+    // shouldn't touch it.
+    let preset = dotconfig_preset("helix", None, &["config.toml"]);
+    env.init_config(&preset);
+    env.write_file(
+        srpath!("home/bob/.config/zenops/configs/helix/config.toml"),
+        b"x\n",
+    );
+    env.write_file(srpath!("home/bob/.config/helix/config.toml"), b"y\n");
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    // home-side still a regular file, repo copy still has its bytes.
+    let src = env.resolve_path(srpath!("home/bob/.config/helix/config.toml"));
+    assert!(
+        std::fs::symlink_metadata(&src)
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    assert_eq!(std::fs::read(&src).unwrap(), b"y\n");
+
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let has_skip = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::Skip { reason, .. } => reason == "present_but_not_linked",
+        _ => false,
+    });
+    assert!(has_skip);
+}
+
+#[test]
+fn import_reconcile_home_type_entry() {
+    // Reconcile a `type = "home"` entry (here pretending `gitcfg` lives
+    // under `~/.local/share/gitcfg`).
+    let env = TestEnv::load();
+    let preset = format!(
+        "{}\n\
+         [pkg.gitcfg]\n\
+         [pkg.gitcfg.install_hint.brew]\n\
+         packages = [\"git\"]\n\
+         [[pkg.gitcfg.configs]]\n\
+         type = \"home\"\n\
+         dir = \".local/share/gitcfg\"\n\
+         source = \"configs/gitcfg\"\n\
+         symlinks = [\"main.toml\"]\n",
+        MINIMAL_CONFIG,
+    );
+    env.init_config(&preset);
+    env.write_file(
+        srpath!("home/bob/.config/zenops/configs/gitcfg/main.toml"),
+        b"x\n",
+    );
+    env.create_symlink(
+        srpath!("home/bob/.config/zenops/configs/gitcfg/main.toml"),
+        srpath!("home/bob/.local/share/gitcfg/main.toml"),
+    );
+    env.write_file(
+        srpath!("home/bob/.local/share/gitcfg/profiles/work.toml"),
+        b"profile = 'work'\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.local/share/gitcfg")));
+    env.run(&cmd).expect("home reconcile should succeed");
+
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["gitcfg"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["main.toml", "profiles/work.toml"]);
+}
+
+#[test]
+fn import_reconcile_name_overridden_dotconfig() {
+    // pkg key "neovim" but the on-disk dir is "nvim" (via name override).
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "neovim", Some("nvim"), &[("init.lua", b"-- start\n")]);
+    env.write_file(
+        srpath!("home/bob/.config/nvim/keymap.lua"),
+        b"-- bindings\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/nvim")));
+    env.run(&cmd)
+        .expect("reconcile should match by name override");
+
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["neovim"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["init.lua", "keymap.lua"]);
+}
+
+#[test]
+fn import_reconcile_strict_descendant_still_extends() {
+    // Pointing at a single file under a managed root continues to hit
+    // extend mode (one new entry appended), not reconcile.
+    let env = TestEnv::load();
+    seed_managed_dotconfig(&env, "helix", None, &[("config.toml", b"x\n")]);
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/dark.toml"),
+        b"name = 'dark'\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix/themes/dark.toml")));
+    let out = env.run(&cmd).expect("extend (single file) should succeed");
+
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    // No TrimSymlinks ever fires from extend mode.
+    let has_trim = plan
+        .toml_changes
+        .iter()
+        .any(|c| matches!(c, ImportTomlChange::TrimSymlinks { .. }));
+    assert!(!has_trim);
 }

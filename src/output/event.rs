@@ -193,6 +193,22 @@ pub enum ImportType {
     Home,
 }
 
+/// Which kind of import the plan describes. Drives the header line in
+/// the human renderer and lets JSON consumers tell the modes apart
+/// without inspecting `created_pkg` / the `toml_changes` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// Importing into a brand-new `[pkg.<key>]` block.
+    NewPkg,
+    /// Adding a single file under an already-managed on-disk root.
+    Extend,
+    /// Diffing an already-managed root against its current `symlinks`
+    /// array — adds files found on disk, drops paths whose home-side
+    /// counterpart is gone.
+    Reconcile,
+}
+
 /// One filesystem-side intent in an [`ImportPlan`]. Each variant
 /// describes a single decision the apply phase will (or will not) act on;
 /// new variants land here as `import` grows new shapes (per-file
@@ -217,8 +233,17 @@ pub enum ImportFileAction {
     Skip {
         /// Path relative to the imported source root.
         path: PathBuf,
-        /// Stable reason tag (`"symlink"`, `"other"`, …).
+        /// Stable reason tag (`"symlink"`, `"other"`,
+        /// `"symlink_elsewhere"`, `"present_but_not_linked"`, …).
         reason: SmolStr,
+    },
+    /// Reconcile-mode action: the in-repo copy at `rel` will be deleted
+    /// because the home-side counterpart no longer exists. `rel` is
+    /// relative to the entry's repo destination (i.e.
+    /// `[[pkg.<key>.configs]].source` joined with this rel).
+    RemoveFromRepo {
+        /// Path relative to the imported source root (== repo dest tail).
+        rel: PathBuf,
     },
 }
 
@@ -266,6 +291,22 @@ pub enum ImportTomlChange {
         /// append, e.g. `symlinks = ["existing", "new"]`.
         array_after_preview: String,
     },
+    /// Drop paths from the `symlinks` array of an existing
+    /// `[[pkg.<key>.configs]]` entry. Emitted by reconcile mode when a
+    /// path listed in the array no longer has a home-side counterpart.
+    /// The repo-side copy is removed via a paired
+    /// [`ImportFileAction::RemoveFromRepo`] action.
+    TrimSymlinks {
+        /// Pkg key whose configs entry loses the listed symlinks.
+        pkg: SmolStr,
+        /// Index of the configs entry inside `[pkg.<key>].configs`.
+        config_index: usize,
+        /// Paths being removed from the `symlinks` array.
+        paths: Vec<String>,
+        /// TOML snippet showing the array as it will read after the
+        /// trim, e.g. `symlinks = ["surviving"]`.
+        array_after_preview: String,
+    },
 }
 
 /// Pre-apply plan for `zenops import`. Emitted before any mutation runs
@@ -280,8 +321,12 @@ pub struct ImportPlan {
     /// Pkg key the import will land under (`[pkg.<key>]`).
     pub pkg: SmolStr,
     /// `true` when this plan creates the `[pkg.<key>]` block; `false`
-    /// when extending an existing pkg.
+    /// when extending or reconciling an existing pkg. Equivalent to
+    /// `mode == ImportMode::NewPkg`; kept for backward compatibility
+    /// with v0.14.0 JSON consumers.
     pub created_pkg: bool,
+    /// Which kind of import this is (new pkg / extend / reconcile).
+    pub mode: ImportMode,
     /// Layout shape that drove path classification.
     pub r#type: ImportType,
     /// Where the files are being imported from (absolute,
@@ -304,6 +349,11 @@ pub struct ImportPlan {
 pub struct ImportApplied {
     /// Pkg key the import landed under.
     pub pkg: SmolStr,
+    /// `true` when the plan made no filesystem or `config.toml` changes
+    /// (reconcile run on an already-in-sync managed root). The renderer
+    /// suppresses the "next steps" hint in that case.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_noop: bool,
 }
 
 /// Result of a successful `zenops init` bootstrap (no URL). Reports the
@@ -492,4 +542,10 @@ pub enum AppliedAction {
     },
     /// Parent directory created so a managed file or symlink could land.
     CreatedDir(ResolvedConfigFilePath),
+    /// File deleted from disk (today: a repo-side copy dropped by
+    /// `zenops import` reconcile when the home-side counterpart is gone).
+    RemovedFile(ResolvedConfigFilePath),
+    /// Now-empty parent directory removed after [`Self::RemovedFile`]
+    /// pruned its last child.
+    RemovedDir(ResolvedConfigFilePath),
 }

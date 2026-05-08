@@ -14,9 +14,9 @@ use crate::{ansi::Styler, config_files::ConfigFilePath, git::GitFileStatus};
 
 use super::{
     AppliedAction, BootstrapSummary, DoctorCheck, DoctorSection, DoctorSeverity, Event, FileStatus,
-    ImportApplied, ImportFileAction, ImportPlan, ImportTomlChange, ImportType, InitSummary, Output,
-    OutputError, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus, ResolvedConfigFilePath,
-    Status, SymlinkStatus,
+    ImportApplied, ImportFileAction, ImportMode, ImportPlan, ImportTomlChange, ImportType,
+    InitSummary, Output, OutputError, PkgEntry, PkgEntryState, PkgInstallHints, PkgStatus,
+    ResolvedConfigFilePath, Status, SymlinkStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +477,18 @@ fn action_to_line(action: &AppliedAction) -> Line {
             path: path_segments(path),
             description: vec![Segment::new(Style::Green, "mkdir")],
         },
+        AppliedAction::RemovedFile(path) => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: path_segments(path),
+            description: vec![Segment::new(Style::Green, "removed")],
+        },
+        AppliedAction::RemovedDir(path) => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: path_segments(path),
+            description: vec![Segment::new(Style::Green, "rmdir")],
+        },
     }
 }
 
@@ -662,10 +674,10 @@ impl TerminalRenderer<'_> {
             ImportType::DotConfig => ".config",
             ImportType::Home => "home",
         };
-        let header_action = if plan.created_pkg {
-            "import new pkg"
-        } else {
-            "extend pkg"
+        let header_action = match plan.mode {
+            ImportMode::NewPkg => "import new pkg",
+            ImportMode::Extend => "extend pkg",
+            ImportMode::Reconcile => "reconcile pkg",
         };
         writeln!(
             self.out,
@@ -694,6 +706,11 @@ impl TerminalRenderer<'_> {
                 self.render_toml_change(change)?;
             }
         }
+
+        if plan.file_actions.is_empty() && plan.toml_changes.is_empty() {
+            writeln!(self.out)?;
+            writeln!(self.out, "Already in sync — nothing to do.")?;
+        }
         Ok(())
     }
 
@@ -706,6 +723,11 @@ impl TerminalRenderer<'_> {
                 self.out,
                 "  skip             {}  ({reason})",
                 path.display(),
+            )?,
+            ImportFileAction::RemoveFromRepo { rel } => writeln!(
+                self.out,
+                "  remove           {}  (no longer in $HOME)",
+                rel.display(),
             )?,
         }
         Ok(())
@@ -747,11 +769,31 @@ impl TerminalRenderer<'_> {
                     }
                 }
             }
+            ImportTomlChange::TrimSymlinks {
+                pkg,
+                config_index,
+                paths,
+                array_after_preview,
+            } => {
+                writeln!(
+                    self.out,
+                    "  trim pkg.{pkg}.configs[{config_index}].symlinks (-{}):",
+                    paths.len(),
+                )?;
+                for line in array_after_preview.lines() {
+                    writeln!(self.out, "      {line}")?;
+                }
+            }
         }
         Ok(())
     }
 
     fn render_import_applied(&mut self, applied: &ImportApplied) -> Result<(), OutputError> {
+        // The plan body already says "Already in sync" for no-ops; don't
+        // double up here.
+        if applied.is_noop {
+            return Ok(());
+        }
         writeln!(
             self.out,
             "Next: review `git diff` in ~/.config/zenops, then `zenops repo commit -m \"import: add pkg.{}\"`",
