@@ -1306,3 +1306,146 @@ fn import_reconcile_strict_descendant_still_extends() {
         .any(|c| matches!(c, ImportTomlChange::TrimSymlinks { .. }));
     assert!(!has_trim);
 }
+
+#[test]
+fn import_reconcile_detects_rename() {
+    // Stand up a managed `.config` project with two files, run `zenops
+    // import` on the root, then rename one of the home-side symlinks
+    // (which leaves the symlink pointing at the old repo path) and
+    // re-run import. Reconcile should plan a rename: move the repo
+    // file, retarget the symlink, swap the rels in the array.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/helix/config.toml"), b"foo = 1\n");
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/dark.toml"),
+        b"theme = 'dark'\n",
+    );
+
+    // First import: brings ~/.config/helix under management.
+    let first = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&first).expect("first import should succeed");
+
+    // Sanity: original symlink is in place pointing at the old repo path.
+    let old_link = env.resolve_path(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    let old_repo = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+    ));
+    assert_eq!(std::fs::read_link(&old_link).unwrap(), old_repo);
+
+    // User renames the symlink in place: themes/dark.toml -> themes/dracula.toml.
+    // The symlink's target still points at the old repo path.
+    let new_link = env.resolve_path(srpath!("home/bob/.config/helix/themes/dracula.toml"));
+    std::fs::rename(&old_link, &new_link).unwrap();
+    assert_eq!(std::fs::read_link(&new_link).unwrap(), old_repo);
+
+    // Re-run import on the root: reconcile mode kicks in.
+    let second = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&second).expect("reconcile rename should succeed");
+
+    // Plan event reports a single RenameInRepo file action (themes/dark.toml
+    // -> themes/dracula.toml), no spurious add or remove for the same file.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let rename_pairs: Vec<(&std::path::Path, &std::path::Path)> = plan
+        .file_actions
+        .iter()
+        .filter_map(|a| match a {
+            ImportFileAction::RenameInRepo { from, to } => Some((from.as_path(), to.as_path())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rename_pairs,
+        vec![(
+            std::path::Path::new("themes/dark.toml"),
+            std::path::Path::new("themes/dracula.toml"),
+        )],
+    );
+    let has_unrelated_remove = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::RemoveFromRepo { rel } => {
+            rel.as_path() == std::path::Path::new("themes/dark.toml")
+        }
+        _ => false,
+    });
+    assert!(
+        !has_unrelated_remove,
+        "rename source should not also be a delete"
+    );
+    let has_unrelated_add = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::MoveAndSymlink { rel } => {
+            rel.as_path() == std::path::Path::new("themes/dracula.toml")
+        }
+        _ => false,
+    });
+    assert!(
+        !has_unrelated_add,
+        "rename target should not also be a copy"
+    );
+
+    // Plan TOML side: the array transitions via paired Append+Trim with a
+    // shared after-preview that lists `themes/dracula.toml`, not the old name.
+    let after_preview = plan
+        .toml_changes
+        .iter()
+        .find_map(|c| match c {
+            ImportTomlChange::AppendSymlinks {
+                array_after_preview,
+                ..
+            }
+            | ImportTomlChange::TrimSymlinks {
+                array_after_preview,
+                ..
+            } => Some(array_after_preview.as_str()),
+            _ => None,
+        })
+        .expect("expected an AppendSymlinks or TrimSymlinks change");
+    assert!(
+        after_preview.contains("themes/dracula.toml"),
+        "after-preview should mention new name, got {after_preview}",
+    );
+    assert!(
+        !after_preview.contains("themes/dark.toml"),
+        "after-preview should not mention old name, got {after_preview}",
+    );
+
+    // After apply: repo file moved.
+    let new_repo = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dracula.toml"
+    ));
+    assert!(new_repo.exists(), "repo file should be at the new path");
+    assert_eq!(std::fs::read(&new_repo).unwrap(), b"theme = 'dark'\n");
+    assert!(
+        !old_repo.exists(),
+        "repo file at the old path should be gone",
+    );
+
+    // Symlink retargeted to the new repo path (no longer dangling).
+    let target = std::fs::read_link(&new_link).unwrap();
+    assert_eq!(target, new_repo);
+
+    // Array updated.
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["config.toml", "themes/dracula.toml"]);
+}

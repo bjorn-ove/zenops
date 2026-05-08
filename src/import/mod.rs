@@ -142,6 +142,7 @@ pub fn run_with_prompter(
 
     let is_noop = plan.files.is_empty()
         && plan.removed_files.is_empty()
+        && plan.renamed_files.is_empty()
         && match &plan.toml {
             TomlPlan::Reconcile {
                 added_symlinks,
@@ -226,6 +227,10 @@ struct Plan {
     /// Repo-side files queued for deletion (reconcile mode only). Each
     /// `rel` resolves under `repo_dest`. Empty for non-reconcile plans.
     removed_files: Vec<RemovedFile>,
+    /// Repo-side files queued for renaming (reconcile mode only). Each
+    /// pair holds rels relative to `repo_dest`. Empty for non-reconcile
+    /// plans.
+    renamed_files: Vec<RenamedFile>,
     /// Layout-specific metadata used when rendering the TOML entry.
     toml: TomlPlan,
 }
@@ -256,6 +261,16 @@ struct PlannedFile {
 struct RemovedFile {
     /// Path relative to `Plan::repo_dest`.
     repo_rel: PathBuf,
+}
+
+/// One repo-side file slated for renaming in reconcile mode (because the
+/// user renamed the home-side symlink). Both rels resolve under
+/// `Plan::repo_dest`.
+struct RenamedFile {
+    /// Old path (still listed in the entry's `symlinks` array).
+    from: PathBuf,
+    /// New path (where the home-side symlink now lives).
+    to: PathBuf,
 }
 
 /// What the new TOML entry will carry beyond the shared `source` /
@@ -295,16 +310,18 @@ enum TomlPlan {
     /// Reconcile an existing `[[pkg.<key>.configs]]` entry against its
     /// home-side directory. Triggered when the imported path *is* an
     /// already-managed on-disk root: walks the directory, proposes adds
-    /// for new files and removes for paths whose home-side counterpart
-    /// is gone.
+    /// for new files, removes for paths whose home-side counterpart is
+    /// gone, and renames for symlinks the user moved in place.
     Reconcile {
         /// Index of the configs entry inside `[pkg.<key>].configs`.
         config_index: usize,
         /// Current contents of the entry's `symlinks` array.
         existing_symlinks: Vec<String>,
-        /// Paths to append to the array (new files found on disk).
+        /// Paths to append to the array (new files found on disk plus
+        /// the `to` side of any renames).
         added_symlinks: Vec<String>,
-        /// Paths to drop from the array (no home-side counterpart).
+        /// Paths to drop from the array (no home-side counterpart, plus
+        /// the `from` side of any renames).
         removed_symlinks: Vec<String>,
     },
 }
@@ -493,6 +510,7 @@ fn build_plan(
         files,
         skipped,
         removed_files: Vec::new(),
+        renamed_files: Vec::new(),
         toml,
     })
 }
@@ -904,6 +922,7 @@ fn build_extend_plan(
         files,
         skipped: Vec::new(),
         removed_files: Vec::new(),
+        renamed_files: Vec::new(),
         toml,
     })
 }
@@ -978,34 +997,73 @@ fn build_reconcile_plan(
         added_symlinks.push(rel_str);
     }
 
-    // Walk skips already-existing symlinks; classify those that point
-    // *outside* the repo so the user sees them in the plan.
+    // Walk skips every existing symlink under the source root. Three
+    // sub-classifications fall out of inspecting the target:
+    //   1. Target == repo_dest/<walk_rel>: managed and in sync — drop.
+    //   2. Target == repo_dest/<R0> where R0 ∈ existing_symlinks AND
+    //      walk_rel ∉ existing_symlinks: the user renamed the symlink
+    //      in place. Queue a rename (R0 → walk_rel).
+    //   3. Otherwise: surface as `symlink_elsewhere`.
     let mut classified_skipped: Vec<SkippedEntry> = Vec::with_capacity(skipped.len());
+    let mut renamed_files: Vec<RenamedFile> = Vec::new();
+    let mut rename_from_set: Vec<String> = Vec::new();
     for s in skipped {
-        if s.reason == "symlink" {
-            let abs = source_root.join(&s.path);
-            let target = fs::read_link(&abs).ok();
-            let in_repo = repo_dest.join(&s.path);
-            if target.as_deref() == Some(in_repo.as_path()) {
-                // Managed by us; don't surface (handled inline above for
-                // entries we encountered as files; this branch covers
-                // symlinks-of-symlinks edge cases). Drop it.
-                continue;
+        if s.reason != "symlink" {
+            classified_skipped.push(s);
+            continue;
+        }
+        let abs = source_root.join(&s.path);
+        let target = fs::read_link(&abs).ok();
+        let in_repo_at_walk = repo_dest.join(&s.path);
+        if target.as_deref() == Some(in_repo_at_walk.as_path()) {
+            continue;
+        }
+
+        let new_rel_str = path_to_forward_slash(&s.path);
+        let new_in_array = matched.existing_symlinks.iter().any(|e| e == &new_rel_str);
+        let detected_rename = if new_in_array {
+            None
+        } else if let Some(t) = target.as_deref()
+            && let Ok(target_rel) = t.strip_prefix(&repo_dest)
+        {
+            let from_rel_str = path_to_forward_slash(target_rel);
+            if from_rel_str != new_rel_str
+                && matched.existing_symlinks.iter().any(|e| e == &from_rel_str)
+                && !rename_from_set.iter().any(|s| s == &from_rel_str)
+            {
+                Some((PathBuf::from(target_rel), from_rel_str))
+            } else {
+                None
             }
-            classified_skipped.push(SkippedEntry {
+        } else {
+            None
+        };
+
+        match detected_rename {
+            Some((from_path, from_rel_str)) => {
+                rename_from_set.push(from_rel_str);
+                renamed_files.push(RenamedFile {
+                    from: from_path,
+                    to: s.path,
+                });
+            }
+            None => classified_skipped.push(SkippedEntry {
                 path: s.path,
                 reason: SmolStr::new_static("symlink_elsewhere"),
-            });
-        } else {
-            classified_skipped.push(s);
+            }),
         }
     }
 
     // Compute removals: paths in `existing_symlinks` whose home-side
-    // counterpart is gone (neither a symlink nor a regular file).
+    // counterpart is gone (neither a symlink nor a regular file). Skip
+    // rels that participated in a rename — those are handled by the
+    // rename pass instead of an outright delete.
     let mut removed_symlinks: Vec<String> = Vec::new();
     let mut removed_files: Vec<RemovedFile> = Vec::new();
     for rel in &matched.existing_symlinks {
+        if rename_from_set.iter().any(|f| f == rel) {
+            continue;
+        }
         let home_path = source_root.join(rel);
         let exists = home_path.symlink_metadata().is_ok();
         if !exists {
@@ -1014,6 +1072,15 @@ fn build_reconcile_plan(
                 repo_rel: PathBuf::from(rel),
             });
         }
+    }
+
+    // Fold renames into the array delta. The post-edit array reads as
+    // `existing − removed_symlinks − rename_from + added_symlinks +
+    // rename_to`, which the merged Trim/Append events render in their
+    // shared after-preview.
+    for r in &renamed_files {
+        added_symlinks.push(path_to_forward_slash(&r.to));
+        removed_symlinks.push(path_to_forward_slash(&r.from));
     }
 
     let toml = TomlPlan::Reconcile {
@@ -1033,6 +1100,7 @@ fn build_reconcile_plan(
         files,
         skipped: classified_skipped,
         removed_files,
+        renamed_files,
         toml,
     })
 }
@@ -1174,7 +1242,65 @@ fn apply_files(plan: &Plan, dirs: &ConfigFileDirs, output: &mut dyn Output) -> R
         )?;
     }
 
-    // Pass 3 (reconcile only): delete repo-side copies the user dropped
+    // Pass 3 (reconcile only): rename repo-side copies whose home-side
+    // symlink the user moved in place. Each rename moves the repo file
+    // from the old rel to the new one, then re-creates the home symlink
+    // with the right target so it no longer dangles.
+    for r in &plan.renamed_files {
+        let from_abs = plan.repo_dest.join(&r.from);
+        let to_abs = plan.repo_dest.join(&r.to);
+        if let Some(parent) = to_abs.parent()
+            && !parent.try_exists().unwrap_or(false)
+        {
+            fs::create_dir_all(parent).map_err(|e| ImportError::Io(parent.to_path_buf(), e))?;
+        }
+        fs::rename(&from_abs, &to_abs).map_err(|e| ImportError::Io(from_abs.clone(), e))?;
+        push_renamed_file_event(output, dirs, &plan.repo_rel, &r.from, &r.to)?;
+
+        let home_link = plan.source_root.join(&r.to);
+        if let Err(e) = fs::remove_file(&home_link) {
+            return Err(ImportError::RemoveOriginal(home_link, e).into());
+        }
+        if let Err(e) = std::os::unix::fs::symlink(&to_abs, &home_link) {
+            return Err(ImportError::Symlink {
+                real: to_abs.clone(),
+                symlink: home_link,
+                source: e,
+            }
+            .into());
+        }
+        push_symlink_event(
+            output,
+            dirs,
+            &plan.repo_rel,
+            &r.to,
+            &plan.source_root,
+            &r.to,
+        )?;
+
+        // Trim the now-empty parent dirs of the old repo path.
+        let mut parent = from_abs.parent().map(Path::to_path_buf);
+        while let Some(p) = parent {
+            if p == plan.repo_dest || !p.starts_with(&plan.repo_dest) {
+                break;
+            }
+            match fs::read_dir(&p) {
+                Ok(mut iter) => {
+                    if iter.next().is_some() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            if fs::remove_dir(&p).is_err() {
+                break;
+            }
+            push_removed_dir_event_abs(output, dirs, &p)?;
+            parent = p.parent().map(Path::to_path_buf);
+        }
+    }
+
+    // Pass 4 (reconcile only): delete repo-side copies the user dropped
     // from the home-side directory, then trim now-empty parent dirs back
     // up to (but not including) `repo_dest`.
     for r in &plan.removed_files {
@@ -1351,6 +1477,37 @@ fn push_removed_dir_event_abs(
     };
     output
         .push(Event::AppliedAction(AppliedAction::RemovedDir(resolved)))
+        .map_err(Into::into)
+}
+
+fn push_renamed_file_event(
+    output: &mut dyn Output,
+    dirs: &ConfigFileDirs,
+    repo_rel: &str,
+    from_rel: &Path,
+    to_rel: &Path,
+) -> Result<(), Error> {
+    let from_joined = format!("{repo_rel}/{}", path_to_forward_slash(from_rel));
+    let to_joined = format!("{repo_rel}/{}", path_to_forward_slash(to_rel));
+    let from_path = ConfigFilePath::Zenops(
+        zenops_safe_relative_path::SafeRelativePath::from_relative_path(&from_joined)?.into(),
+    );
+    let to_path = ConfigFilePath::Zenops(
+        zenops_safe_relative_path::SafeRelativePath::from_relative_path(&to_joined)?.into(),
+    );
+    let from = crate::output::ResolvedConfigFilePath {
+        full: std::sync::Arc::from(from_path.resolved(dirs)),
+        path: from_path,
+    };
+    let to = crate::output::ResolvedConfigFilePath {
+        full: std::sync::Arc::from(to_path.resolved(dirs)),
+        path: to_path,
+    };
+    output
+        .push(Event::AppliedAction(AppliedAction::RenamedFile {
+            from,
+            to,
+        }))
         .map_err(Into::into)
 }
 
@@ -1582,10 +1739,17 @@ fn plan_to_event(
     no_install_hint: bool,
     brew_packages: &[String],
 ) -> ImportPlan {
-    let mut file_actions =
-        Vec::with_capacity(plan.files.len() + plan.skipped.len() + plan.removed_files.len());
+    let mut file_actions = Vec::with_capacity(
+        plan.files.len() + plan.skipped.len() + plan.removed_files.len() + plan.renamed_files.len(),
+    );
     for f in &plan.files {
         file_actions.push(ImportFileAction::MoveAndSymlink { rel: f.rel.clone() });
+    }
+    for r in &plan.renamed_files {
+        file_actions.push(ImportFileAction::RenameInRepo {
+            from: r.from.clone(),
+            to: r.to.clone(),
+        });
     }
     for r in &plan.removed_files {
         file_actions.push(ImportFileAction::RemoveFromRepo {

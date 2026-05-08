@@ -248,6 +248,18 @@ fn symlink_path_segments(
     segs
 }
 
+/// Path segments for a `{from} ⇒ {to}` rename row: left and right via
+/// `path_segments`, separated by a bold ` ⇒ ` arrow.
+fn rename_path_segments(
+    from: &ResolvedConfigFilePath,
+    to: &ResolvedConfigFilePath,
+) -> Vec<Segment> {
+    let mut segs = path_segments(from);
+    segs.push(Segment::new(Style::Bold, " ⇒ "));
+    segs.extend(path_segments(to));
+    segs
+}
+
 /// Path segments for a git row: `{repo}/{sub}`. `repo` is the zenops root
 /// (extra-dim — same "shared prefix" treatment as right-side symlink paths),
 /// `sub` is the file path inside the repo (default weight).
@@ -489,6 +501,12 @@ fn action_to_line(action: &AppliedAction) -> Line {
             path: path_segments(path),
             description: vec![Segment::new(Style::Green, "rmdir")],
         },
+        AppliedAction::RenamedFile { from, to } => Line {
+            marker: '✓',
+            marker_style: Style::Green,
+            path: rename_path_segments(from, to),
+            description: vec![Segment::new(Style::Green, "renamed")],
+        },
     }
 }
 
@@ -728,6 +746,12 @@ impl TerminalRenderer<'_> {
                 self.out,
                 "  remove           {}  (no longer in $HOME)",
                 rel.display(),
+            )?,
+            ImportFileAction::RenameInRepo { from, to } => writeln!(
+                self.out,
+                "  rename           {} ⇒ {}",
+                from.display(),
+                to.display(),
             )?,
         }
         Ok(())

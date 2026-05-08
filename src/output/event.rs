@@ -245,6 +245,16 @@ pub enum ImportFileAction {
         /// Path relative to the imported source root (== repo dest tail).
         rel: PathBuf,
     },
+    /// Reconcile-mode action: the user renamed a managed symlink in the
+    /// home directory. The repo-side copy is moved from `from` to `to`
+    /// and the home-side symlink is retargeted to the new location.
+    /// Both rels are relative to the entry's repo destination.
+    RenameInRepo {
+        /// Old path (still listed in the entry's `symlinks` array).
+        from: PathBuf,
+        /// New path (where the user-renamed symlink lives).
+        to: PathBuf,
+    },
 }
 
 /// One config.toml-side intent in an [`ImportPlan`]. Same extensibility
@@ -548,4 +558,13 @@ pub enum AppliedAction {
     /// Now-empty parent directory removed after [`Self::RemovedFile`]
     /// pruned its last child.
     RemovedDir(ResolvedConfigFilePath),
+    /// File moved from `from` to `to` (today: a repo-side copy renamed
+    /// by `zenops import` reconcile after the user renamed a managed
+    /// symlink in `$HOME`).
+    RenamedFile {
+        /// Old path inside the zenops repo.
+        from: ResolvedConfigFilePath,
+        /// New path inside the zenops repo.
+        to: ResolvedConfigFilePath,
+    },
 }
