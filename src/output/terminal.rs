@@ -725,6 +725,28 @@ impl TerminalRenderer<'_> {
                     writeln!(self.out, "      {line}")?;
                 }
             }
+            ImportTomlChange::AppendSymlinks {
+                pkg,
+                config_index,
+                paths,
+                array_after_preview,
+            } => {
+                if paths.is_empty() {
+                    writeln!(
+                        self.out,
+                        "  pkg.{pkg}.configs[{config_index}].symlinks already lists this path; no change",
+                    )?;
+                } else {
+                    writeln!(
+                        self.out,
+                        "  extend pkg.{pkg}.configs[{config_index}].symlinks (+{}):",
+                        paths.len(),
+                    )?;
+                    for line in array_after_preview.lines() {
+                        writeln!(self.out, "      {line}")?;
+                    }
+                }
+            }
         }
         Ok(())
     }

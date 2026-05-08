@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use smol_str::SmolStr;
+
 /// Failure modes for `zenops import`. Wrapped into [`crate::Error`] as
 /// `Error::Import` via `#[from]`.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +39,37 @@ pub enum Error {
     /// that isn't already the symlink target of the source.
     #[error("Destination {0:?} already exists; refusing to overwrite")]
     DestExists(PathBuf),
+    /// More than one existing `[[pkg.<x>.configs]]` entry claims the
+    /// imported path. Two configs with the same on-disk root are unusual —
+    /// resolve by removing the duplicate before re-running.
+    #[error(
+        "Path {path:?} matches multiple managed configs ({}); resolve the duplicate in config.toml first",
+        candidates.iter().map(SmolStr::as_str).collect::<Vec<_>>().join(", "),
+    )]
+    AmbiguousConfigMatch {
+        /// Home-relative tail that matched multiple configs.
+        path: PathBuf,
+        /// Pkg keys whose configs all claim the path.
+        candidates: Vec<SmolStr>,
+    },
+    /// Caller passed flags that only describe how to *create* a new pkg
+    /// (e.g. `--pkg`, `--brew`) while the import is extending an existing
+    /// managed config.
+    #[error(
+        "{} cannot be combined with importing a file into an already-managed config",
+        flags.join(", "),
+    )]
+    ExtendFlagsInvalid {
+        /// Flag names that conflict with extend mode.
+        flags: Vec<&'static str>,
+    },
+    /// User pointed at a directory inside an already-managed config. The
+    /// extend path only handles single files for now; recursive add of a
+    /// subdirectory is a future extension.
+    #[error(
+        "Importing a subdirectory of an already-managed config isn't supported yet; pass a single file under {0:?}"
+    )]
+    ExtendDirectoryNotSupported(PathBuf),
     /// Caller is creating a brand-new pkg block but didn't provide
     /// install_hint info and didn't pass `--no-install-hint`.
     #[error(
@@ -94,6 +127,20 @@ impl PartialEq for Error {
             (Self::UnsupportedLayout(l), Self::UnsupportedLayout(r)) => l == r,
             (Self::NoDerivablePkgKey(l), Self::NoDerivablePkgKey(r)) => l == r,
             (Self::DestExists(l), Self::DestExists(r)) => l == r,
+            (
+                Self::AmbiguousConfigMatch {
+                    path: l_path,
+                    candidates: l_cands,
+                },
+                Self::AmbiguousConfigMatch {
+                    path: r_path,
+                    candidates: r_cands,
+                },
+            ) => l_path == r_path && l_cands == r_cands,
+            (Self::ExtendFlagsInvalid { flags: l }, Self::ExtendFlagsInvalid { flags: r }) => {
+                l == r
+            }
+            (Self::ExtendDirectoryNotSupported(l), Self::ExtendDirectoryNotSupported(r)) => l == r,
             (Self::MissingInstallHint(l), Self::MissingInstallHint(r)) => l == r,
             (Self::NeedsTty, Self::NeedsTty) => true,
             (Self::Aborted, Self::Aborted) => true,

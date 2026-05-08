@@ -100,14 +100,33 @@ pub fn run_with_prompter(
     output: &mut dyn Output,
     mut prompter: Option<&mut dyn LinePrompter>,
 ) -> Result<(), Error> {
-    let plan = build_plan(path, pkg_override, source_override, dirs)?;
-
     let cfg_path = dirs.zenops().join("config.toml");
     let cfg_text = fs::read_to_string(&cfg_path)
         .map_err(|e| Error::from(ImportError::Io(cfg_path.clone(), e)))?;
     let mut doc: DocumentMut = cfg_text
         .parse()
         .map_err(|e| Error::from(ImportError::ConfigParse(cfg_path.clone(), e)))?;
+
+    let plan = build_plan(path, pkg_override, source_override, dirs, &doc)?;
+
+    if matches!(plan.toml, TomlPlan::ExtendExisting { .. }) {
+        let mut bad_flags: Vec<&'static str> = Vec::new();
+        if pkg_override.is_some() {
+            bad_flags.push("--pkg");
+        }
+        if source_override.is_some() {
+            bad_flags.push("--source");
+        }
+        if !brew.is_empty() {
+            bad_flags.push("--brew");
+        }
+        if no_install_hint {
+            bad_flags.push("--no-install-hint");
+        }
+        if !bad_flags.is_empty() {
+            return Err(ImportError::ExtendFlagsInvalid { flags: bad_flags }.into());
+        }
+    }
 
     let created_pkg = !pkg_block_exists(&doc, &plan.pkg_key);
     let brew_packages = resolve_brew(
@@ -224,6 +243,20 @@ enum TomlPlan {
         /// Symlinks listed in the TOML entry, relative to `~/<dir>/`.
         symlinks: Vec<String>,
     },
+    /// Extend an existing `[[pkg.<key>.configs]]` entry by appending paths
+    /// to its `symlinks` array. Used when the imported path lives inside
+    /// an already-managed config dir.
+    ExtendExisting {
+        /// Index of the configs entry inside `[pkg.<key>].configs`.
+        config_index: usize,
+        /// Current contents of the entry's `symlinks` array — kept so the
+        /// renderer can show the array as it will read after the append.
+        existing_symlinks: Vec<String>,
+        /// New paths to add (delta against `existing_symlinks`). Empty
+        /// when the file rel was already listed; the array is then left
+        /// untouched.
+        added_symlinks: Vec<String>,
+    },
 }
 
 /// Resolve and classify the source path; walk it; choose pkg key and
@@ -234,6 +267,7 @@ fn build_plan(
     pkg_override: Option<&str>,
     source_override: Option<&str>,
     dirs: &ConfigFileDirs,
+    doc: &DocumentMut,
 ) -> Result<Plan, Error> {
     let cwd = std::env::current_dir().map_err(|e| ImportError::Io(PathBuf::from("."), e))?;
     let joined = if raw_path.is_absolute() {
@@ -264,6 +298,20 @@ fn build_plan(
     let tail = canonical_source
         .strip_prefix(&canonical_home)
         .map_err(|_| ImportError::PathNotUnderHome(canonical_source.clone()))?;
+
+    // Extend mode: input lives inside an already-managed config dir.
+    // Append to that config's `symlinks` array instead of creating a new
+    // pkg. Only triggers for strict descendants of an existing on-disk
+    // root, so passing the root itself (`~/.config/helix`) still flows
+    // through the new-pkg path below.
+    if let Some(matched) = find_matching_config(doc, tail)? {
+        let is_dir = canonical_source.is_dir();
+        if is_dir {
+            return Err(ImportError::ExtendDirectoryNotSupported(canonical_source).into());
+        }
+        return build_extend_plan(matched, canonical_source, &canonical_home, dirs);
+    }
+
     let layout = classify(tail)?;
 
     let is_dir = canonical_source.is_dir();
@@ -508,6 +556,190 @@ fn pkg_block_exists(doc: &DocumentMut, key: &str) -> bool {
         .and_then(|p| p.as_table())
         .and_then(|t| t.get(key))
         .is_some()
+}
+
+/// One existing `[[pkg.<key>.configs]]` entry whose on-disk root is a
+/// strict ancestor of the imported path.
+struct ConfigMatch {
+    pkg_key: SmolStr,
+    /// Index of the entry inside `[pkg.<key>].configs`.
+    config_index: usize,
+    r#type: ImportType,
+    /// Home-relative on-disk root (e.g. `.config/helix` or `.ssh`). The
+    /// imported path's tail is this prefix plus `file_rel`.
+    on_disk_root: String,
+    /// `source` field of the matched entry — repo-side dir relative to
+    /// `~/.config/zenops` (e.g. `configs/helix`).
+    source_rel: String,
+    /// Imported file's path relative to `on_disk_root` — what we'd append
+    /// to the entry's `symlinks` array.
+    file_rel: PathBuf,
+    /// Current `symlinks` array contents, used to compute the delta and
+    /// to render an "after" preview.
+    existing_symlinks: Vec<String>,
+}
+
+/// Walk every `[[pkg.<x>.configs]]` entry in `doc` and pick the one whose
+/// on-disk root is the longest strict ancestor of `home_tail`. Returns
+/// `Ok(None)` if no entry claims the path. Errors with
+/// [`ImportError::AmbiguousConfigMatch`] when two distinct entries tie for
+/// longest prefix — that's a hand-edited config wart the user should
+/// resolve first.
+fn find_matching_config(
+    doc: &DocumentMut,
+    home_tail: &Path,
+) -> Result<Option<ConfigMatch>, ImportError> {
+    let pkg_table = match doc.get("pkg").and_then(Item::as_table) {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    let tail_str = path_to_forward_slash(home_tail);
+    let mut matches: Vec<ConfigMatch> = Vec::new();
+
+    for (pkg_key_raw, pkg_item) in pkg_table.iter() {
+        let configs = match pkg_item
+            .as_table()
+            .and_then(|t| t.get("configs"))
+            .and_then(Item::as_array_of_tables)
+        {
+            Some(c) => c,
+            None => continue,
+        };
+
+        for (idx, entry) in configs.iter().enumerate() {
+            let typ = match entry.get("type").and_then(|v| v.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let (on_disk_root, import_type) = match typ {
+                ".config" => {
+                    let dir = entry
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(pkg_key_raw);
+                    (format!(".config/{dir}"), ImportType::DotConfig)
+                }
+                "home" => {
+                    let dir = match entry.get("dir").and_then(|v| v.as_str()) {
+                        Some(d) if !d.is_empty() => d,
+                        _ => continue,
+                    };
+                    (dir.to_string(), ImportType::Home)
+                }
+                _ => continue,
+            };
+
+            let prefix = format!("{on_disk_root}/");
+            let file_rel_str = match tail_str.strip_prefix(&prefix) {
+                Some(rest) if !rest.is_empty() => rest,
+                _ => continue,
+            };
+
+            let source_rel = match entry.get("source").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+
+            let existing_symlinks = entry
+                .get("symlinks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            matches.push(ConfigMatch {
+                pkg_key: SmolStr::new(pkg_key_raw),
+                config_index: idx,
+                r#type: import_type,
+                on_disk_root,
+                source_rel,
+                file_rel: PathBuf::from(file_rel_str),
+                existing_symlinks,
+            });
+        }
+    }
+
+    let max_len = match matches.iter().map(|m| m.on_disk_root.len()).max() {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let best: Vec<ConfigMatch> = matches
+        .into_iter()
+        .filter(|m| m.on_disk_root.len() == max_len)
+        .collect();
+
+    if best.len() > 1 {
+        return Err(ImportError::AmbiguousConfigMatch {
+            path: PathBuf::from(tail_str),
+            candidates: best.into_iter().map(|m| m.pkg_key).collect(),
+        });
+    }
+    Ok(best.into_iter().next())
+}
+
+/// Build a [`Plan`] that extends an existing managed config by adding a
+/// single file. The file is staged into the matched entry's repo dir and
+/// its relative path is queued for append onto the entry's `symlinks`
+/// array; both halves run through the same apply / TOML helpers as the
+/// new-pkg path.
+fn build_extend_plan(
+    matched: ConfigMatch,
+    canonical_source: PathBuf,
+    canonical_home: &Path,
+    dirs: &ConfigFileDirs,
+) -> Result<Plan, Error> {
+    let source_root = canonical_home.join(&matched.on_disk_root);
+    let repo_dest = dirs.zenops().join(&matched.source_rel);
+    let file_rel_str = path_to_forward_slash(&matched.file_rel);
+
+    let symlink_path = source_root.join(&matched.file_rel);
+    let dest_in_repo = repo_dest.join(&matched.file_rel);
+
+    let mut files = Vec::new();
+    if dest_in_repo.try_exists().unwrap_or(false) {
+        let already_symlinked = symlink_path
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_symlink())
+            && fs::read_link(&symlink_path).is_ok_and(|t| t == dest_in_repo);
+        if !already_symlinked {
+            return Err(ImportError::DestExists(dest_in_repo).into());
+        }
+    } else {
+        files.push(PlannedFile {
+            rel: matched.file_rel.clone(),
+            repo_rel: matched.file_rel.clone(),
+        });
+    }
+
+    let added_symlinks = if matched.existing_symlinks.iter().any(|s| s == &file_rel_str) {
+        Vec::new()
+    } else {
+        vec![file_rel_str]
+    };
+
+    let toml = TomlPlan::ExtendExisting {
+        config_index: matched.config_index,
+        existing_symlinks: matched.existing_symlinks,
+        added_symlinks,
+    };
+
+    Ok(Plan {
+        pkg_key: matched.pkg_key,
+        r#type: matched.r#type,
+        source: canonical_source,
+        source_root,
+        repo_dest,
+        repo_rel: matched.source_rel,
+        files,
+        skipped: Vec::new(),
+        toml,
+    })
 }
 
 /// Resolve the install_hint brew package list. If the user passed `--brew`,
@@ -758,6 +990,8 @@ fn path_to_forward_slash(p: &Path) -> String {
 
 /// Splice the new `[[pkg.<key>.configs]]` entry (and the surrounding
 /// `[pkg.<key>]` block, when this is a brand-new pkg) into the document.
+/// In extend mode, append the new paths to the matched entry's `symlinks`
+/// array instead.
 fn update_doc(
     doc: &mut DocumentMut,
     plan: &Plan,
@@ -765,6 +999,16 @@ fn update_doc(
     no_install_hint: bool,
     brew: &[String],
 ) -> Result<(), Error> {
+    if let TomlPlan::ExtendExisting {
+        config_index,
+        added_symlinks,
+        ..
+    } = &plan.toml
+    {
+        append_symlinks_to_configs_entry(doc, &plan.pkg_key, *config_index, added_symlinks);
+        return Ok(());
+    }
+
     let pkg_root = doc
         .entry("pkg")
         .or_insert_with(|| Item::Table(Table::new()))
@@ -792,6 +1036,40 @@ fn update_doc(
     configs.push(build_configs_entry_table(plan));
 
     Ok(())
+}
+
+/// Push `new_paths` onto the `symlinks` array of `pkg.<pkg_key>.configs[config_index]`.
+/// No-op when `new_paths` is empty (the rel was already listed). Creates
+/// the array if the entry didn't have one. Caller is expected to have
+/// validated `(pkg_key, config_index)` against the same document.
+fn append_symlinks_to_configs_entry(
+    doc: &mut DocumentMut,
+    pkg_key: &str,
+    config_index: usize,
+    new_paths: &[String],
+) {
+    if new_paths.is_empty() {
+        return;
+    }
+    let entry = doc
+        .get_mut("pkg")
+        .and_then(|p| p.as_table_mut())
+        .and_then(|t| t.get_mut(pkg_key))
+        .and_then(|p| p.as_table_mut())
+        .and_then(|t| t.get_mut("configs"))
+        .and_then(Item::as_array_of_tables_mut)
+        .and_then(|aot| aot.get_mut(config_index))
+        .expect("matched configs entry should still exist");
+
+    if entry.get("symlinks").is_none() {
+        entry["symlinks"] = value(Array::new());
+    }
+    let arr = entry["symlinks"]
+        .as_array_mut()
+        .expect("symlinks should be an array");
+    for path in new_paths {
+        arr.push(path.as_str());
+    }
 }
 
 /// Populate `key_table` with the `install_hint` sub-table for a freshly-
@@ -822,6 +1100,9 @@ fn populate_install_hint(key_table: &mut Table, brew: &[String], no_install_hint
 /// Build the `[[pkg.<key>.configs]]` entry table. Pure helper used by
 /// both [`update_doc`] (writes into the live document) and the
 /// TOML-preview path (renders the entry body for the plan event).
+/// Only called for new-pkg / new-entry imports — extend mode appends
+/// onto an existing entry via [`append_symlinks_to_configs_entry`] and
+/// never reaches this builder.
 fn build_configs_entry_table(plan: &Plan) -> Table {
     let mut entry = Table::new();
     match &plan.toml {
@@ -849,6 +1130,9 @@ fn build_configs_entry_table(plan: &Plan) -> Table {
                 arr.push(s.as_str());
             }
             entry["symlinks"] = value(arr);
+        }
+        TomlPlan::ExtendExisting { .. } => {
+            unreachable!("extend mode emits AppendSymlinks, not a new configs entry")
         }
     }
     entry
@@ -879,17 +1163,40 @@ fn plan_to_event(
     }
 
     let mut toml_changes = Vec::new();
-    if created_pkg {
-        toml_changes.push(ImportTomlChange::CreatePkg {
-            pkg: plan.pkg_key.clone(),
-            brew_packages: brew_packages.to_vec(),
-            block_preview: render_pkg_block_preview(&plan.pkg_key, brew_packages, no_install_hint),
-        });
+    match &plan.toml {
+        TomlPlan::ExtendExisting {
+            config_index,
+            existing_symlinks,
+            added_symlinks,
+        } => {
+            toml_changes.push(ImportTomlChange::AppendSymlinks {
+                pkg: plan.pkg_key.clone(),
+                config_index: *config_index,
+                paths: added_symlinks.clone(),
+                array_after_preview: render_symlinks_array_preview(
+                    existing_symlinks,
+                    added_symlinks,
+                ),
+            });
+        }
+        TomlPlan::DotConfig { .. } | TomlPlan::Home { .. } => {
+            if created_pkg {
+                toml_changes.push(ImportTomlChange::CreatePkg {
+                    pkg: plan.pkg_key.clone(),
+                    brew_packages: brew_packages.to_vec(),
+                    block_preview: render_pkg_block_preview(
+                        &plan.pkg_key,
+                        brew_packages,
+                        no_install_hint,
+                    ),
+                });
+            }
+            toml_changes.push(ImportTomlChange::AppendConfigsEntry {
+                pkg: plan.pkg_key.clone(),
+                entry_preview: render_configs_entry_preview(plan),
+            });
+        }
     }
-    toml_changes.push(ImportTomlChange::AppendConfigsEntry {
-        pkg: plan.pkg_key.clone(),
-        entry_preview: render_configs_entry_preview(plan),
-    });
 
     ImportPlan {
         pkg: plan.pkg_key.clone(),
@@ -900,6 +1207,17 @@ fn plan_to_event(
         file_actions,
         toml_changes,
     }
+}
+
+/// Render the `symlinks` array as it will read after appending
+/// `added` to `existing` — used in the AppendSymlinks plan preview so
+/// the user sees the array in its post-edit form.
+fn render_symlinks_array_preview(existing: &[String], added: &[String]) -> String {
+    let mut arr = Array::new();
+    for s in existing.iter().chain(added.iter()) {
+        arr.push(s.as_str());
+    }
+    format!("symlinks = {arr}")
 }
 
 /// Copy-paste-ready snippet showing the new `[pkg.<key>]` block. The

@@ -250,6 +250,22 @@ pub enum ImportTomlChange {
         /// TOML snippet representing the entry's body.
         entry_preview: String,
     },
+    /// Append paths to the `symlinks` array of an existing
+    /// `[[pkg.<key>.configs]]` entry. `paths` is the delta — entries that
+    /// weren't already listed; an empty `paths` means the file rel was
+    /// already present and the array is untouched.
+    AppendSymlinks {
+        /// Pkg key whose configs entry gains the new symlinks.
+        pkg: SmolStr,
+        /// Index of the configs entry inside `[pkg.<key>].configs` (the
+        /// array of tables).
+        config_index: usize,
+        /// New paths being appended to the `symlinks` array (delta only).
+        paths: Vec<String>,
+        /// TOML snippet showing the array as it will read after the
+        /// append, e.g. `symlinks = ["existing", "new"]`.
+        array_after_preview: String,
+    },
 }
 
 /// Pre-apply plan for `zenops import`. Emitted before any mutation runs

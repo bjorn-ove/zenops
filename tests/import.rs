@@ -5,7 +5,7 @@ use zenops::{
     Cmd,
     error::Error,
     import::ImportError,
-    output::{ImportFileAction, ImportType},
+    output::{ImportFileAction, ImportTomlChange, ImportType},
 };
 use zenops_safe_relative_path::srpath;
 
@@ -487,6 +487,295 @@ fn import_dry_run_writes_nothing() {
             .all(|e| !matches!(e, Entry::ImportApplied(_))),
         "dry-run should not emit ImportApplied",
     );
+}
+
+/// Build a config.toml fragment with a pre-existing `[pkg.<key>]` block
+/// whose first `[[pkg.<key>.configs]]` entry already manages
+/// `~/.config/<dir>/`. Used to seed extend-mode tests with a managed
+/// config that the import path can extend.
+fn dotconfig_preset(pkg_key: &str, dir: Option<&str>, existing_symlinks: &[&str]) -> String {
+    let dir_decl = dir.map(|d| format!("name = \"{d}\"\n")).unwrap_or_default();
+    let symlinks: Vec<String> = existing_symlinks
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect();
+    format!(
+        "{minimal}\n\
+         [pkg.{pkg_key}]\n\
+         [pkg.{pkg_key}.install_hint.brew]\n\
+         packages = [\"{pkg_key}\"]\n\
+         [[pkg.{pkg_key}.configs]]\n\
+         type = \".config\"\n\
+         {dir_decl}source = \"configs/{pkg_key}\"\n\
+         symlinks = [{symlinks_inner}]\n",
+        minimal = MINIMAL_CONFIG,
+        symlinks_inner = symlinks.join(", "),
+    )
+}
+
+#[test]
+fn import_extend_dotconfig_happy_path() {
+    let env = TestEnv::load();
+    env.init_config(&dotconfig_preset("helix", None, &["config.toml"]));
+    // The new file the user wants to bring under management.
+    env.write_file(
+        srpath!("home/bob/.config/helix/templates/new-template.toml"),
+        b"[template]\nx = 1\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!(
+        "home/bob/.config/helix/templates/new-template.toml"
+    )));
+    let out = env.run(&cmd).expect("extend import should succeed");
+
+    // File was moved into the repo and replaced with a symlink.
+    let original = env.resolve_path(srpath!(
+        "home/bob/.config/helix/templates/new-template.toml"
+    ));
+    let meta = std::fs::symlink_metadata(&original).unwrap();
+    assert!(meta.file_type().is_symlink());
+    let repo_copy = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/templates/new-template.toml"
+    ));
+    assert_eq!(std::fs::read(&repo_copy).unwrap(), b"[template]\nx = 1\n");
+    assert_eq!(std::fs::read_link(&original).unwrap(), repo_copy);
+
+    // Existing entry's symlinks array gained the rel path; no new entry was
+    // created.
+    let cfg = read_config(&env);
+    let entries = cfg["pkg"]["helix"]["configs"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "no new configs entry should be added");
+    let symlinks: Vec<&str> = entries[0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml", "templates/new-template.toml"]);
+
+    // Plan event reports an AppendSymlinks change, not a CreatePkg /
+    // AppendConfigsEntry pair.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("expected ImportPlan");
+    assert!(!plan.created_pkg);
+    assert_eq!(plan.r#type, ImportType::DotConfig);
+    let toml_kinds: Vec<_> = plan
+        .toml_changes
+        .iter()
+        .map(|c| match c {
+            ImportTomlChange::CreatePkg { .. } => "create",
+            ImportTomlChange::AppendConfigsEntry { .. } => "append_entry",
+            ImportTomlChange::AppendSymlinks { paths, .. } => {
+                if paths.is_empty() {
+                    "append_symlinks_empty"
+                } else {
+                    "append_symlinks"
+                }
+            }
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(toml_kinds, vec!["append_symlinks"]);
+}
+
+#[test]
+fn import_extend_dotconfig_with_name_override() {
+    // pkg key "neovim" but the on-disk dir is "nvim".
+    let env = TestEnv::load();
+    env.init_config(&dotconfig_preset("neovim", Some("nvim"), &["init.lua"]));
+    env.write_file(
+        srpath!("home/bob/.config/nvim/lua/plugins/none.lua"),
+        b"return {}\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/nvim/lua/plugins/none.lua")));
+    env.run(&cmd).expect("extend should match by name override");
+
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["neovim"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(symlinks.contains(&"lua/plugins/none.lua"));
+}
+
+#[test]
+fn import_extend_home_pkg() {
+    let env = TestEnv::load();
+    let preset = format!(
+        "{}\n\
+         [pkg.gitcfg]\n\
+         [pkg.gitcfg.install_hint.brew]\n\
+         packages = [\"git\"]\n\
+         [[pkg.gitcfg.configs]]\n\
+         type = \"home\"\n\
+         dir = \".local/share/gitcfg\"\n\
+         source = \"configs/gitcfg\"\n\
+         symlinks = [\"main.toml\"]\n",
+        MINIMAL_CONFIG,
+    );
+    env.init_config(&preset);
+    env.write_file(
+        srpath!("home/bob/.local/share/gitcfg/profiles/work.toml"),
+        b"profile = 'work'\n",
+    );
+
+    let cmd =
+        import_cmd(env.resolve_path(srpath!("home/bob/.local/share/gitcfg/profiles/work.toml")));
+    env.run(&cmd).expect("extend home pkg should succeed");
+
+    let original = env.resolve_path(srpath!("home/bob/.local/share/gitcfg/profiles/work.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["gitcfg"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["main.toml", "profiles/work.toml"]);
+}
+
+#[test]
+fn import_extend_rejects_new_pkg_flags() {
+    let env = TestEnv::load();
+    env.init_config(&dotconfig_preset("helix", None, &["config.toml"]));
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/onedark.toml"),
+        b"theme = 'dark'\n",
+    );
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix/themes/onedark.toml")),
+        pkg: Some("something-else".into()),
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::ExtendFlagsInvalid { flags })) => {
+            assert!(flags.contains(&"--pkg"));
+            assert!(flags.contains(&"--brew"));
+        }
+        other => panic!("expected ExtendFlagsInvalid, got {other:?}"),
+    }
+
+    // Source untouched.
+    let src = env.resolve_path(srpath!("home/bob/.config/helix/themes/onedark.toml"));
+    let meta = std::fs::symlink_metadata(&src).unwrap();
+    assert!(meta.file_type().is_file());
+}
+
+#[test]
+fn import_extend_rejects_directory_input() {
+    let env = TestEnv::load();
+    env.init_config(&dotconfig_preset("helix", None, &["config.toml"]));
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/onedark.toml"),
+        b"theme = 'dark'\n",
+    );
+
+    // A directory under an already-managed config — single-file scope only.
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix/themes")));
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::ExtendDirectoryNotSupported(p))) => {
+            assert!(p.ends_with(".config/helix/themes"), "got {p:?}");
+        }
+        other => panic!("expected ExtendDirectoryNotSupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_extend_dry_run_writes_nothing() {
+    let env = TestEnv::load();
+    env.init_config(&dotconfig_preset("helix", None, &["config.toml"]));
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/onedark.toml"),
+        b"theme = 'dark'\n",
+    );
+    let original_text =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix/themes/onedark.toml")),
+        pkg: None,
+        source: None,
+        brew: Vec::new(),
+        no_install_hint: false,
+        yes: false,
+        dry_run: true,
+    };
+    let out = env.run(&cmd).expect("dry-run should succeed");
+
+    // Source still a regular file, not a symlink.
+    let src = env.resolve_path(srpath!("home/bob/.config/helix/themes/onedark.toml"));
+    assert!(
+        std::fs::symlink_metadata(&src)
+            .unwrap()
+            .file_type()
+            .is_file()
+    );
+    // No file landed in the repo.
+    assert!(
+        !env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/helix/themes/onedark.toml"
+        ))
+        .exists()
+    );
+    // config.toml unchanged.
+    let after =
+        std::fs::read_to_string(env.resolve_path(srpath!("home/bob/.config/zenops/config.toml")))
+            .unwrap();
+    assert_eq!(after, original_text);
+    // Plan still emitted, ImportApplied not.
+    assert!(
+        out.entries
+            .iter()
+            .any(|e| matches!(e, Entry::ImportPlan(_)))
+    );
+    assert!(
+        out.entries
+            .iter()
+            .all(|e| !matches!(e, Entry::ImportApplied(_))),
+    );
+}
+
+#[test]
+fn import_extend_no_match_falls_back_to_layout_check() {
+    // No managed pkg owns ~/.config/unmanaged/, so a deep file under it
+    // doesn't trigger extend mode and the existing UnsupportedLayout
+    // diagnostic fires (unchanged behavior).
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(
+        srpath!("home/bob/.config/unmanaged/sub/file.toml"),
+        b"x = 1\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/unmanaged/sub/file.toml")));
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::UnsupportedLayout(s))) => {
+            assert!(s.contains(".config/unmanaged/sub"), "tail in error: {s:?}");
+        }
+        other => panic!("expected UnsupportedLayout, got {other:?}"),
+    }
 }
 
 #[test]
