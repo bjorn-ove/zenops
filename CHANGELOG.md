@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0] - 2026-05-11
+
+### Added
+- New `[conditions]` table for declaring named, composable host gates. Each condition is one of seven kinds — `os`, `shell`, `hostname`, `file_exists`, `all`, `any`, `not` — written as a single-key TOML table. Built-ins (`linux`, `macos`, `bash`, `zsh`) ship with the binary and can be overridden by a user entry with the same name. References are validated and cycle-checked at load time; hostname regexes compile at load too, so a malformed pattern fails loudly.
+- New `pkg.*.when` field: gate any pkg on a named condition (string) or an inline condition table.
+- `zenops import` can now extend an existing managed config by passing a single file deeper inside an already-managed directory (e.g. `~/.config/helix/templates/new.toml`). It appends to the existing entry's `symlinks` array and runs the same move+symlink flow as a new-pkg import. The new-pkg-only flags (`--pkg`, `--source`, `--brew`, `--no-install-hint`) are rejected in this mode.
+- `zenops import` reconciles an already-managed root when re-run on it: new files on disk are added to the entry's `symlinks` array, and paths whose home-side counterpart is gone are dropped (along with the repo copy). A fully in-sync reconcile skips the confirmation prompt and the `config.toml` reflow.
+- `zenops import` reconcile now detects renamed symlinks: when a managed symlink is renamed under `$HOME`, reconcile moves the repo-side file to match and retargets the symlink, instead of classifying it as a deletion plus a new symlink-elsewhere.
+
+### Changed
+- **Breaking (config schema):** `pkg.*.supported_os`, `pkg.*.supported_shells`, and `pkg.*.detect.os` are removed. Replace them with `pkg.*.when` referencing a named condition (or an inline combinator). Leftover fields surface as `unknown field 'supported_os'` / `'supported_shells'` / `'os'` (inside `[pkg.<x>.detect]`) at load time.
+- `zenops import` refuses path shapes that previously produced confusing errors: the zenops repo dir itself, `.config/` as the input, a regular file at `.config/<x>`, `--source` overrides that escape the repo, pkg-key collisions, empty `--brew`, and a missing zenops repo are now rejected with explicit messages. Source dirs skip `.git` / `.hg` / `.svn` so a config-as-checkout doesn't drag pack files into the repo.
+
 ## [0.14.0] - 2026-05-07
 
 ### Added
