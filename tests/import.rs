@@ -2225,3 +2225,824 @@ fn import_refuses_home_root_with_helpful_message() {
         "error should give a clearer hint than an empty tail, got: {msg}",
     );
 }
+
+// =====================================================================
+// Realistic-content / multi-step user journeys. These exercise import
+// the way a real user with a populated config dir would: many files of
+// varied shapes, edits over time, and reconcile passes that mix
+// add/delete/rename across multiple files.
+// =====================================================================
+
+#[test]
+fn import_handles_diverse_file_shapes() {
+    // Populate a managed dir with the kinds of files a real Helix-style
+    // config tree contains: 12 files spanning mixed extensions, nested
+    // subdirs (up to 3 levels), an empty file, a binary blob, names with
+    // spaces and unicode, and a root-level README. After one import
+    // every file must land as a symlink, every repo copy must be
+    // byte-identical, and the symlinks array must list all 12 paths.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+
+    let binary_blob: Vec<u8> = (0u8..=255u8).chain(0u8..=120u8).collect();
+    let files: Vec<(&str, Vec<u8>)> = vec![
+        ("config.toml", b"theme = 'dracula'\n".to_vec()),
+        (
+            "README.md",
+            b"# helix\n\nKey bindings live in keymap.json.\n".to_vec(),
+        ),
+        ("init.lua", b"-- editor init\n".to_vec()),
+        ("keymap.json", br#"{"q":"quit"}"#.to_vec()),
+        ("themes/dark.toml", b"name = 'dark'\n".to_vec()),
+        ("themes/dracula.toml", b"name = 'dracula'\n".to_vec()),
+        ("runtime/grammars/rust.so", binary_blob.clone()),
+        (
+            "runtime/queries/rust/highlights.scm",
+            b"(identifier) @variable\n".to_vec(),
+        ),
+        (
+            "colors/onedark.vim",
+            b"\" onedark\nset background=dark\n".to_vec(),
+        ),
+        ("notes/empty.txt", Vec::new()),
+        ("notes/spaces in name.toml", b"key = 'value'\n".to_vec()),
+        ("notes/üñíçødé.toml", b"unicode = true\n".to_vec()),
+    ];
+
+    for (rel, data) in &files {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        env.write_file(&home_rel, data.as_slice());
+    }
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("import should succeed");
+
+    // Every file is now a symlink on the home side, and every repo copy
+    // matches the source bytes exactly (including the empty file and the
+    // binary blob).
+    for (rel, data) in &files {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        let home_path = env.resolve_path(&home_rel);
+        let meta = std::fs::symlink_metadata(&home_path)
+            .unwrap_or_else(|e| panic!("missing home-side path {rel}: {e}"));
+        assert!(meta.file_type().is_symlink(), "{rel} should be a symlink",);
+
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        let repo_path = env.resolve_path(&repo_rel);
+        let repo_bytes = std::fs::read(&repo_path)
+            .unwrap_or_else(|e| panic!("missing repo copy for {rel}: {e}"));
+        assert_eq!(
+            repo_bytes, *data,
+            "repo copy for {rel} must be byte-identical to source",
+        );
+        assert_eq!(
+            std::fs::read_link(&home_path).unwrap(),
+            repo_path,
+            "{rel} symlink should point at its repo copy",
+        );
+    }
+
+    // symlinks array (sorted) lists every file with forward-slash separators,
+    // including the unicode and spaces-in-name entries.
+    let cfg = read_config(&env);
+    let mut got: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    got.sort();
+    let mut expected: Vec<&str> = files.iter().map(|(rel, _)| *rel).collect();
+    expected.sort();
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn import_preserves_executable_mode_bits() {
+    // A user keeps an executable script alongside a regular config file
+    // in their managed dir. After import the repo copy of the script
+    // must keep its executable bits (otherwise the symlinked script is
+    // useless), and the regular file must not gain execute permission.
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(
+        srpath!("home/bob/.config/myapp/config.toml"),
+        b"key = 'value'\n",
+    );
+    env.write_file(
+        srpath!("home/bob/.config/myapp/scripts/runme.sh"),
+        b"#!/bin/sh\necho hi\n",
+    );
+    let _exec_guard = env.chmod(srpath!("home/bob/.config/myapp/scripts/runme.sh"), 0o755);
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("import should succeed");
+
+    let exec_repo = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/myapp/scripts/runme.sh"
+    ));
+    let exec_mode = std::fs::metadata(&exec_repo).unwrap().permissions().mode() & 0o777;
+    assert!(
+        exec_mode & 0o100 != 0,
+        "repo copy of runme.sh should have user-execute bit set, got mode {exec_mode:o}",
+    );
+
+    let plain_repo = env.resolve_path(srpath!("home/bob/.config/zenops/configs/myapp/config.toml"));
+    let plain_mode = std::fs::metadata(&plain_repo).unwrap().permissions().mode() & 0o777;
+    assert!(
+        plain_mode & 0o111 == 0,
+        "repo copy of config.toml must not be executable, got mode {plain_mode:o}",
+    );
+
+    // Both home-side files are symlinks and resolve to the repo copies.
+    for (home, repo) in [
+        (
+            srpath!("home/bob/.config/myapp/scripts/runme.sh"),
+            &exec_repo,
+        ),
+        (srpath!("home/bob/.config/myapp/config.toml"), &plain_repo),
+    ] {
+        let home_path = env.resolve_path(home);
+        assert!(
+            std::fs::symlink_metadata(&home_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+        );
+        assert_eq!(&std::fs::read_link(&home_path).unwrap(), repo);
+    }
+}
+
+#[test]
+fn import_write_through_symlink_propagates_bytes() {
+    // After import, the home-side path is a symlink. A user editing
+    // through it (the natural `:w` in their editor) should see the new
+    // bytes appear on both sides without breaking the symlink.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"v1\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("import should succeed");
+
+    let home_path = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    let repo_path = env.resolve_path(srpath!("home/bob/.config/zenops/configs/myapp/config.toml"));
+    let original_target = std::fs::read_link(&home_path).unwrap();
+
+    // Write through the symlink — std::fs::write follows symlinks on Unix.
+    std::fs::write(&home_path, b"v2\n").unwrap();
+
+    // Both sides see the new bytes.
+    assert_eq!(std::fs::read(&home_path).unwrap(), b"v2\n");
+    assert_eq!(std::fs::read(&repo_path).unwrap(), b"v2\n");
+
+    // Symlink unchanged: still a symlink, still pointing at the same target.
+    let meta = std::fs::symlink_metadata(&home_path).unwrap();
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(std::fs::read_link(&home_path).unwrap(), original_target);
+}
+
+/// Compose a config.toml fragment with two managed `.config` pkgs back-to-back.
+/// Used by the multi-pkg isolation test; `dotconfig_preset` only handles one
+/// pkg at a time.
+fn two_dotconfig_pkgs(
+    a_key: &str,
+    a_symlinks: &[&str],
+    b_key: &str,
+    b_symlinks: &[&str],
+) -> String {
+    let fmt_block = |key: &str, symlinks: &[&str]| {
+        let arr: Vec<String> = symlinks.iter().map(|s| format!("\"{s}\"")).collect();
+        format!(
+            "[pkg.{key}]\n\
+             [pkg.{key}.install_hint.brew]\n\
+             packages = [\"{key}\"]\n\
+             [[pkg.{key}.configs]]\n\
+             type = \".config\"\n\
+             source = \"configs/{key}\"\n\
+             symlinks = [{}]\n",
+            arr.join(", "),
+        )
+    };
+    format!(
+        "{}\n{}\n{}",
+        MINIMAL_CONFIG,
+        fmt_block(a_key, a_symlinks),
+        fmt_block(b_key, b_symlinks),
+    )
+}
+
+#[test]
+fn import_reconcile_renames_multiple_files_in_one_batch() {
+    // Three home-side symlinks renamed in a single user session before
+    // a reconcile pass. Each rename leaves the symlink pointing at its
+    // old repo path, mirroring the single-file case in
+    // `import_reconcile_detects_rename`. The plan should detect all
+    // three as renames, not as add+remove pairs.
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[
+            ("config.toml", b"x\n"),
+            ("themes/dark.toml", b"name = 'dark'\n"),
+            ("themes/light.toml", b"name = 'light'\n"),
+            ("keymap.toml", b"q = 'quit'\n"),
+        ],
+    );
+
+    let renames: &[(&str, &str)] = &[
+        ("themes/dark.toml", "themes/midnight.toml"),
+        ("themes/light.toml", "themes/daylight.toml"),
+        ("keymap.toml", "bindings.toml"),
+    ];
+    for (from, to) in renames {
+        let from_path: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{from}").parse().unwrap();
+        let to_path: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{to}").parse().unwrap();
+        std::fs::rename(env.resolve_path(&from_path), env.resolve_path(&to_path)).unwrap();
+    }
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    // Plan reports exactly 3 RenameInRepo actions, no spurious add/remove
+    // for any of the renamed rels.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let mut rename_pairs: Vec<(String, String)> = plan
+        .file_actions
+        .iter()
+        .filter_map(|a| match a {
+            ImportFileAction::RenameInRepo { from, to } => Some((
+                from.to_string_lossy().into_owned(),
+                to.to_string_lossy().into_owned(),
+            )),
+            _ => None,
+        })
+        .collect();
+    rename_pairs.sort();
+    let mut expected: Vec<(String, String)> = renames
+        .iter()
+        .map(|(f, t)| ((*f).to_string(), (*t).to_string()))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        rename_pairs, expected,
+        "expected 3 renames, got file_actions: {:?}",
+        plan.file_actions,
+    );
+    let stray_remove = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::RemoveFromRepo { rel } => renames
+            .iter()
+            .any(|(from, _)| rel.as_path() == std::path::Path::new(from)),
+        _ => false,
+    });
+    assert!(!stray_remove, "no rename source should also be a delete");
+    let stray_add = plan.file_actions.iter().any(|a| match a {
+        ImportFileAction::MoveAndSymlink { rel } => renames
+            .iter()
+            .any(|(_, to)| rel.as_path() == std::path::Path::new(to)),
+        _ => false,
+    });
+    assert!(!stray_add, "no rename target should also be a copy");
+
+    // End state: every renamed repo file lives at its new path and the
+    // home-side symlink points there.
+    for (from, to) in renames {
+        let old_repo: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{from}")
+                .parse()
+                .unwrap();
+        let new_repo: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{to}")
+                .parse()
+                .unwrap();
+        let new_link: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{to}").parse().unwrap();
+        assert!(
+            !env.resolve_path(&old_repo).exists(),
+            "old repo path {from} should be gone",
+        );
+        assert!(
+            env.resolve_path(&new_repo).exists(),
+            "new repo path {to} should exist",
+        );
+        assert_eq!(
+            std::fs::read_link(env.resolve_path(&new_link)).unwrap(),
+            env.resolve_path(&new_repo),
+            "{to} symlink should retarget to new repo path",
+        );
+    }
+
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(
+        symlinks,
+        vec![
+            "bindings.toml",
+            "config.toml",
+            "themes/daylight.toml",
+            "themes/midnight.toml",
+        ],
+    );
+}
+
+#[test]
+fn import_reconcile_detects_subdir_rename() {
+    // The user renames a whole subdir on the home side. Each child
+    // symlink under it still points at the old repo path. End-state
+    // assertions are strict; the plan-shape (rename vs add+remove) is
+    // recorded as an observation since rename detection currently works
+    // per-file rather than per-dir.
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[
+            ("themes/dark.toml", b"name = 'dark'\n"),
+            ("themes/light.toml", b"name = 'light'\n"),
+        ],
+    );
+
+    let themes_dir = env.resolve_path(srpath!("home/bob/.config/helix/themes"));
+    let colors_dir = env.resolve_path(srpath!("home/bob/.config/helix/colors"));
+    std::fs::rename(&themes_dir, &colors_dir).unwrap();
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    // End-state checks (independent of plan shape).
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(symlinks, vec!["colors/dark.toml", "colors/light.toml"]);
+
+    for name in ["dark.toml", "light.toml"] {
+        let new_link: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/colors/{name}")
+                .parse()
+                .unwrap();
+        let new_repo: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/colors/{name}")
+                .parse()
+                .unwrap();
+        assert!(
+            env.resolve_path(&new_repo).exists(),
+            "new repo path colors/{name} should exist",
+        );
+        assert_eq!(
+            std::fs::read_link(env.resolve_path(&new_link)).unwrap(),
+            env.resolve_path(&new_repo),
+        );
+    }
+    assert!(
+        !env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/themes"))
+            .exists(),
+        "old themes/ dir should be pruned from repo",
+    );
+
+    // Plan-shape observation: record whether the implementation modeled
+    // this as 2 renames or as add+remove pairs. Either is acceptable
+    // end-to-end; the user can decide whether to extend rename detection.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let renames = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::RenameInRepo { .. }))
+        .count();
+    let removes = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::RemoveFromRepo { .. }))
+        .count();
+    let copies = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::MoveAndSymlink { .. }))
+        .count();
+    // Either: 2 renames (and no add/remove) OR 2 add + 2 remove. Observed:
+    // current rename detector recognizes both children individually
+    // (renames=2), since each home-side symlink still points at its old
+    // repo path.
+    let detected_as_renames = renames == 2 && removes == 0 && copies == 0;
+    let detected_as_add_remove = renames == 0 && removes == 2 && copies == 2;
+    assert!(
+        detected_as_renames || detected_as_add_remove,
+        "subdir rename plan should be either 2 renames or 2 add+2 remove, got: \
+         renames={renames} removes={removes} copies={copies}; actions={:?}",
+        plan.file_actions,
+    );
+}
+
+#[test]
+fn import_reconcile_handles_cross_subdir_restructure() {
+    // The user moves a single file across subdirs (themes/dark.toml ->
+    // colors/dark.toml). The home-side symlink still points at the old
+    // repo path, same mechanism as the existing single-file rename test
+    // but with a different parent dir.
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[("themes/dark.toml", b"name = 'dark'\n")],
+    );
+
+    let from = env.resolve_path(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    let to = env.resolve_path(srpath!("home/bob/.config/helix/colors/dark.toml"));
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::rename(&from, &to).unwrap();
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    let cfg = read_config(&env);
+    let symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["colors/dark.toml"]);
+
+    let new_repo = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/colors/dark.toml"
+    ));
+    assert!(new_repo.exists());
+    assert!(
+        !env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+        ))
+        .exists()
+    );
+    assert!(
+        !env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/themes"))
+            .exists(),
+        "empty themes/ dir should be pruned",
+    );
+    assert_eq!(std::fs::read_link(&to).unwrap(), new_repo);
+
+    // Plan-shape: rename vs add+remove. Either is fine end-to-end.
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+    let detected_as_rename = plan.file_actions.iter().any(|a| {
+        matches!(a, ImportFileAction::RenameInRepo { from, to }
+            if from.as_path() == std::path::Path::new("themes/dark.toml")
+                && to.as_path() == std::path::Path::new("colors/dark.toml"))
+    });
+    let detected_as_add_remove = plan.file_actions.iter().any(|a| {
+        matches!(a, ImportFileAction::RemoveFromRepo { rel }
+            if rel.as_path() == std::path::Path::new("themes/dark.toml"))
+    }) && plan.file_actions.iter().any(|a| {
+        matches!(a, ImportFileAction::MoveAndSymlink { rel }
+                if rel.as_path() == std::path::Path::new("colors/dark.toml"))
+    });
+    // Observed: cross-subdir restructure is detected as a rename, since the
+    // home-side symlink still points at its old repo path.
+    assert!(
+        detected_as_rename || detected_as_add_remove,
+        "cross-subdir restructure should plan as rename or add+remove, got: {:?}",
+        plan.file_actions,
+    );
+}
+
+#[test]
+fn import_reconcile_handles_mixed_add_delete_rename() {
+    // A single reconcile pass with three classes of change at once: two
+    // new files in a brand-new subdir, two deletes, and one rename. The
+    // plan should pick up each one in the right shape, and the array
+    // should land at the expected final state with no orphan repo files.
+    let env = TestEnv::load();
+    seed_managed_dotconfig(
+        &env,
+        "helix",
+        None,
+        &[
+            ("config.toml", b"x\n"),
+            ("themes/dark.toml", b"name = 'dark'\n"),
+            ("themes/light.toml", b"name = 'light'\n"),
+            ("keymap.toml", b"q = 'quit'\n"),
+        ],
+    );
+
+    // Two adds (top-level new subdir).
+    env.write_file(
+        srpath!("home/bob/.config/helix/colors/red.toml"),
+        b"hue = 'red'\n",
+    );
+    env.write_file(
+        srpath!("home/bob/.config/helix/colors/blue.toml"),
+        b"hue = 'blue'\n",
+    );
+
+    // Two deletes — drop the home-side symlinks; reconcile will trim the
+    // repo copies through RemoveFromRepo.
+    env.delete_file(srpath!("home/bob/.config/helix/themes/light.toml"));
+    env.delete_file(srpath!("home/bob/.config/helix/keymap.toml"));
+
+    // One rename — move dark.toml -> midnight.toml in place.
+    let from = env.resolve_path(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    let to = env.resolve_path(srpath!("home/bob/.config/helix/themes/midnight.toml"));
+    std::fs::rename(&from, &to).unwrap();
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    let out = env.run(&cmd).expect("reconcile should succeed");
+
+    let plan = out
+        .entries
+        .iter()
+        .find_map(|e| match e {
+            Entry::ImportPlan(p) => Some(p),
+            _ => None,
+        })
+        .expect("ImportPlan expected");
+
+    // Shape-counts: at least 2 MoveAndSymlink (new files), at least 2
+    // RemoveFromRepo (deleted files), exactly 1 RenameInRepo.
+    let copies = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::MoveAndSymlink { .. }))
+        .count();
+    let removes = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::RemoveFromRepo { .. }))
+        .count();
+    let renames = plan
+        .file_actions
+        .iter()
+        .filter(|a| matches!(a, ImportFileAction::RenameInRepo { .. }))
+        .count();
+    assert!(
+        copies >= 2,
+        "expected ≥2 MoveAndSymlink, got {copies}; actions={:?}",
+        plan.file_actions,
+    );
+    assert!(
+        removes >= 2,
+        "expected ≥2 RemoveFromRepo, got {removes}; actions={:?}",
+        plan.file_actions,
+    );
+    assert_eq!(
+        renames, 1,
+        "expected exactly 1 RenameInRepo, got {renames}; actions={:?}",
+        plan.file_actions,
+    );
+
+    // End state: array sorted matches the expected 4 surviving rels.
+    let cfg = read_config(&env);
+    let mut symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    symlinks.sort();
+    assert_eq!(
+        symlinks,
+        vec![
+            "colors/blue.toml",
+            "colors/red.toml",
+            "config.toml",
+            "themes/midnight.toml",
+        ],
+    );
+
+    // Repo files: new ones present, deleted ones gone, renamed at new path.
+    for rel in [
+        "colors/red.toml",
+        "colors/blue.toml",
+        "config.toml",
+        "themes/midnight.toml",
+    ] {
+        let p: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        assert!(env.resolve_path(&p).exists(), "{rel} should exist in repo");
+    }
+    for rel in ["themes/dark.toml", "themes/light.toml", "keymap.toml"] {
+        let p: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        assert!(
+            !env.resolve_path(&p).exists(),
+            "{rel} should be gone from repo",
+        );
+    }
+
+    // Symlinks resolve to their new repo paths (no danglers among the survivors).
+    for rel in [
+        "colors/red.toml",
+        "colors/blue.toml",
+        "config.toml",
+        "themes/midnight.toml",
+    ] {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        assert_eq!(
+            std::fs::read_link(env.resolve_path(&home_rel)).unwrap(),
+            env.resolve_path(&repo_rel),
+        );
+    }
+}
+
+#[test]
+fn import_isolates_pkgs_during_reconcile() {
+    // Two pkgs are managed side-by-side. Adding a new file under one and
+    // running reconcile on it must leave the other pkg's array, repo
+    // files, and symlinks untouched.
+    let env = TestEnv::load();
+    let preset = two_dotconfig_pkgs(
+        "helix",
+        &["config.toml", "themes/dark.toml"],
+        "nvim",
+        &["init.lua", "lua/keymaps.lua"],
+    );
+    env.init_config(&preset);
+
+    // Seed both pkgs' on-disk state.
+    let helix_files = [
+        ("config.toml", b"theme = 'dark'\n".as_slice()),
+        ("themes/dark.toml", b"name = 'dark'\n".as_slice()),
+    ];
+    for (rel, body) in helix_files {
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        env.write_file(&repo_rel, body);
+        env.create_symlink(&repo_rel, &home_rel);
+    }
+    let nvim_files = [
+        ("init.lua", b"-- nvim\n".as_slice()),
+        ("lua/keymaps.lua", b"-- keymaps\n".as_slice()),
+    ];
+    for (rel, body) in nvim_files {
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/nvim/{rel}")
+                .parse()
+                .unwrap();
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/nvim/{rel}").parse().unwrap();
+        env.write_file(&repo_rel, body);
+        env.create_symlink(&repo_rel, &home_rel);
+    }
+
+    // Capture nvim baseline before any change.
+    let nvim_init_target_before =
+        std::fs::read_link(env.resolve_path(srpath!("home/bob/.config/nvim/init.lua"))).unwrap();
+    let nvim_keymaps_target_before =
+        std::fs::read_link(env.resolve_path(srpath!("home/bob/.config/nvim/lua/keymaps.lua")))
+            .unwrap();
+    let nvim_init_bytes_before =
+        std::fs::read(env.resolve_path(srpath!("home/bob/.config/zenops/configs/nvim/init.lua")))
+            .unwrap();
+    let nvim_keymaps_bytes_before = std::fs::read(env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/nvim/lua/keymaps.lua"
+    )))
+    .unwrap();
+
+    // Add a file under helix only; reconcile helix.
+    env.write_file(
+        srpath!("home/bob/.config/helix/keymap.toml"),
+        b"q = 'quit'\n",
+    );
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/helix")));
+    env.run(&cmd).expect("helix reconcile should succeed");
+
+    // Helix saw the new entry.
+    let cfg = read_config(&env);
+    let mut helix_symlinks: Vec<&str> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    helix_symlinks.sort();
+    assert_eq!(
+        helix_symlinks,
+        vec!["config.toml", "keymap.toml", "themes/dark.toml"],
+    );
+
+    // Nvim's array is byte-identical to the seed.
+    let nvim_symlinks: Vec<&str> = cfg["pkg"]["nvim"]["configs"][0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(nvim_symlinks, vec!["init.lua", "lua/keymaps.lua"]);
+
+    // Nvim's symlinks still point at the same repo paths and the bytes
+    // are unchanged.
+    assert_eq!(
+        std::fs::read_link(env.resolve_path(srpath!("home/bob/.config/nvim/init.lua"))).unwrap(),
+        nvim_init_target_before,
+    );
+    assert_eq!(
+        std::fs::read_link(env.resolve_path(srpath!("home/bob/.config/nvim/lua/keymaps.lua")))
+            .unwrap(),
+        nvim_keymaps_target_before,
+    );
+    assert_eq!(
+        std::fs::read(env.resolve_path(srpath!("home/bob/.config/zenops/configs/nvim/init.lua")))
+            .unwrap(),
+        nvim_init_bytes_before,
+    );
+    assert_eq!(
+        std::fs::read(env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/nvim/lua/keymaps.lua"
+        )))
+        .unwrap(),
+        nvim_keymaps_bytes_before,
+    );
+
+    // Nvim's repo dir contains exactly its two seed files (no helix bleed).
+    let nvim_repo = env.resolve_path(srpath!("home/bob/.config/zenops/configs/nvim"));
+    let mut top: Vec<String> = std::fs::read_dir(&nvim_repo)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    top.sort();
+    assert_eq!(top, vec!["init.lua".to_string(), "lua".to_string()]);
+    let mut lua_dir: Vec<String> = std::fs::read_dir(nvim_repo.join("lua"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    lua_dir.sort();
+    assert_eq!(lua_dir, vec!["keymaps.lua".to_string()]);
+}

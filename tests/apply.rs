@@ -627,3 +627,203 @@ fn entry_status_propagates_unreadable_generated_file() {
         other => panic!("expected FailedToReadConfig, got {other:?}"),
     }
 }
+
+#[test]
+fn apply_journey_import_edit_reconcile_apply() {
+    // End-to-end believable workflow: import a populated config, edit a
+    // file through its symlink, reconcile-add a new file, reconcile-delete
+    // an old one, then apply. Each phase has its own assertions so a
+    // regression in any single step trips this test loudly.
+    let env = test_env::TestEnv::load();
+    env.init_config(
+        r#"
+[shell]
+type = "bash"
+[shell.environment]
+[shell.alias]
+"#,
+    );
+
+    // -- Phase A: fresh import of three files. ------------------------
+    env.write_file(
+        srpath!("home/bob/.config/helix/config.toml"),
+        b"theme = 'dark'\n",
+    );
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/dark.toml"),
+        b"name = 'dark'\n",
+    );
+    env.write_file(srpath!("home/bob/.config/helix/init.lua"), b"-- editor\n");
+
+    let import = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: vec!["helix".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&import).expect("phase A: import should succeed");
+
+    let cfg_path = env.resolve_path(srpath!("home/bob/.config/zenops/config.toml"));
+    let parse_helix_symlinks = || -> Vec<String> {
+        let text = std::fs::read_to_string(&cfg_path).unwrap();
+        let cfg: toml::Value = toml::from_str(&text).unwrap();
+        let mut s: Vec<String> = cfg["pkg"]["helix"]["configs"][0]["symlinks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        s.sort();
+        s
+    };
+    assert_eq!(
+        parse_helix_symlinks(),
+        vec![
+            "config.toml".to_string(),
+            "init.lua".to_string(),
+            "themes/dark.toml".to_string(),
+        ],
+    );
+    for rel in ["config.toml", "init.lua", "themes/dark.toml"] {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        assert!(
+            std::fs::symlink_metadata(env.resolve_path(&home_rel))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{rel} should be a symlink after import",
+        );
+        assert!(
+            env.resolve_path(&repo_rel).exists(),
+            "{rel} repo copy should exist after import",
+        );
+    }
+
+    // -- Phase B: edit config.toml through its symlink. ---------------
+    let helix_cfg_home = env.resolve_path(srpath!("home/bob/.config/helix/config.toml"));
+    let helix_cfg_repo =
+        env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/config.toml"));
+    std::fs::write(&helix_cfg_home, b"theme = 'dracula'\n").unwrap();
+    assert_eq!(
+        std::fs::read(&helix_cfg_home).unwrap(),
+        b"theme = 'dracula'\n"
+    );
+    assert_eq!(
+        std::fs::read(&helix_cfg_repo).unwrap(),
+        b"theme = 'dracula'\n"
+    );
+    assert!(
+        std::fs::symlink_metadata(&helix_cfg_home)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "phase B: write through must not break the symlink",
+    );
+
+    // -- Phase C: drop a new file, reconcile. -------------------------
+    env.write_file(
+        srpath!("home/bob/.config/helix/themes/light.toml"),
+        b"name = 'light'\n",
+    );
+    let reconcile = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/helix")),
+        pkg: None,
+        source: None,
+        brew: Vec::new(),
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&reconcile)
+        .expect("phase C: reconcile should succeed");
+    assert_eq!(
+        parse_helix_symlinks(),
+        vec![
+            "config.toml".to_string(),
+            "init.lua".to_string(),
+            "themes/dark.toml".to_string(),
+            "themes/light.toml".to_string(),
+        ],
+    );
+    let new_link = env.resolve_path(srpath!("home/bob/.config/helix/themes/light.toml"));
+    let new_repo = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/light.toml"
+    ));
+    assert!(
+        std::fs::symlink_metadata(&new_link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+    );
+    assert_eq!(std::fs::read_link(&new_link).unwrap(), new_repo);
+
+    // -- Phase D: delete dark.toml, reconcile again. ------------------
+    env.delete_file(srpath!("home/bob/.config/helix/themes/dark.toml"));
+    env.delete_file(srpath!(
+        "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+    ));
+    env.run(&reconcile)
+        .expect("phase D: reconcile should succeed");
+    assert_eq!(
+        parse_helix_symlinks(),
+        vec![
+            "config.toml".to_string(),
+            "init.lua".to_string(),
+            "themes/light.toml".to_string(),
+        ],
+    );
+    assert!(
+        !env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/helix/themes/dark.toml"
+        ))
+        .exists(),
+    );
+    // themes/ still exists because light.toml lives there.
+    assert!(
+        env.resolve_path(srpath!("home/bob/.config/zenops/configs/helix/themes"))
+            .is_dir(),
+    );
+
+    // -- Phase E: apply on a dirty (uncommitted-import-changes) repo. -
+    env.run(&Cmd::Apply {
+        pull_config: false,
+        yes: true,
+        dry_run: false,
+        allow_dirty: true,
+    })
+    .expect("phase E: apply should succeed");
+
+    // The 3 surviving symlinks still resolve and the edited bytes survive
+    // through apply.
+    for rel in ["config.toml", "init.lua", "themes/light.toml"] {
+        let home_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/helix/{rel}").parse().unwrap();
+        let repo_rel: zenops_safe_relative_path::SafeRelativePathBuf =
+            format!("home/bob/.config/zenops/configs/helix/{rel}")
+                .parse()
+                .unwrap();
+        let home_path = env.resolve_path(&home_rel);
+        let repo_path = env.resolve_path(&repo_rel);
+        assert!(
+            std::fs::symlink_metadata(&home_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{rel} should still be a symlink after apply",
+        );
+        assert_eq!(std::fs::read_link(&home_path).unwrap(), repo_path);
+    }
+    assert_eq!(
+        std::fs::read(&helix_cfg_home).unwrap(),
+        b"theme = 'dracula'\n",
+        "phase B's edit must still be on disk after apply",
+    );
+}
