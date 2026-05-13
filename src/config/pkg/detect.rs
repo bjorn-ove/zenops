@@ -10,23 +10,12 @@ use zenops_expand::{ExpandLookup, ExpandStr};
 
 use super::error::Error;
 
-/// A detect strategy. Wraps a concrete check (`kind`); the wrapper exists
-/// to keep the door open for future per-strategy metadata without breaking
-/// the TOML shape. `deny_unknown_fields` lives on [`DetectKind`] (the
-/// flattened inner enum), not here — combining it with `#[serde(flatten)]`
-/// on the wrapper rejects the kind discriminator itself.
-#[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
-pub struct DetectStrategy {
-    #[serde(flatten)]
-    pub kind: DetectKind,
-}
-
-/// Concrete detect checks. `File` and `Which` are leaves; `Any` and `All` are
+/// A detect strategy. `File` and `Which` are leaves; `Any` and `All` are
 /// combinators that let a single `detect` field express arbitrary boolean
 /// logic by nesting other strategies.
 #[derive(serde::Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DetectKind {
+pub enum DetectStrategy {
     File {
         path: ExpandStr,
     },
@@ -46,14 +35,8 @@ pub enum DetectKind {
 }
 
 impl DetectStrategy {
-    /// Run the wrapped check. Unresolved `${var}` placeholders inside leaf
-    /// checks yield `false` rather than an error.
-    pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> Result<bool, Error> {
-        self.kind.check(home, lookup)
-    }
-}
-
-impl DetectKind {
+    /// Run the check. Unresolved `${var}` placeholders inside leaf checks
+    /// yield `false` rather than an error.
     pub fn check(&self, home: &Path, lookup: &impl ExpandLookup) -> Result<bool, Error> {
         match self {
             Self::File { path } => {
@@ -87,12 +70,6 @@ impl DetectKind {
 }
 
 impl std::fmt::Display for DetectStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
-
-impl std::fmt::Display for DetectKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::File { path } => write!(f, "{}", path.as_template()),

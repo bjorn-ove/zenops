@@ -195,9 +195,9 @@ impl PkgConfig {
     }
 
     /// The top-level detect strategy when it matches on the current host —
-    /// used for debuggable output. Inside an `any` / `all` combinator this
-    /// returns the wrapper; consumers that care about the matching leaf can
-    /// walk `.kind` themselves.
+    /// used for debuggable output. For an `any` / `all` combinator this
+    /// returns the combinator itself; consumers that care about the matching
+    /// leaf can walk the children themselves.
     pub fn matched_detect(
         &self,
         conditions: &Conditions,
