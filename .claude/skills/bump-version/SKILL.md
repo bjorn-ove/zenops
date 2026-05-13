@@ -217,6 +217,21 @@ there must have its pin updated whenever the crate itself is bumped.
    https://github.com/<owner>/<repo>/releases/new?tag=<crate>-v<X.Y.Z>&title=<crate>%20v<X.Y.Z>
    ````
 
+   **Fence length is load-bearing.** The outer fence wraps a markdown body
+   that itself often contains fenced code blocks (toml config samples, bash
+   snippets, etc.). Per CommonMark, the outer fence must be **at least one
+   backtick longer than the longest inner fence**. A body with a ` ``` `
+   toml block needs a ` ```` ` outer fence; if a future body nests
+   ` ```` ` for some reason, bump the outer to five. Get this wrong and
+   the chat renderer closes the outer block at the first inner ` ``` `,
+   splitting `### Added` and `### Changed` into separate blocks and
+   pulling the trailing URL into a code block. Default to four backticks
+   unless you have actively checked the body and confirmed it contains no
+   nested fences.
+
+   The URL goes **outside** the outer fence, on its own line, so it
+   renders as a clickable link rather than literal text.
+
    URL construction:
 
    - Use `./scripts/bump-helper.sh release-url <crate> <X.Y.Z>` to get the
