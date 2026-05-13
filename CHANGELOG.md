@@ -1,9 +1,19 @@
 # Changelog
 
-## [Unreleased]
+## [0.16.0] - 2026-05-13
+
+### Added
+- New `when` detect strategy: gates a `detect` subtree on a host-level condition (a `[conditions]` name or an inline condition table) paired with a `then` child. A failing `when` evaluates the node as `false`, not "skip", so an `all` whose children are all gated to a different host evaluates `false` rather than empty-set-vacuously `true`. Lets a single pkg express OS-divergent detect paths without splitting into two `[pkg.*]` entries:
+  ```toml
+  [pkg.brew.detect]
+  any = [
+    { when = "macos", then = { exists = "/opt/homebrew/bin/brew" } },
+    { when = "linux", then = { exists = "/home/linuxbrew/.linuxbrew/bin/brew" } },
+  ]
+  ```
 
 ### Changed
-- **Breaking (config schema):** `[pkg.*.detect]` now identifies its kind by which key is present in the table, rather than a `type = "..."` discriminator. `type = "file"` / `path = "..."` becomes `exists = "..."`; `type = "which"` / `binary = "..."` becomes `which = "..."`; `type = "any"` / `of = [...]` becomes `any = [...]`; same for `all`. `type = "when"` drops the discriminator and keeps `when` + `then`. Old configs fail to load with `unknown detect kind 'type', expected one of: exists, which, any, all, when`.
+- **Breaking (config schema):** `[pkg.*.detect]` now identifies its kind by which key is present in the table, rather than a `type = "..."` discriminator. `type = "file"` / `path = "..."` becomes `exists = "..."`; `type = "which"` / `binary = "..."` becomes `which = "..."`; `type = "any"` / `of = [...]` becomes `any = [...]`; same for `all`. The new `when` strategy uses `when` + `then`. Each `[detect]` table must have exactly one of `exists`, `which`, `any`, `all`, or `when` (paired with `then`); mixing kinds or using the legacy `type = "..."` form fails to load with a diagnostic that names the offender.
 
 ## [0.15.0] - 2026-05-11
 
