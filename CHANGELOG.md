@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.17.0] - 2026-05-13
+
+### Added
+- `zenops import` accepts a nested file under `~/.config/<pkg>/` (e.g. `~/.config/some-app/dir/file.json`) when no `[pkg.some-app]` exists yet: it creates the pkg, imports only that one file, and leaves the rest of the directory alone. Previously the strict layout check refused anything deeper than `~/.config/<pkg>` for a new pkg.
+- New `ImportError::NestedDirectoryNotSupported` variant. A nested *directory* (rather than a file) for a brand-new pkg is still refused, with a diagnostic pointing the user at a single file or the parent pkg directory.
+- The crate-level `error` module now re-exports every error type wrapped by `zenops::error::Error`. Consumers can import `ConfigError`, `ConfigFilesError`, `ConfigShellError`, `GitError`, `ImportError`, `InitError`, `OutputError`, `PkgError`, `PromptError`, `SchemaError`, `SshError`, and `WhichError` from a single `zenops::error::*` namespace. The original per-module paths (e.g. `zenops::prompt::PromptError`) still work.
+
+### Changed
+- **Breaking (library):** `zenops::ConfigError` is no longer re-exported at the crate root. Update callers to `zenops::error::ConfigError`.
+
 ## [0.16.0] - 2026-05-13
 
 ### Added
