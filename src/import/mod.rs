@@ -436,22 +436,61 @@ fn build_plan(
         .unwrap_or_else(|| format!("configs/{pkg_key}"));
     let repo_dest = dirs.zenops().join(&repo_rel);
 
-    let (source_root, toml_plan_kind) = match (&layout, is_dir) {
-        (Layout::DotConfig { dir }, true) => {
+    // `single_file_rel = Some(rel)` switches the collect step into
+    // "import just this one file" mode (Home dotfile, or a nested file
+    // under `~/.config/<pkg>/`); `None` means walk the source directory.
+    let (source_root, toml_plan_kind, single_file_rel) = match (&layout, is_dir) {
+        (
+            Layout::DotConfig {
+                dir,
+                sub_path: None,
+            },
+            true,
+        ) => {
             let root = canonical_home.join(".config").join(dir);
             let name_override = if dir == pkg_key.as_str() {
                 None
             } else {
                 Some(dir.clone())
             };
-            (root, TomlPlanKind::DotConfig { name_override })
+            (root, TomlPlanKind::DotConfig { name_override }, None)
         }
-        (Layout::DotConfig { .. }, false) => {
+        (Layout::DotConfig { sub_path: None, .. }, false) => {
             return Err(ImportError::ExpectedDirectory(canonical_source).into());
+        }
+        (
+            Layout::DotConfig {
+                sub_path: Some(_), ..
+            },
+            true,
+        ) => {
+            return Err(ImportError::NestedDirectoryNotSupported(canonical_source).into());
+        }
+        (
+            Layout::DotConfig {
+                dir,
+                sub_path: Some(rest),
+            },
+            false,
+        ) => {
+            // New-pkg counterpart of extend mode: the on-disk root is still
+            // `.config/<dir>/`, but we only manage this one nested file and
+            // leave every other file in that directory alone.
+            let root = canonical_home.join(".config").join(dir);
+            let name_override = if dir == pkg_key.as_str() {
+                None
+            } else {
+                Some(dir.clone())
+            };
+            (
+                root,
+                TomlPlanKind::DotConfig { name_override },
+                Some(rest.clone()),
+            )
         }
         (Layout::Home { name }, true) => {
             let root = canonical_home.join(name);
-            (root, TomlPlanKind::Home { dir: name.clone() })
+            (root, TomlPlanKind::Home { dir: name.clone() }, None)
         }
         (Layout::Home { name: _ }, false) => {
             // Single dotfile at $HOME: walk the parent and let the file
@@ -460,28 +499,32 @@ fn build_plan(
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| canonical_home.clone());
-            (root, TomlPlanKind::HomeSingleFile)
+            let file_name = canonical_source.file_name().ok_or_else(|| {
+                ImportError::Io(canonical_source.clone(), io::ErrorKind::InvalidInput.into())
+            })?;
+            (
+                root,
+                TomlPlanKind::HomeSingleFile,
+                Some(PathBuf::from(file_name)),
+            )
         }
     };
 
-    let collected = if is_dir {
-        let mut files = Vec::new();
-        let mut skipped = Vec::new();
-        walk_dir(&canonical_source, &mut files, &mut skipped, Path::new(""))?;
-        (files, skipped)
-    } else {
-        let name = canonical_source.file_name().ok_or_else(|| {
-            ImportError::Io(canonical_source.clone(), io::ErrorKind::InvalidInput.into())
-        })?;
-        (
+    let (collected, skipped) = match single_file_rel {
+        Some(rel) => (
             vec![CollectedEntry {
-                rel: PathBuf::from(name),
-                repo_rel: PathBuf::from(name),
+                rel: rel.clone(),
+                repo_rel: rel,
             }],
             Vec::new(),
-        )
+        ),
+        None => {
+            let mut files = Vec::new();
+            let mut skipped = Vec::new();
+            walk_dir(&canonical_source, &mut files, &mut skipped, Path::new(""))?;
+            (files, skipped)
+        }
     };
-    let (collected, skipped) = collected;
 
     let mut files = Vec::with_capacity(collected.len());
     let mut already_imported = 0usize;
@@ -561,24 +604,38 @@ fn build_plan(
 /// Classified layout shape of the input path's home-relative tail.
 #[derive(Debug)]
 enum Layout {
-    /// `~/.config/<dir>` — a single component under `.config/`.
-    DotConfig { dir: String },
+    /// `~/.config/<dir>` (or `~/.config/<dir>/<sub-path>`).
+    /// `sub_path` is `Some` when the input points at a file nested under
+    /// the pkg's `.config/` root — the new-pkg counterpart of extend mode.
+    DotConfig {
+        dir: String,
+        sub_path: Option<PathBuf>,
+    },
     /// `~/.<name>` — a single dot-prefixed component at the home root.
     /// `name` keeps the leading dot.
     Home { name: String },
 }
 
-/// Build a [`Layout`] from the home-relative tail. Strict: rejects depths
-/// other than 1 (Home) or 2 (DotConfig with `.config` first).
+/// Build a [`Layout`] from the home-relative tail. `.config/<dir>` and
+/// `.config/<dir>/<sub-path>` both classify as `DotConfig`; Home is
+/// single-component only.
 fn classify(tail: &Path) -> Result<Layout, ImportError> {
     let comps: Vec<&str> = tail
         .components()
         .map(|c| c.as_os_str().to_str().unwrap_or(""))
         .collect();
     match comps.as_slice() {
-        [".config", dir] if !dir.is_empty() && SinglePathComponent::try_new(dir).is_ok() => {
+        [".config", dir, rest @ ..]
+            if !dir.is_empty() && SinglePathComponent::try_new(dir).is_ok() =>
+        {
+            let sub_path = if rest.is_empty() {
+                None
+            } else {
+                Some(rest.iter().collect::<PathBuf>())
+            };
             Ok(Layout::DotConfig {
                 dir: (*dir).to_string(),
+                sub_path,
             })
         }
         // `.config` on its own is the config root, not an importable
@@ -605,7 +662,7 @@ fn derive_pkg_key(layout: &Layout, pkg_override: Option<&str>) -> Result<SmolStr
     let candidate = match pkg_override {
         Some(s) => s.to_string(),
         None => match layout {
-            Layout::DotConfig { dir } => dir.clone(),
+            Layout::DotConfig { dir, .. } => dir.clone(),
             Layout::Home { name } => name
                 .strip_prefix('.')
                 .map(str::to_string)
@@ -1995,7 +2052,10 @@ mod tests {
     #[test]
     fn classify_dot_config() {
         let layout = classify(Path::new(".config/helix")).unwrap();
-        assert!(matches!(&layout, Layout::DotConfig { dir } if dir == "helix"));
+        assert!(matches!(
+            &layout,
+            Layout::DotConfig { dir, sub_path: None } if dir == "helix",
+        ));
     }
 
     #[test]
@@ -2011,9 +2071,27 @@ mod tests {
     }
 
     #[test]
-    fn classify_rejects_dot_config_subdir() {
-        let err = classify(Path::new(".config/helix/themes")).unwrap_err();
-        assert!(matches!(err, ImportError::UnsupportedLayout(_)));
+    fn classify_dot_config_with_nested_file() {
+        let layout = classify(Path::new(".config/helix/themes/onedark.toml")).unwrap();
+        match layout {
+            Layout::DotConfig { dir, sub_path } => {
+                assert_eq!(dir, "helix");
+                assert_eq!(sub_path, Some(PathBuf::from("themes/onedark.toml")));
+            }
+            other => panic!("expected DotConfig with sub_path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_dot_config_with_single_nested_component() {
+        let layout = classify(Path::new(".config/myapp/config.toml")).unwrap();
+        match layout {
+            Layout::DotConfig { dir, sub_path } => {
+                assert_eq!(dir, "myapp");
+                assert_eq!(sub_path, Some(PathBuf::from("config.toml")));
+            }
+            other => panic!("expected DotConfig with sub_path, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2041,14 +2119,30 @@ mod tests {
     fn derive_pkg_key_uses_dir_for_dotconfig() {
         let layout = Layout::DotConfig {
             dir: "helix".into(),
+            sub_path: None,
         };
         let key = derive_pkg_key(&layout, None).unwrap();
         assert_eq!(key.as_str(), "helix");
     }
 
     #[test]
+    fn derive_pkg_key_ignores_sub_path_for_dotconfig() {
+        // pkg key is always `<dir>` — the sub_path only narrows which file
+        // is imported, not what the pkg is called.
+        let layout = Layout::DotConfig {
+            dir: "some-app".into(),
+            sub_path: Some(PathBuf::from("dir/file.json")),
+        };
+        let key = derive_pkg_key(&layout, None).unwrap();
+        assert_eq!(key.as_str(), "some-app");
+    }
+
+    #[test]
     fn derive_pkg_key_honors_override() {
-        let layout = Layout::DotConfig { dir: "nvim".into() };
+        let layout = Layout::DotConfig {
+            dir: "nvim".into(),
+            sub_path: None,
+        };
         let key = derive_pkg_key(&layout, Some("neovim")).unwrap();
         assert_eq!(key.as_str(), "neovim");
     }

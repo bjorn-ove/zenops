@@ -89,6 +89,13 @@ pub enum Error {
         "Importing a subdirectory of an already-managed config isn't supported yet; pass a single file under {0:?}"
     )]
     ExtendDirectoryNotSupported(PathBuf),
+    /// User pointed at a directory *nested* under `.config/<pkg>/` for a
+    /// brand-new pkg. Single-file nested imports are supported, but
+    /// recursive sub-directory import for a new pkg isn't.
+    #[error(
+        "Path {0:?} is a directory nested under `~/.config/<pkg>/`; pass a single file to import just that file, or `~/.config/<pkg>` to import the whole directory"
+    )]
+    NestedDirectoryNotSupported(PathBuf),
     /// Caller is creating a brand-new pkg block but didn't provide
     /// install_hint info and didn't pass `--no-install-hint`.
     #[error(
@@ -186,6 +193,7 @@ impl PartialEq for Error {
                 l == r
             }
             (Self::ExtendDirectoryNotSupported(l), Self::ExtendDirectoryNotSupported(r)) => l == r,
+            (Self::NestedDirectoryNotSupported(l), Self::NestedDirectoryNotSupported(r)) => l == r,
             (Self::MissingInstallHint(l), Self::MissingInstallHint(r)) => l == r,
             (Self::NeedsTty, Self::NeedsTty) => true,
             (Self::Aborted, Self::Aborted) => true,

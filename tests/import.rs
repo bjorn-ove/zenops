@@ -179,7 +179,102 @@ fn import_home_dotdir() {
 }
 
 #[test]
-fn import_rejects_unsupported_layout_subdir() {
+fn import_dot_config_new_pkg_deeply_nested_file() {
+    // The user's reported case: `zenops import ~/.config/some-app/dir/file.json`
+    // when no [pkg.some-app] exists yet. Should create the pkg with a
+    // single configs entry pointing at exactly that file.
+    let env = TestEnv::load();
+    env.init_config(MINIMAL_CONFIG);
+    env.write_file(
+        srpath!("home/bob/.config/some-app/dir/file.json"),
+        b"{\"a\":1}\n",
+    );
+    env.write_file(srpath!("home/bob/.config/some-app/other.toml"), b"y\n");
+
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/some-app/dir/file.json")),
+        pkg: None,
+        source: None,
+        brew: vec!["some-app".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("deeply-nested import should succeed");
+
+    let original = env.resolve_path(srpath!("home/bob/.config/some-app/dir/file.json"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+    );
+    let repo_copy = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/some-app/dir/file.json"
+    ));
+    assert_eq!(std::fs::read_link(&original).unwrap(), repo_copy);
+    assert_eq!(std::fs::read(&repo_copy).unwrap(), b"{\"a\":1}\n");
+
+    // Sibling untouched.
+    let sibling = env.resolve_path(srpath!("home/bob/.config/some-app/other.toml"));
+    assert!(
+        std::fs::symlink_metadata(&sibling)
+            .unwrap()
+            .file_type()
+            .is_file(),
+    );
+
+    let cfg = read_config(&env);
+    let entry = &cfg["pkg"]["some-app"]["configs"][0];
+    assert_eq!(entry["type"].as_str(), Some(".config"));
+    assert_eq!(entry["source"].as_str(), Some("configs/some-app"));
+    let symlinks: Vec<&str> = entry["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["dir/file.json"]);
+}
+
+#[test]
+fn import_new_pkg_nested_file_collides_with_existing_pkg_key() {
+    // [pkg.some-app] already exists with configs at a *different* on-disk
+    // root (a home dotfile), so the nested .config/some-app/dir/file.json
+    // path can't be folded into it. The user has to override with --pkg
+    // or --source — same behavior as the existing collision guard for the
+    // whole-directory case.
+    let env = TestEnv::load();
+    let preset = format!(
+        "{}\n\
+         [pkg.some-app]\n\
+         [pkg.some-app.install_hint.brew]\n\
+         packages = [\"some-app\"]\n\
+         [[pkg.some-app.configs]]\n\
+         type = \"home\"\n\
+         dir = \".local/share/some-app\"\n\
+         source = \"configs/some-app\"\n\
+         symlinks = [\"main.toml\"]\n",
+        MINIMAL_CONFIG,
+    );
+    env.init_config(&preset);
+    env.write_file(srpath!("home/bob/.local/share/some-app/main.toml"), b"\n");
+    env.write_file(
+        srpath!("home/bob/.config/some-app/dir/file.json"),
+        b"{\"a\":1}\n",
+    );
+
+    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/some-app/dir/file.json")));
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::PkgKeyTaken { pkg })) => {
+            assert_eq!(pkg.as_str(), "some-app");
+        }
+        other => panic!("expected PkgKeyTaken, got {other:?}"),
+    }
+}
+
+#[test]
+fn import_rejects_nested_directory_for_new_pkg() {
     let env = TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     env.write_file(
@@ -187,16 +282,16 @@ fn import_rejects_unsupported_layout_subdir() {
         b"theme = 'dark'\n",
     );
 
+    // Nested *directory* (not a file) for a brand-new pkg: refused, because
+    // single-file nested import is supported but recursive sub-dir import
+    // is the user's call to make explicit (point at `.config/myapp` for
+    // the whole pkg, or at a specific file under `themes/`).
     let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp/themes")));
-    let result = env.run(&cmd);
-    match result {
-        Err(Error::Import(ImportError::UnsupportedLayout(s))) => {
-            assert!(
-                s.contains(".config/myapp/themes"),
-                "tail should be in error: {s:?}"
-            );
+    match env.run(&cmd) {
+        Err(Error::Import(ImportError::NestedDirectoryNotSupported(p))) => {
+            assert!(p.ends_with(".config/myapp/themes"), "got {p:?}");
         }
-        other => panic!("expected UnsupportedLayout, got {other:?}"),
+        other => panic!("expected NestedDirectoryNotSupported, got {other:?}"),
     }
 
     // Source untouched.
@@ -758,24 +853,74 @@ fn import_extend_dry_run_writes_nothing() {
 }
 
 #[test]
-fn import_extend_no_match_falls_back_to_layout_check() {
-    // No managed pkg owns ~/.config/unmanaged/, so a deep file under it
-    // doesn't trigger extend mode and the existing UnsupportedLayout
-    // diagnostic fires (unchanged behavior).
+fn import_dot_config_new_pkg_nested_file_leaves_siblings_alone() {
+    // ~/.config/unmanaged/ has no matching pkg, so this falls through to
+    // the new-pkg path. We're pointing at a *nested* file and the import
+    // should succeed: create pkg `unmanaged`, copy only that one file
+    // into the repo, leave the sibling alone.
     let env = TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     env.write_file(
         srpath!("home/bob/.config/unmanaged/sub/file.toml"),
         b"x = 1\n",
     );
+    env.write_file(srpath!("home/bob/.config/unmanaged/other.toml"), b"y = 2\n");
 
-    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/unmanaged/sub/file.toml")));
-    match env.run(&cmd) {
-        Err(Error::Import(ImportError::UnsupportedLayout(s))) => {
-            assert!(s.contains(".config/unmanaged/sub"), "tail in error: {s:?}");
-        }
-        other => panic!("expected UnsupportedLayout, got {other:?}"),
-    }
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/unmanaged/sub/file.toml")),
+        pkg: None,
+        source: None,
+        brew: Vec::new(),
+        no_install_hint: true,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("nested-file import should succeed");
+
+    // The targeted file is now a symlink into the repo, with its full
+    // nested path preserved on the repo side.
+    let original = env.resolve_path(srpath!("home/bob/.config/unmanaged/sub/file.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+    );
+    let repo_copy = env.resolve_path(srpath!(
+        "home/bob/.config/zenops/configs/unmanaged/sub/file.toml"
+    ));
+    assert_eq!(std::fs::read(&repo_copy).unwrap(), b"x = 1\n");
+    assert_eq!(std::fs::read_link(&original).unwrap(), repo_copy);
+
+    // The sibling file is untouched — still a regular file, not copied.
+    let sibling = env.resolve_path(srpath!("home/bob/.config/unmanaged/other.toml"));
+    assert!(
+        std::fs::symlink_metadata(&sibling)
+            .unwrap()
+            .file_type()
+            .is_file(),
+    );
+    assert!(
+        !env.resolve_path(srpath!(
+            "home/bob/.config/zenops/configs/unmanaged/other.toml"
+        ))
+        .exists(),
+        "sibling should not have been copied into the repo",
+    );
+
+    // config.toml has one configs entry covering only the imported file.
+    let cfg = read_config(&env);
+    let entries = cfg["pkg"]["unmanaged"]["configs"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["type"].as_str(), Some(".config"));
+    assert_eq!(entries[0]["source"].as_str(), Some("configs/unmanaged"));
+    let symlinks: Vec<&str> = entries[0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["sub/file.toml"]);
 }
 
 #[test]
@@ -1582,24 +1727,52 @@ fn import_rejects_source_that_is_a_symlink() {
 }
 
 #[test]
-fn import_rejects_single_file_for_new_pkg() {
-    // Pointing at a single file under a brand-new pkg dir falls through to
-    // the strict layout check and gets refused with a "point at the parent"
-    // hint.
+fn import_dot_config_new_pkg_single_file() {
+    // Pointing at a single file directly under `~/.config/<pkg>/` creates
+    // the pkg and imports just that one file.
     let env = TestEnv::load();
     env.init_config(MINIMAL_CONFIG);
     env.write_file(srpath!("home/bob/.config/myapp/config.toml"), b"x\n");
+    env.write_file(srpath!("home/bob/.config/myapp/other.toml"), b"y\n");
 
-    let cmd = import_cmd(env.resolve_path(srpath!("home/bob/.config/myapp/config.toml")));
-    match env.run(&cmd) {
-        Err(Error::Import(ImportError::UnsupportedLayout(s))) => {
-            assert!(
-                s.contains(".config/myapp/config.toml"),
-                "tail should be in error: {s:?}",
-            );
-        }
-        other => panic!("expected UnsupportedLayout, got {other:?}"),
-    }
+    let cmd = Cmd::Import {
+        path: env.resolve_path(srpath!("home/bob/.config/myapp/config.toml")),
+        pkg: None,
+        source: None,
+        brew: vec!["myapp".into()],
+        no_install_hint: false,
+        yes: true,
+        dry_run: false,
+    };
+    env.run(&cmd).expect("single-file import should succeed");
+
+    let original = env.resolve_path(srpath!("home/bob/.config/myapp/config.toml"));
+    assert!(
+        std::fs::symlink_metadata(&original)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+    );
+
+    // Sibling not touched.
+    let sibling = env.resolve_path(srpath!("home/bob/.config/myapp/other.toml"));
+    assert!(
+        std::fs::symlink_metadata(&sibling)
+            .unwrap()
+            .file_type()
+            .is_file(),
+    );
+
+    let cfg = read_config(&env);
+    let entries = cfg["pkg"]["myapp"]["configs"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let symlinks: Vec<&str> = entries[0]["symlinks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(symlinks, vec!["config.toml"]);
 }
 
 #[test]
