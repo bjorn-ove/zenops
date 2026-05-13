@@ -13,28 +13,39 @@
 
 use std::path::PathBuf;
 
-use crate::output::OutputError;
+pub use crate::config::ConfigError;
+pub use crate::config::pkg::Error as PkgError;
+pub use crate::config::shell::ConfigShellError;
+pub use crate::config::ssh::SshError;
+pub use crate::config_files::ConfigFilesError;
+pub use crate::git::GitError;
+pub use crate::import::ImportError;
+pub use crate::init::InitError;
+pub use crate::output::OutputError;
+pub use crate::prompt::PromptError;
+pub use crate::schema::SchemaError;
+pub use crate::utils::which::Error as WhichError;
 
 /// Crate-wide error. Each variant's user-facing string lives on its
 /// `#[error(...)]` attribute (the `Display` impl); the doc comment here
 /// adds the trigger context the message can't carry.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Wraps [`crate::config::ConfigError`].
+    /// Wraps [`ConfigError`].
     #[error(transparent)]
     Config(#[from] crate::config::ConfigError),
     /// A subprocess invoked through `xshell` failed (non-zero exit, signal,
     /// I/O error). The wrapped error carries the command and stderr.
     #[error("Failed to execute command")]
     Shell(#[from] xshell::Error),
-    /// Wraps [`crate::config_files::ConfigFilesError`].
+    /// Wraps [`ConfigFilesError`].
     #[error(transparent)]
     ConfigFiles(#[from] crate::config_files::ConfigFilesError),
     /// A `..`-traversal or other path-safety violation surfaced from
     /// [`zenops_safe_relative_path`].
     #[error(transparent)]
     SafeRelativePath(#[from] zenops_safe_relative_path::error::Error),
-    /// Wraps [`crate::config::shell::ConfigShellError`].
+    /// Wraps [`ConfigShellError`].
     #[error(transparent)]
     ConfigShell(#[from] crate::config::shell::ConfigShellError),
     /// `apply` was invoked without a TTY and without `--yes`/`--dry-run`,
@@ -50,32 +61,32 @@ pub enum Error {
         "zenops config repo at {0:?} has uncommitted changes. Commit them first, or re-run with --allow-dirty to apply anyway."
     )]
     DirtyRepoRequiresAllowDirty(PathBuf),
-    /// Wraps [`crate::prompt::PromptError`].
+    /// Wraps [`PromptError`].
     #[error(transparent)]
     Prompt(#[from] crate::prompt::PromptError),
     /// An [`Output`](crate::output::Output) implementation failed to write
     /// (rendering or JSON serialization error).
     #[error(transparent)]
     Output(#[from] OutputError),
-    /// Wraps [`crate::init::InitError`].
+    /// Wraps [`InitError`].
     #[error(transparent)]
     Init(#[from] crate::init::InitError),
-    /// Wraps [`crate::import::ImportError`].
+    /// Wraps [`ImportError`].
     #[error(transparent)]
     Import(#[from] crate::import::ImportError),
-    /// Wraps [`crate::config::ssh::SshError`].
+    /// Wraps [`SshError`].
     #[error(transparent)]
     Ssh(#[from] crate::config::ssh::SshError),
-    /// Wraps [`crate::schema::SchemaError`].
+    /// Wraps [`SchemaError`].
     #[error(transparent)]
     Schema(#[from] crate::schema::SchemaError),
-    /// Wraps [`crate::config::pkg::Error`].
+    /// Wraps [`PkgError`].
     #[error(transparent)]
     PkgError(#[from] crate::config::pkg::Error),
-    /// Wraps [`crate::utils::which::Error`].
+    /// Wraps [`WhichError`].
     #[error(transparent)]
     Which(#[from] crate::utils::which::Error),
-    /// Wraps [`crate::git::GitError`].
+    /// Wraps [`GitError`].
     #[error(transparent)]
     Git(#[from] crate::git::GitError),
     /// `home::home_dir()` returned `None` — couldn't determine the user's

@@ -2,10 +2,20 @@ use std::path::PathBuf;
 
 use zenops_expand::{ExpandError, ExpandLookup, ExpandStr};
 
+/// Failures from PATH-binary lookup. "Binary not found" is *not* an error
+/// here — `get_path` maps the underlying `which::Error::CannotFindBinaryPath`
+/// / `CannotGetCurrentDirAndPathListEmpty` to `Ok(None)` — so this enum
+/// only covers the cases where the user's input itself was bad or the
+/// lookup machinery broke.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The `${...}` placeholder expansion on the binary spec failed before
+    /// `which` was even invoked. First field is the unexpanded spec.
     #[error("Failed to expand executable path from {0:?}: {1}")]
     ExpandError(ExpandStr, ExpandError),
+    /// `which::which` returned an error other than "not found" — typically
+    /// `CannotCanonicalize` after a match was found but couldn't be
+    /// resolved. First field is the binary name that was looked up.
     #[error("Failed to find executable from {0:?}: {1}")]
     Which(String, which::Error),
 }

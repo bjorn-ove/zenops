@@ -7,9 +7,9 @@
 
 use smol_str::SmolStr;
 
-/// Failure modes for [`super::common::write_pkg_inits`] and the helpers
-/// it drives. Both variants name the offending pkg so the user can
-/// jump straight to its `[pkg.<name>]` block.
+/// Failure modes for the shell-init `write_pkg_inits` path and the
+/// helpers it drives. Both variants name the offending pkg so the user
+/// can jump straight to its `[pkg.<name>]` block.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A pkg's template referenced an input that's not declared anywhere

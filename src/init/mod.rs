@@ -15,7 +15,7 @@
 //!   a TTY for prompts.
 //!
 //! Both forms run *before* a `config.toml` exists, so they can't go through
-//! the normal [`Config::load`] path in [`crate::real_main`].
+//! the normal `Config::load` path in [`crate::real_main`].
 
 mod error;
 

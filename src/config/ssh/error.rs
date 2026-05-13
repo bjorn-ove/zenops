@@ -7,7 +7,7 @@
 
 use smol_str::SmolStr;
 
-/// Failure modes for the GitHub-key-fetching paths in [`super`].
+/// Failure modes for the GitHub-key-fetching paths in this module.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// `curl` isn't on `PATH` and is needed to fetch a user's GitHub keys.

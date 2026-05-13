@@ -23,7 +23,7 @@ fn missing_config() {
             diff: false,
             all: false
         }),
-        Err(Error::Config(zenops::ConfigError::OpenDb(
+        Err(Error::Config(zenops::error::ConfigError::OpenDb(
             env.resolve_path(paths::ZENOPS_CONFIG),
             std::io::ErrorKind::NotFound.into()
         )))
