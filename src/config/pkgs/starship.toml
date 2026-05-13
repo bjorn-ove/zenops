@@ -10,8 +10,7 @@ description = "starship — cross-shell prompt."
 packages = ["starship"]
 
 [pkg.starship.detect]
-type = "which"
-binary = "starship"
+which = "starship"
 
 [[pkg.starship.shell.interactive_init.bash]]
 type = "comment"

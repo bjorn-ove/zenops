@@ -94,8 +94,7 @@ fn detect_strategy_with_unresolved_input_reports_not_installed() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "${brew_prefix}/opt/x"
+            exists = "${brew_prefix}/opt/x"
             "#,
     )
     .unwrap();
@@ -118,8 +117,7 @@ fn detect_strategy_resolves_system_input_and_checks_file() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "${root}/opt/x"
+            exists = "${root}/opt/x"
             "#,
     )
     .unwrap();
@@ -142,8 +140,7 @@ fn pkg_inputs_shadow_system_inputs_at_detect() {
             [inputs]
             name = "a"
             [detect]
-            type = "file"
-            path = "{}/${{name}}"
+            exists = "{}/${{name}}"
             "#,
         tmp.path().display()
     );
@@ -165,8 +162,7 @@ fn enable_on_with_matching_detect_is_silent() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "{}"
+            exists = "{}"
             "#,
         marker.display()
     );
@@ -185,8 +181,7 @@ fn enable_on_with_missing_detect_flags_health_signal() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "/definitely/does/not/exist/zenops-test"
+            exists = "/definitely/does/not/exist/zenops-test"
             "#,
     )
     .unwrap();
@@ -226,8 +221,7 @@ fn enable_detect_miss_is_silent() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "/definitely/does/not/exist/zenops-test"
+            exists = "/definitely/does/not/exist/zenops-test"
             "#,
     )
     .unwrap();
@@ -249,8 +243,7 @@ fn enable_on_with_matching_detect_is_installed() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "{}"
+            exists = "{}"
             "#,
         marker.display()
     );
@@ -272,8 +265,7 @@ fn enable_on_with_missing_detect_is_not_installed() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "/definitely/does/not/exist/zenops-test"
+            exists = "/definitely/does/not/exist/zenops-test"
             "#,
     )
     .unwrap();
@@ -474,10 +466,9 @@ fn any_combinator_matches_when_any_child_matches() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "any"
-            of = [
-              {{ type = "file", path = "/definitely/does/not/exist/zenops-test" }},
-              {{ type = "file", path = "{}" }},
+            any = [
+              {{ exists = "/definitely/does/not/exist/zenops-test" }},
+              {{ exists = "{}" }},
             ]
             "#,
         present.display()
@@ -502,10 +493,9 @@ fn all_combinator_requires_every_child() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "all"
-            of = [
-              {{ type = "file", path = "{}" }},
-              {{ type = "file", path = "{}" }},
+            all = [
+              {{ exists = "{}" }},
+              {{ exists = "{}" }},
             ]
             "#,
         a.display(),
@@ -536,13 +526,12 @@ fn nested_combinators_compose() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "any"
-            of = [
-              {{ type = "all", of = [
-                {{ type = "file", path = "{}" }},
-                {{ type = "file", path = "{}" }},
+            any = [
+              {{ all = [
+                {{ exists = "{}" }},
+                {{ exists = "{}" }},
               ] }},
-              {{ type = "which", binary = "definitely-not-on-path-zenops-test" }},
+              {{ which = "definitely-not-on-path-zenops-test" }},
             ]
             "#,
         a.display(),
@@ -559,8 +548,7 @@ fn nested_combinators_compose() {
 fn detect_strategy_displays_file_leaf() {
     let s: super::detect::DetectStrategy = toml::from_str(
         r#"
-            type = "file"
-            path = "/opt/x"
+            exists = "/opt/x"
         "#,
     )
     .unwrap();
@@ -571,8 +559,7 @@ fn detect_strategy_displays_file_leaf() {
 fn detect_strategy_displays_which_leaf() {
     let s: super::detect::DetectStrategy = toml::from_str(
         r#"
-            type = "which"
-            binary = "rg"
+            which = "rg"
         "#,
     )
     .unwrap();
@@ -583,10 +570,9 @@ fn detect_strategy_displays_which_leaf() {
 fn detect_strategy_displays_any_combinator_with_nested_leaves() {
     let s: super::detect::DetectStrategy = toml::from_str(
         r#"
-            type = "any"
-            of = [
-                { type = "file", path = "/a" },
-                { type = "which", binary = "b" },
+            any = [
+                { exists = "/a" },
+                { which = "b" },
             ]
         "#,
     )
@@ -598,8 +584,7 @@ fn detect_strategy_displays_any_combinator_with_nested_leaves() {
 fn detect_strategy_displays_all_combinator_empty() {
     let s: super::detect::DetectStrategy = toml::from_str(
         r#"
-            type = "all"
-            of = []
+            all = []
         "#,
     )
     .unwrap();
@@ -610,17 +595,164 @@ fn detect_strategy_displays_all_combinator_empty() {
 fn detect_strategy_displays_nested_combinators() {
     let s: super::detect::DetectStrategy = toml::from_str(
         r#"
-            type = "all"
-            of = [
-                { type = "file", path = "/x" },
-                { type = "any", of = [
-                    { type = "which", binary = "rg" },
+            all = [
+                { exists = "/x" },
+                { any = [
+                    { which = "rg" },
                 ] },
             ]
         "#,
     )
     .unwrap();
     assert_eq!(s.to_string(), "all(/x, any(which rg))");
+}
+
+#[test]
+fn detect_when_true_evaluates_inner_strategy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join(".marker");
+    std::fs::write(&marker, "").unwrap();
+    let current = current_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            when = "{current}"
+            [detect.then]
+            exists = "{}"
+            "#,
+        marker.display()
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn detect_when_false_evaluates_as_false_not_skipped() {
+    // Regression guard for the "skip vs false" semantic: if `when` is false,
+    // the node must report false, never be filtered from a parent combinator.
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join(".marker");
+    std::fs::write(&marker, "").unwrap();
+    let other = other_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            when = "{other}"
+            [detect.then]
+            exists = "{}"
+            "#,
+        marker.display()
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn detect_all_with_when_false_child_is_false_not_vacuously_true() {
+    // The load-bearing test: an `all` whose every child is gated to another
+    // host must evaluate false. Filtering when-false children would empty
+    // the list and flip `all` to vacuously true — a detection bug.
+    let other = other_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            all = [
+              {{ when = "{other}", then = {{ exists = "/anywhere" }} }},
+              {{ when = "{other}", then = {{ exists = "/anywhere" }} }},
+            ]
+            "#
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(!pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn detect_any_with_one_matching_when_branch_matches() {
+    // OS-divergent detect inside a single pkg: only the branch gated to the
+    // current host should be reached, and if its inner check passes, the
+    // outer `any` matches.
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join(".marker");
+    std::fs::write(&marker, "").unwrap();
+    let current = current_os_str();
+    let other = other_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            any = [
+              {{ when = "{other}",   then = {{ exists = "/definitely/missing" }} }},
+              {{ when = "{current}", then = {{ exists = "{}" }} }},
+            ]
+            "#,
+        marker.display()
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let conds = builtin_conditions();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn detect_when_with_inline_condition_table() {
+    // Mirrors `when_inline_table_works_without_registry_entry` at the
+    // pkg level: `when` inside detect accepts an inline condition table.
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join(".marker");
+    std::fs::write(&marker, "").unwrap();
+    let current = current_os_str();
+    let toml_src = format!(
+        r#"
+            enable = "detect"
+            [install_hint.brew]
+            packages = []
+            [detect]
+            when = {{ os = "{current}" }}
+            [detect.then]
+            exists = "{}"
+            "#,
+        marker.display()
+    );
+    let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();
+    let conds = Conditions::compile(IndexMap::new()).unwrap();
+    let sys = system_empty();
+    let c = ctx(tmp.path(), &sys, None);
+    assert!(pkg.is_installed(&conds, &c).unwrap());
+}
+
+#[test]
+fn detect_when_displays_with_named_ref() {
+    let s: super::detect::DetectStrategy = toml::from_str(
+        r#"
+            when = "macos"
+            [then]
+            exists = "/opt/x"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(s.to_string(), "when(macos, /opt/x)");
 }
 
 #[test]
@@ -634,8 +766,7 @@ fn detect_which_with_unresolved_input_reports_not_installed() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "which"
-            binary = "${unresolved}"
+            which = "${unresolved}"
             "#,
     )
     .unwrap();
@@ -714,26 +845,6 @@ fn legacy_supported_shells_field_fails_to_load() {
 }
 
 #[test]
-fn legacy_detect_os_field_fails_to_load() {
-    let err = toml::from_str::<PkgConfig>(
-        r#"
-            [install_hint.brew]
-            packages = []
-            [detect]
-            type = "which"
-            binary = "x"
-            os = ["linux"]
-        "#,
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        err.contains("`os`") || err.contains("'os'"),
-        "expected error to name `os`, got: {err}"
-    );
-}
-
-#[test]
 fn when_evaluating_to_false_silences_health_signal() {
     // A pkg gated to the other OS via `when` should not surface a missing
     // signal, mirroring the old `supported_os` behavior.
@@ -745,8 +856,7 @@ fn when_evaluating_to_false_silences_health_signal() {
             [install_hint.brew]
             packages = []
             [detect]
-            type = "file"
-            path = "/definitely/does/not/exist/zenops-test"
+            exists = "/definitely/does/not/exist/zenops-test"
             "#
     );
     let pkg: PkgConfig = toml::from_str(&toml_src).unwrap();

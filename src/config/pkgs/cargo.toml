@@ -6,8 +6,7 @@ description = "Rust toolchain (cargo) — loads ~/.cargo/env into the shell."
 packages = ["rustup-init"]
 
 [pkg.cargo.detect]
-type = "file"
-path = "~/.cargo/env"
+exists = "~/.cargo/env"
 
 [[pkg.cargo.shell.env_init.bash]]
 type = "comment"

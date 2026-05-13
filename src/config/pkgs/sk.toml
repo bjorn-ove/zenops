@@ -10,8 +10,7 @@ description = "skim (sk) — fuzzy finder used by interactive shell keybindings.
 packages = ["sk"]
 
 [pkg.sk.detect]
-type = "which"
-binary = "sk"
+which = "sk"
 
 [[pkg.sk.shell.interactive_init.bash]]
 type = "comment"

@@ -18,8 +18,7 @@ description = "Homebrew shellenv initialization (macOS convention: login profile
 packages = []
 
 [pkg.brew-macos.detect]
-type = "file"
-path = "${brew_prefix}/bin/brew"
+exists = "${brew_prefix}/bin/brew"
 
 [[pkg.brew-macos.shell.env_init.bash]]
 type = "comment"

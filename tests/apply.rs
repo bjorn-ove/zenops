@@ -215,8 +215,7 @@ fn apply_emits_pkg_missing_when_on_plus_detect_misses() {
         [pkg.ghosttool.install_hint.brew]
         packages = ["ghosttool"]
         [pkg.ghosttool.detect]
-        type = "file"
-        path = "/definitely/does/not/exist/zenops-test-ghosttool"
+        exists = "/definitely/does/not/exist/zenops-test-ghosttool"
     "#,
     );
 
@@ -258,8 +257,7 @@ fn apply_is_silent_for_detect_variant_miss() {
         [pkg.quietpkg.install_hint.brew]
         packages = ["quietpkg"]
         [pkg.quietpkg.detect]
-        type = "file"
-        path = "/definitely/does/not/exist/zenops-test-quietpkg"
+        exists = "/definitely/does/not/exist/zenops-test-quietpkg"
     "#,
     );
 
@@ -294,8 +292,7 @@ fn apply_pkg_missing_with_no_install_hint_has_no_command() {
         [pkg.hintless.install_hint.brew]
         packages = []
         [pkg.hintless.detect]
-        type = "file"
-        path = "/definitely/does/not/exist/zenops-test-hintless"
+        exists = "/definitely/does/not/exist/zenops-test-hintless"
     "#,
     );
 

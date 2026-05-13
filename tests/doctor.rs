@@ -91,8 +91,7 @@ fn doctor_emits_pkg_missing_for_enable_on_with_missing_detect() {
         [pkg.zenops-doctor-test.install_hint.brew]
         packages = ["zenops-doctor-fake"]
         [pkg.zenops-doctor-test.detect]
-        type = "file"
-        path = "/definitely/does/not/exist/zenops-doctor-test"
+        exists = "/definitely/does/not/exist/zenops-doctor-test"
         "#,
     );
 

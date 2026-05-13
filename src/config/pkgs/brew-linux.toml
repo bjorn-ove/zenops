@@ -8,8 +8,7 @@ description = "Homebrew shellenv initialization (Linux convention: interactive s
 packages = []
 
 [pkg.brew-linux.detect]
-type = "file"
-path = "${brew_prefix}/bin/brew"
+exists = "${brew_prefix}/bin/brew"
 
 [[pkg.brew-linux.shell.env_init.bash]]
 type = "comment"

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Breaking (config schema):** `[pkg.*.detect]` now identifies its kind by which key is present in the table, rather than a `type = "..."` discriminator. `type = "file"` / `path = "..."` becomes `exists = "..."`; `type = "which"` / `binary = "..."` becomes `which = "..."`; `type = "any"` / `of = [...]` becomes `any = [...]`; same for `all`. `type = "when"` drops the discriminator and keeps `when` + `then`. Old configs fail to load with `unknown detect kind 'type', expected one of: exists, which, any, all, when`.
+
 ## [0.15.0] - 2026-05-11
 
 ### Added

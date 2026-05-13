@@ -60,8 +60,7 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
         enable = "detect"
         description = "Alpha test pkg."
         [pkg.alpha.detect]
-        type = "file"
-        path = "~/.alpha-marker"
+        exists = "~/.alpha-marker"
         [pkg.alpha.install_hint.brew]
         packages = ["alpha-formula"]
 
@@ -69,8 +68,7 @@ fn pkg_list_aggregates_missing_packages_into_footer() {
         enable = "detect"
         description = "Bravo test pkg."
         [pkg.bravo.detect]
-        type = "file"
-        path = "~/.bravo-marker"
+        exists = "~/.bravo-marker"
         [pkg.bravo.install_hint.brew]
         packages = ["bravo-formula"]
     "#,
@@ -170,16 +168,14 @@ fn pkg_list_pattern_filters_by_substring() {
         [pkg.alpha]
         enable = "detect"
         [pkg.alpha.detect]
-        type = "file"
-        path = "~/.alpha-marker"
+        exists = "~/.alpha-marker"
         [pkg.alpha.install_hint.brew]
         packages = []
 
         [pkg.bravo]
         enable = "detect"
         [pkg.bravo.detect]
-        type = "file"
-        path = "~/.bravo-marker"
+        exists = "~/.bravo-marker"
         [pkg.bravo.install_hint.brew]
         packages = []
     "#,

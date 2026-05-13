@@ -131,8 +131,7 @@ description = "modal editor"
 [pkg.helix.install_hint.brew]
 packages = ["helix"]
 [pkg.helix.detect]
-type = "which"
-binary = "hx"
+which = "hx"
 ```
 
 ### Core fields
@@ -166,10 +165,17 @@ installed — either detect matches on the current host, or there's no
 
 ### Detect strategies
 
-`detect` expresses "is this pkg present on this host?" with four kinds.
-Host-level gating (OS, shell, hostname, …) belongs on the pkg's `when`
-field; `detect` is purely about whether the pkg is installed on the host
-the check is running against.
+`detect` expresses "is this pkg present on this host?" with five kinds.
+Each `[detect]` table has exactly one of `exists`, `which`, `any`, `all`,
+or `when` (the last is paired with `then`). The leaf and combinator kinds
+(`exists`, `which`, `any`, `all`) are pure presence checks. The `when`
+kind gates a subtree on a host-level condition — use it inside `any` to
+express OS-divergent detect paths in a single pkg, instead of splitting
+into two `[pkg.*]` entries.
+
+Pkg-level `when` (gating the whole pkg) is still the right place for
+"this pkg only applies on host X." Detect-level `when` is for "this
+pkg is one thing, but how to find it differs by host."
 
 **`which`** — binary is on `PATH`:
 
@@ -178,11 +184,10 @@ the check is running against.
 [pkg.sk.install_hint.brew]
 packages = ["sk"]
 [pkg.sk.detect]
-type = "which"
-binary = "sk"
+which = "sk"
 ```
 
-**`file`** — a path exists. Supports `${...}` expansion and leading `~`
+**`exists`** — a path exists. Supports `${...}` expansion and leading `~`
 (expanded to `$HOME`):
 
 ```toml
@@ -190,8 +195,7 @@ binary = "sk"
 [pkg.cargo.install_hint.brew]
 packages = ["rust"]
 [pkg.cargo.detect]
-type = "file"
-path = "~/.cargo/bin/cargo"
+exists = "~/.cargo/bin/cargo"
 ```
 
 **`any`** — matches when *any* child strategy matches (short-circuits):
@@ -201,25 +205,45 @@ path = "~/.cargo/bin/cargo"
 [pkg.editor.install_hint.brew]
 packages = ["neovim"]
 [pkg.editor.detect]
-type = "any"
-of = [
-  { type = "which", binary = "nvim" },
-  { type = "which", binary = "vim" },
+any = [
+  { which = "nvim" },
+  { which = "vim" },
 ]
 ```
 
-**`all`** — matches when *every* child matches. An empty `of` is vacuously
-true; prefer omitting `detect` entirely to express "no check required".
+**`all`** — matches when *every* child matches. An empty array is
+vacuously true; prefer omitting `detect` entirely to express "no check
+required".
 
 ```toml
 [pkg.toolchain]
 [pkg.toolchain.install_hint.brew]
 packages = ["llvm"]
 [pkg.toolchain.detect]
-type = "all"
-of = [
-  { type = "which", binary = "clang" },
-  { type = "which", binary = "lld" },
+all = [
+  { which = "clang" },
+  { which = "lld" },
+]
+```
+
+**`when`** — gates an inner strategy on a host condition. Takes a `when`
+(a `[conditions]` name or an inline condition table — see
+[conditions](#conditions)) and a `then` (the strategy to evaluate when
+the gate is satisfied). When the gate fails, the whole node evaluates as
+`false` — it is **not** dropped from a parent combinator, so an `all`
+whose children are all gated to a different host evaluates `false`, not
+empty-set-vacuously `true`.
+
+Typical use: one pkg with OS-divergent detect paths.
+
+```toml
+[pkg.brew]
+[pkg.brew.install_hint.brew]
+packages = []
+[pkg.brew.detect]
+any = [
+  { when = "macos", then = { exists = "/opt/homebrew/bin/brew" } },
+  { when = "linux", then = { exists = "/home/linuxbrew/.linuxbrew/bin/brew" } },
 ]
 ```
 
@@ -254,8 +278,7 @@ for the given stage.
 [pkg.starship.install_hint.brew]
 packages = ["starship"]
 [pkg.starship.detect]
-type = "which"
-binary = "starship"
+which = "starship"
 
 [[pkg.starship.shell.interactive_init.bash]]
 type = "eval_output"
@@ -463,8 +486,7 @@ packages = ["rustup-init"]
 [pkg.rustup.inputs]
 bin_dir = "~/.cargo/bin"
 [pkg.rustup.detect]
-type = "file"
-path = "${bin_dir}/rustup"
+exists = "${bin_dir}/rustup"
 ```
 
 **Shadowing** — when a per-pkg input and a system input share a key, the

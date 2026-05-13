@@ -11,8 +11,7 @@ description = "Brew-managed bash completion loader."
 packages = ["bash-completion@2"]
 
 [pkg.bash-completion.detect]
-type = "file"
-path = "${brew_prefix}/etc/bash_completion"
+exists = "${brew_prefix}/etc/bash_completion"
 
 [[pkg.bash-completion.shell.interactive_init.bash]]
 type = "comment"

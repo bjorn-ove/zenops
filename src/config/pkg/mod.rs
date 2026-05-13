@@ -3,8 +3,9 @@
 //! [`PkgConfig`] is the parsed shape; submodules host the supporting
 //! sublanguages:
 //!
-//! - [`detect`] — the `detect = ...` strategy language (file/which leaves +
-//!   any/all combinators with optional OS gating).
+//! - [`detect`] — the `detect = ...` strategy language: file/which leaves,
+//!   any/all combinators, and a `when` gate that ties a subtree to a
+//!   `[conditions]` entry. Pkg-level host gating lives on `pkg.*.when`.
 //! - [`install`] — `install_hint` — per-package-manager install commands.
 //! - [`action`] — `shell.{env_init,login_init,interactive_init}` shell-init
 //!   action lines and the per-shell routing.
@@ -133,7 +134,7 @@ impl PkgConfig {
                     return Ok(true);
                 };
                 let lookup = [&self.inputs, ctx.system_inputs];
-                detect.check(ctx.home, &lookup)
+                detect.check(conditions, ctx, &lookup)
             }
             PkgEnable::Disabled => Ok(false),
         }
@@ -160,7 +161,7 @@ impl PkgConfig {
             return Ok(false);
         };
         let lookup = [&self.inputs, ctx.system_inputs];
-        detect.check(ctx.home, &lookup).map(|r| !r)
+        detect.check(conditions, ctx, &lookup).map(|r| !r)
     }
 
     /// Complement of [`Self::enable_on_but_detect_missing`] within `enable =
@@ -187,7 +188,7 @@ impl PkgConfig {
             return Ok(false);
         };
         let lookup = [&self.inputs, ctx.system_inputs];
-        detect.check(ctx.home, &lookup)
+        detect.check(conditions, ctx, &lookup)
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -210,7 +211,9 @@ impl PkgConfig {
             PkgEnable::On | PkgEnable::Detect => {
                 if let Some(detect) = self.detect.as_ref() {
                     let lookup = [&self.inputs, ctx.system_inputs];
-                    detect.check(ctx.home, &lookup).map(|r| r.then_some(detect))
+                    detect
+                        .check(conditions, ctx, &lookup)
+                        .map(|r| r.then_some(detect))
                 } else {
                     Ok(None)
                 }

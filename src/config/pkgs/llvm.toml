@@ -10,8 +10,7 @@ description = "LLVM toolchain (brew) — exports LDFLAGS/CPPFLAGS for compilers.
 packages = ["llvm"]
 
 [pkg.llvm.detect]
-type = "file"
-path = "${brew_prefix}/opt/llvm"
+exists = "${brew_prefix}/opt/llvm"
 
 [[pkg.llvm.shell.env_init.bash]]
 type = "comment"

@@ -49,7 +49,7 @@ ll = "ls -la"
 [pkg.helix]
 description = "modal editor"
 install_hint.brew.packages = ["helix"]
-detect = { type = "which", binary = "hx" }
+detect = { which = "hx" }
 
 [[pkg.helix.configs]]
 type = ".config"
